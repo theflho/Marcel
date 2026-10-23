@@ -32,7 +32,7 @@ PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 HOUR = int(os.environ.get("RMA_HOUR") or 19)
 DATA = Path(os.environ.get("RMA_DATA_DIR", "/data"))
 # The views the portal offers; the week and the month together cover what's coming.
-VIEWS = ("Sem.", "Mois")
+VIEWS = ("Sem.", "Mois", "∞")
 # "26/10/2026 20:00 - 23:00 FERRERO FRANCE COMMERCIALE" (the client may be on the next line).
 SLOT = re.compile(r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*(.*)")
 
@@ -129,6 +129,15 @@ async def sign_in(page, password) -> None:
         raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env.")
 
 
+async def wait_for_missions(page, seconds: int = 30) -> bool:
+    """Waits until a mission's time slot ("26/10/2026 20:00 - 23:00") is on the page."""
+    try:
+        await page.get_by_text(SLOT).first.wait_for(timeout=seconds * 1000)
+        return True
+    except PlaywrightTimeout:
+        return False
+
+
 async def read(debug: bool = False) -> list[dict]:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -139,17 +148,19 @@ async def read(debug: bool = False) -> list[dict]:
             if await password.count():
                 await sign_in(page, password)
                 await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
-                # The list is drawn after the page loads: wait for a first time slot.
-                try:
-                    await page.get_by_text(re.compile(r"\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}")).first.wait_for(timeout=20_000)
-                except PlaywrightTimeout:
-                    print("Aucune mission affichée après la connexion (liste vide ou encore en chargement).")
+            # A new browser first downloads the missions (the portal works offline):
+            # wait for a first time slot, and reload once if the list stays empty.
+            if not await wait_for_missions(page):
+                await page.reload(wait_until="networkidle", timeout=60_000)
+                if not await wait_for_missions(page):
+                    print("Aucune mission affichée (liste vide ou encore en chargement).")
             missions: dict[tuple, dict] = {}
             for view in VIEWS:
                 try:
                     # Only the view selector at the top of the list is ever clicked.
                     await page.get_by_text(view, exact=True).first.click(timeout=10_000)
-                    await page.wait_for_timeout(2_500)
+                    await page.wait_for_load_state("networkidle", timeout=30_000)
+                    await page.wait_for_timeout(3_000)
                 except PlaywrightTimeout:
                     print(f"Vue « {view} » introuvable sur la page.")
                 text = await page.locator("body").inner_text()
