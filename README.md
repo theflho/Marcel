@@ -12,14 +12,19 @@ backend/     service FastAPI : /health et /v1/chat/stream (SSE)
 - `GET /health` → `200 {"status":"ok"}` ; `401` si le jeton est faux.
 - `POST /v1/chat/stream` avec `Authorization: Bearer <MARCEL_TOKEN>`
   corps `{"conversation_id": "...", "messages": [{"role":"user","content":"..."}]}`
+  chaque message peut porter `"attachments": ["<id>", …]` (ids renvoyés par `/v1/files`) ;
   réponse SSE, une ligne JSON par événement :
   `data: {"type":"delta","text":"..."}` … `data: {"type":"done"}` ou `data: {"type":"error","message":"..."}`
+
+- `POST /v1/files` (multipart, champ `file`, 20 Mo max) → `{"id", "filename", "mime_type", "size"}`.
+  Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
+  PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
 
 ## Tester en local (simulateur)
 
 ```bash
 cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-MARCEL_TOKEN=dev-local-token MARCEL_MOCK=1 .venv/bin/uvicorn app.main:app --port 8000
+MARCEL_TOKEN=dev-local-token MARCEL_MOCK=1 MARCEL_DATA_DIR=.data .venv/bin/uvicorn app.main:app --port 8000
 ```
 
 Dans le simulateur, l'adresse par défaut est `http://localhost:8000` ; saisir le jeton dans Réglages.

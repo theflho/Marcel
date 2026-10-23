@@ -12,8 +12,13 @@ struct MessageBubble: View {
                 if message.content.isEmpty && message.status == .streaming {
                     TypingIndicator()
                 } else if isUser {
-                    Text(message.content)
-                        .textSelection(.enabled)
+                    if !message.attachments.isEmpty {
+                        MessageAttachmentsView(attachments: message.attachments)
+                    }
+                    if !message.content.isEmpty {
+                        Text(message.content)
+                            .textSelection(.enabled)
+                    }
                 } else {
                     MarkdownView(text: message.content)
                         .textSelection(.enabled)

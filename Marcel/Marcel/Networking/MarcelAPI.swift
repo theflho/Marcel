@@ -54,7 +54,10 @@ nonisolated struct MarcelAPI: Sendable {
                     authorize(&request)
                     request.httpBody = try JSONEncoder().encode(ChatRequest(
                         conversationId: conversationID.uuidString,
-                        messages: messages.map { .init(role: $0.role.rawValue, content: $0.content) }
+                        messages: messages.map {
+                            .init(role: $0.role.rawValue, content: $0.content,
+                                  attachments: $0.attachments.compactMap(\.remoteID))
+                        }
                     ))
 
                     let (bytes, response) = try await Self.session.bytes(for: request)
@@ -83,6 +86,31 @@ nonisolated struct MarcelAPI: Sendable {
         }
     }
 
+    /// Uploads one attachment (`POST /v1/files`, multipart) and returns the server's file id.
+    func upload(_ attachment: Attachment, data: Data) async throws -> String {
+        let boundary = "marcel-\(UUID().uuidString)"
+        var request = URLRequest(url: baseURL.appending(path: "v1/files"))
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        authorize(&request)
+
+        let safeName = attachment.filename.replacingOccurrences(of: "\"", with: "'")
+        var body = Data()
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n".utf8))
+        body.append(Data("Content-Type: \(attachment.mimeType)\r\n\r\n".utf8))
+        body.append(data)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+
+        let (responseData, response) = try await Self.session.upload(for: request, from: body)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401 || status == 403 { throw MarcelAPIError.unauthorized }
+        guard status == 200 else {
+            throw MarcelAPIError.http(status, String(decoding: responseData.prefix(300), as: UTF8.self))
+        }
+        return try JSONDecoder().decode(UploadResponse.self, from: responseData).id
+    }
+
     private func authorize(_ request: inout URLRequest) {
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -105,6 +133,7 @@ private nonisolated struct ChatRequest: Encodable {
     struct Message: Encodable {
         let role: String
         let content: String
+        let attachments: [String]
     }
 
     let conversationId: String
@@ -114,6 +143,10 @@ private nonisolated struct ChatRequest: Encodable {
         case conversationId = "conversation_id"
         case messages
     }
+}
+
+private nonisolated struct UploadResponse: Decodable {
+    let id: String
 }
 
 private nonisolated struct WireEvent: Decodable {

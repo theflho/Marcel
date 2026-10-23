@@ -7,12 +7,17 @@ services:
     env_file: .env
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - marcel-data:/data   # pièces jointes
     networks: [marcel-internal]
     restart: unless-stopped
 
   # hermes:
   #   ...configuration existante, sans section "ports"...
   #   networks: [marcel-internal]
+
+volumes:
+  marcel-data:
 
 networks:
   marcel-internal:

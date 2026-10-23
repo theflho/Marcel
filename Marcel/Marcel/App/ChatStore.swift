@@ -24,6 +24,10 @@ final class ChatStore {
         didSet { UserDefaults.standard.set(draft, forKey: Self.draftKey) }
     }
 
+    /// Photos and files waiting in the composer for the next message.
+    private(set) var pendingAttachments: [Attachment] = []
+    private(set) var isPreparingAttachment = false
+
     init(settings: ServerSettings) {
         self.settings = settings
         var loaded = cache.loadAll()
@@ -51,7 +55,8 @@ final class ChatStore {
     func isStreaming(_ id: UUID) -> Bool { streamTasks[id] != nil }
 
     var canSend: Bool {
-        !isStreaming && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !isStreaming && !isPreparingAttachment
+            && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty)
     }
 
     func project(for conversation: Conversation) -> Project? {
@@ -100,6 +105,9 @@ final class ChatStore {
 
     func delete(_ id: UUID) {
         streamTasks[id]?.cancel()
+        if let conversation = conversations.first(where: { $0.id == id }) {
+            AttachmentStore.delete(conversation.messages.flatMap(\.attachments))
+        }
         conversations.removeAll { $0.id == id }
         cache.delete(id)
         if id == currentID {
@@ -141,6 +149,34 @@ final class ChatStore {
         }
     }
 
+    // MARK: - Attachments
+
+    func addImage(_ data: Data) async {
+        await prepareAttachment { try await AttachmentStore.storeImage(data) }
+    }
+
+    func addFile(at url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        await prepareAttachment { try await AttachmentStore.storeFile(at: url) }
+    }
+
+    func removePending(_ attachment: Attachment) {
+        pendingAttachments.removeAll { $0.id == attachment.id }
+        AttachmentStore.delete([attachment])
+    }
+
+    private func prepareAttachment(_ work: () async throws -> Attachment) async {
+        isPreparingAttachment = true
+        defer { isPreparingAttachment = false }
+        do {
+            pendingAttachments.append(try await work())
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     // MARK: - Server
 
     func checkServer() async {
@@ -158,7 +194,8 @@ final class ChatStore {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+        let attachments = pendingAttachments
+        guard canSend else { return }
         guard let api = settings.api else {
             lastError = MarcelAPIError.notConfigured.localizedDescription
             return
@@ -167,20 +204,45 @@ final class ChatStore {
         let id = currentID
         lastError = nil
         draft = ""
+        pendingAttachments = []
+        let userMessage = ChatMessage(role: .user, content: text, attachments: attachments)
         mutate(id) { conversation in
             if conversation.messages.isEmpty {
-                conversation.title = String(text.prefix(60))
+                conversation.title = String((text.isEmpty ? attachments.first?.filename ?? "Pièce jointe" : text).prefix(60))
             }
-            conversation.messages.append(ChatMessage(role: .user, content: text))
+            conversation.messages.append(userMessage)
         }
-        let history = conversation.messages.filter { $0.status == .complete }
         let reply = ChatMessage(role: .assistant, content: "", status: .streaming)
         mutate(id) { $0.messages.append(reply) }
         persist(id)
 
-        let stream = api.streamChat(conversationID: id, messages: history)
         streamTasks[id] = Task { [weak self] in
-            await self?.consume(stream, conversationID: id, replyID: reply.id)
+            guard let self else { return }
+            do {
+                try await self.uploadAttachments(of: userMessage.id, in: id, using: api)
+            } catch {
+                self.updateMessage(reply.id, in: id) { $0.status = .failed }
+                if id == self.currentID { self.lastError = "Envoi des pièces jointes impossible : \(error.localizedDescription)" }
+                self.streamTasks[id] = nil
+                self.persist(id)
+                return
+            }
+            let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
+            await self.consume(api.streamChat(conversationID: id, messages: history), conversationID: id, replyID: reply.id)
+        }
+    }
+
+    /// Uploads attachments not yet on the server and records their remote ids.
+    private func uploadAttachments(of messageID: UUID, in conversationID: UUID, using api: MarcelAPI) async throws {
+        let message = conversations.first { $0.id == conversationID }?.messages.first { $0.id == messageID }
+        for attachment in message?.attachments ?? [] where attachment.remoteID == nil {
+            let data = try AttachmentStore.data(for: attachment)
+            let remoteID = try await api.upload(attachment, data: data)
+            updateMessage(messageID, in: conversationID) { message in
+                if let index = message.attachments.firstIndex(where: { $0.id == attachment.id }) {
+                    message.attachments[index].remoteID = remoteID
+                }
+            }
         }
     }
 
