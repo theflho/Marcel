@@ -117,6 +117,11 @@ MEMORY_LLM_MODEL = (os.environ.get("MARCEL_MEMORY_LLM_MODEL") or HERMES_MODEL)
 PROACTIVE_TICK = int(os.environ.get("MARCEL_PROACTIVE_TICK_SECONDS") or 900)
 PROACTIVE_HOURS = parse_hours(os.environ.get("MARCEL_PROACTIVE_HOURS") or "8-21")
 PROACTIVE_MAX_CHECKS = int(os.environ.get("MARCEL_PROACTIVE_MAX_CHECKS") or 6)
+# Checks can go to a second Hermes profile whose tools can't act outside (no terminal, browser,
+# messaging…): the real guarantee that a check only looks and prepares. Defaults to Hermes.
+CHECK_HERMES_URL = (os.environ.get("MARCEL_CHECK_HERMES_URL") or HERMES_URL).rstrip("/")
+CHECK_HERMES_KEY = os.environ.get("MARCEL_CHECK_HERMES_KEY") or (HERMES_API_KEY if CHECK_HERMES_URL == HERMES_URL else "")
+CHECK_HERMES_MODEL = os.environ.get("MARCEL_CHECK_HERMES_MODEL", "")
 
 log = logging.getLogger("marcel")
 missions = MissionStore(DATA_DIR / "marcel.db")
@@ -354,12 +359,13 @@ async def cancel_mission(mission_id: str) -> dict:
     return mission.public()
 
 
-async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "") -> AsyncIterator[str | dict]:
+async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
+                        url: str = HERMES_URL, key: str = HERMES_API_KEY) -> AsyncIterator[str | dict]:
     """Calls Hermes' OpenAI-compatible endpoint and yields text deltas.
 
     Tool calls streamed by Hermes become actions, so the app can show what the agent does.
     """
-    headers = {"Authorization": f"Bearer {HERMES_API_KEY}"} if HERMES_API_KEY else {}
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {
         "model": model,
         "stream": True,
@@ -377,7 +383,7 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "")
 
     timeout = httpx.Timeout(connect=10, read=300, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", f"{HERMES_URL}/v1/chat/completions", json=body, headers=headers) as resp:
+        async with client.stream("POST", f"{url}/v1/chat/completions", json=body, headers=headers) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
@@ -853,8 +859,9 @@ async def run_check(goal):
         if notes else "")
     request = ChatRequest(conversation_id=f"goal-{goal.id}", messages=[Message(role="user", content=prompt)])
     note, _ = memory.context(goal.title + " " + goal.detail)
-    model = (await available_models())[0]["id"]
-    source = (lambda: mock_check_stream(goal)) if MOCK else (lambda: hermes_stream(request, model, note))
+    model = CHECK_HERMES_MODEL or (await available_models())[0]["id"]
+    source = ((lambda: mock_check_stream(goal)) if MOCK
+              else (lambda: hermes_stream(request, model, note, CHECK_HERMES_URL, CHECK_HERMES_KEY)))
     try:
         mission = missions.start(request.conversation_id, source, model=model, title=f"Vérification : {goal.title}")
     except Exception:

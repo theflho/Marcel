@@ -99,9 +99,12 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   **Permissions** : Marcel propose et prépare seulement. La consigne de vérification interdit toute
   action réelle (envoyer, réserver, acheter, publier) ; une action préparée est affichée sur l'idée
   et mise dans le composeur (« Vas-y : … ») à l'ouverture : elle ne part que si l'utilisateur
-  envoie le message. Cette consigne n'est pas un verrou : pour une vraie garantie, désactiver côté
-  Hermes les outils qui agissent à l'extérieur (ou exiger leur approbation) pour les sessions
-  `goal-*`, à vérifier dans la configuration de Hermes sur le VPS.
+  envoie le message. La consigne seule n'est pas un verrou, et Hermes ne permet pas de retirer des
+  outils requête par requête : le verrou est un **second profil Hermes** réservé aux vérifications
+  (`MARCEL_CHECK_HERMES_URL/KEY/MODEL`), dont `config.yaml` désactive les outils qui agissent
+  (terminal, navigateur, messageries, sous-agents, cron… : `deploy/hermes-checks.config.yaml`,
+  service `hermes-checks` en commentaire dans `docker-compose.example.yml`), sans serveur MCP.
+  Sans ce profil, les vérifications passent par le Hermes principal.
   Hermes Agent (Nous Research) a son propre planificateur (`cronjob`, `hermes cron`) qui livre sur
   ses plateformes de messagerie : ne pas y recréer les objectifs, sinon chaque vérification
   partirait deux fois. Les notifications push demandent un compte Apple payant : les idées
@@ -140,6 +143,14 @@ aucun son ne part chez Apple ; si la reconnaissance locale en français manque, 
    `marcel-internal`, aucun port publié pour Hermes, backend sur `127.0.0.1:8000`.
 3. Vérifier l'URL et le format de l'API de Hermes (`HERMES_URL`, compatible OpenAI
    `/v1/chat/completions` en streaming supposé).
+3b. Marcel proactif : créer le profil `hermes-checks` (voir plus haut), puis
+   `docker compose exec hermes-checks hermes tools` pour vérifier que seuls web, recherche et
+   vision restent ; renseigner `MARCEL_CHECK_HERMES_URL` et `MARCEL_CHECK_HERMES_KEY`.
+3c. Essayer avec le vrai modèle, sans toucher aux données de Marcel :
+   `docker compose exec marcel-api python -m app.try_proactive` (le filtre doit répondre en JSON
+   valide aux trois exemples), puis `… --check "Trouver un Mac mini"` (une vraie vérification :
+   la liste des outils appelés ne doit contenir aucun outil qui agit).
+   Mises à jour suivantes : `./deploy/update.sh` (ou `--try` pour refaire l'essai).
 4. Activer « HTTPS Certificates » dans la console Tailscale, puis sur le VPS :
    `sudo tailscale serve --bg 8000`
    → `https://vps-ecc4ab15.tail9a9dd4.ts.net` (tailnet uniquement, certificat valide).

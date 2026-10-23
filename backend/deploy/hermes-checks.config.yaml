@@ -1,0 +1,30 @@
+# Profil Hermes des vérifications de Marcel (Marcel proactif) : il regarde et prépare,
+# il n'agit jamais à l'extérieur. À copier dans le HERMES_HOME de ce second profil
+# (config.yaml), puis à vérifier avec `hermes tools` : les noms viennent de la doc
+# Hermes Agent (Toolsets Reference) et peuvent changer selon la version installée.
+#
+# Restent disponibles : web, search, vision, session_search, todo, clarify.
+# Ne configurer AUCUN serveur MCP dans ce profil (chaque serveur ajoute ses outils,
+# qui peuvent envoyer des mails, publier…).
+agent:
+  disabled_toolsets:
+    - terminal        # commandes shell
+    - browser         # navigation automatisée, formulaires, paiements
+    - computer_use
+    - code_execution
+    - delegation      # sous-agents (qui auraient d'autres outils)
+    - cronjob         # pas de tâches planifiées côté Hermes : c'est Marcel qui planifie
+    - connections
+    - catalog
+    - file
+    - kanban
+    - discord
+    - discord_admin
+    - feishu_drive
+    - yuanbao
+    - image_gen
+    - video_gen
+    - memory          # la mémoire est celle de Marcel, envoyée avec chaque vérification
+
+approvals:
+  mode: manual        # si une commande dangereuse passait quand même, elle attendrait un humain
