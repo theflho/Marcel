@@ -121,12 +121,15 @@ async def sign_in(page, password) -> None:
         missing = ", ".join(name for name, ok in filled.items() if not ok) or "aucun champ vide repéré"
         raise RuntimeError(f"Le bouton Valider reste grisé ({missing}).")
     await button.click()
-    await page.wait_for_load_state("networkidle", timeout=60_000)
-    await page.wait_for_timeout(2_000)
-    await accept_terms_window(page)
-    await page.wait_for_load_state("networkidle", timeout=60_000)
-    if await page.locator("input[type=password]:visible").count():
-        raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env.")
+    # The portal can take a while: the terms window may appear late, then the form goes away.
+    for _ in range(30):
+        await page.wait_for_timeout(1_000)
+        await accept_terms_window(page)
+        if not await page.locator("input[type=password]:visible").count():
+            await page.wait_for_load_state("networkidle", timeout=60_000)
+            return
+    raise RuntimeError("Connexion refusée ou trop lente (30 s) : vérifie l'identifiant et le mot de passe "
+                       "dans rma.env, ou réessaie.")
 
 
 async def show(page, view: str) -> bool:
