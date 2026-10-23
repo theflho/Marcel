@@ -150,7 +150,15 @@ Réglages › Sur cet iPhone :
   `com.theobrosselin.marcel.refresh`) qui cherche les nouvelles idées et les réponses terminées,
   puis notification locale ; iOS décide du moment (souvent une heure ou plus). Aucun compte payant.
 - **Partager mon agenda** : les 7 prochains jours accompagnent chaque message (`device_context`).
-- E-mail : pas dans l'app ; à brancher côté Hermes (connexion du compte, lecture seule) sur le VPS.
+- **E-mail (Gmail, lecture seule)** : branché côté serveur, pas dans l'app (`app/gmail.py`). Le
+  module Google Workspace de Hermes demande aussi l'envoi et la modification ; Marcel ne demande que
+  `gmail.readonly` et refuse un jeton qui donnerait plus. Quand un message parle d'e-mails, les
+  15 derniers des 7 jours (expéditeur, sujet, extrait, hors promotions et réseaux sociaux)
+  accompagnent la mission, avec une carte d'action « E-mail ». Connexion, une fois, sur le VPS :
+  client OAuth « Application de bureau » de ton propre projet Google Cloud
+  (`MARCEL_GOOGLE_CLIENT_ID`, `MARCEL_GOOGLE_CLIENT_SECRET` dans `.env`), puis
+  `docker compose exec marcel-api python -m app.gmail_auth` (`--check`, `--revoke`).
+  `/health` indique `"mail": true` une fois connecté.
 
 La dictée (micro du composeur) est transcrite sur l'iPhone uniquement (`requiresOnDeviceRecognition`) :
 aucun son ne part chez Apple ; si la reconnaissance locale en français manque, elle est refusée.

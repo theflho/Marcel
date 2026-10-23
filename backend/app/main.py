@@ -24,6 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from .gmail import MAIL_WORDS, Gmail
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
@@ -131,6 +132,8 @@ missions = MissionStore(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
 ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
+# Gmail, read only (connected once with python -m app.gmail_auth).
+gmail = Gmail(DATA_DIR, os.environ.get("MARCEL_GOOGLE_CLIENT_ID", ""), os.environ.get("MARCEL_GOOGLE_CLIENT_SECRET", ""))
 # Background jobs (memory extraction) are kept here so they aren't garbage-collected mid-way.
 background: set[asyncio.Task] = set()
 
@@ -185,7 +188,7 @@ def sse(payload: dict) -> str:
 async def health() -> dict:
     spent = await guard_usage()
     return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen(),
-            "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}}
+            "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}, "mail": gmail.connected}
 
 
 @app.get("/v1/models", dependencies=[Depends(require_token)])
@@ -306,14 +309,32 @@ async def start_mission(request: ChatRequest) -> dict:
     note, facts = memory.context(title)
     device = (f"Informations partagées par l'iPhone de l'utilisateur (lecture seule) :\n{request.device_context}"
               if request.device_context else "")
-    note = "\n\n".join(filter(None, [note, goals.context(), device]))
+    mail, extra = await mail_context(title)
+    note = "\n\n".join(filter(None, [note, goals.context(), device, mail]))
     inner = (lambda: mock_stream(request, facts)) if MOCK else (lambda: hermes_stream(request, model, note))
-    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts),
+    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra),
                           model=model, title=title).public()
 
 
-async def with_memory(request: ChatRequest, inner, facts) -> AsyncIterator[str | dict]:
-    """Shows which memories were sent, then, once the reply is complete, learns from the exchange."""
+async def mail_context(question: str) -> tuple[str, list[dict]]:
+    """Recent e-mails when the message is about e-mail, with the action card that says so."""
+    if not gmail.connected or not MAIL_WORDS.search(question):
+        return "", []
+    try:
+        mails = await gmail.recent()
+    except Exception:
+        log.exception("could not read Gmail")
+        return "", [{"id": "mail", "name": "E-mail", "detail": "Gmail n'a pas pu être lu.", "status": "cancelled"}]
+    unread = sum(1 for m in mails if m["unread"])
+    detail = f"{len(mails)} e-mail(s) des 7 derniers jours, dont {unread} non lu(s), lus sans rien modifier"
+    return gmail.context(mails), [{"id": "mail", "name": "E-mail", "detail": detail, "status": "done"}]
+
+
+async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()) -> AsyncIterator[str | dict]:
+    """Shows which memories (and e-mails) were sent, then, once the reply is complete, learns
+    from the exchange."""
+    for action in extra:
+        yield action
     if facts:
         core = sum(1 for f in facts if f.tier == CORE)
         detail = f"{core} du noyau, {len(facts) - core} des archives : " + " · ".join(f.text for f in facts)
