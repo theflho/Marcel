@@ -378,14 +378,15 @@ final class ChatStore {
         tokenUsage = health.tokens
     }
 
-    /// Fetches the work planning and schedules the clock-in reminders, at most every 10 minutes
-    /// (the health check runs every 30 s) unless `force`.
+    /// Fetches the work planning, then schedules the clock-in reminders and fills the "Missions
+    /// RMA" calendar, at most every 10 minutes (the health check runs every 30 s) unless `force`.
     func syncPlanning(force: Bool = false) async {
-        guard WorkReminders.isEnabled, !emergencyActive, let api = settings.api else { return }
+        guard WorkReminders.isEnabled || MissionCalendar.isEnabled, !emergencyActive, let api = settings.api else { return }
         if !force, let last = lastPlanningSync, Date.now.timeIntervalSince(last) < 600 { return }
         lastPlanningSync = .now
-        guard let missions = try? await api.planning() else { return }
+        guard let missions = try? await api.planning(days: 60) else { return }
         await WorkReminders.schedule(missions)
+        MissionCalendar.sync(missions)
     }
 
     // MARK: - Ideas

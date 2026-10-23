@@ -4,9 +4,9 @@
 <dict>
 	<!-- Production goes through HTTPS (Tailscale certificate). Local networking
 	     is allowed only so the simulator can reach a backend on localhost. -->
-	<!-- Marcel reads upcoming events to take them into account; it never writes to the calendar. -->
+	<!-- Marcel reads upcoming events, and writes only in its own "Missions RMA" calendar. -->
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Marcel lit les 7 prochains jours de ton agenda pour en tenir compte dans ses réponses. Il ne modifie jamais ton agenda.</string>
+	<string>Marcel lit ton agenda pour en tenir compte et, si tu l'actives, ajoute tes missions dans son propre calendrier « Missions RMA ». Il ne modifie jamais tes autres calendriers.</string>
 	<!-- iOS wakes the app now and then to look for new ideas and finished replies (local notifications). -->
 	<key>UIBackgroundModes</key>
 	<array>

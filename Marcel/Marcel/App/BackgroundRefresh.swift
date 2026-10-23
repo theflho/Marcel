@@ -62,8 +62,9 @@ enum BackgroundRefresh {
         }
 
         // The planning may have changed (a mission added or moved): reminders follow it.
-        if WorkReminders.isEnabled, let missions = try? await api.planning() {
+        if WorkReminders.isEnabled || MissionCalendar.isEnabled, let missions = try? await api.planning(days: 60) {
             await WorkReminders.schedule(missions)
+            MissionCalendar.sync(missions)
         }
 
         // Keep the list short: only recent ids can come back.

@@ -26,7 +26,12 @@ enum Agenda {
         guard UserDefaults.standard.bool(forKey: shareKey), isAuthorized,
               let end = Calendar.current.date(byAdding: .day, value: days, to: now) else { return nil }
         let predicate = store.predicateForEvents(withStart: now, end: end, calendars: nil)
-        let events = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }.prefix(maxEvents)
+        // The missions calendar repeats the planning Marcel already has: left out.
+        let missions = UserDefaults.standard.string(forKey: MissionCalendar.calendarKey)
+        let events = store.events(matching: predicate)
+            .filter { $0.calendar.calendarIdentifier != missions }
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(maxEvents)
         let today = now.formatted(.dateTime.weekday(.wide).day().month(.wide).hour().minute())
         guard !events.isEmpty else {
             return "Nous sommes le \(today). Agenda des \(days) prochains jours : rien de prévu."

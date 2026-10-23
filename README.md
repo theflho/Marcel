@@ -146,6 +146,13 @@ l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les id
 - App : Réglages › Sur cet iPhone › **Rappels de pointage** : notifications locales programmées
   par l'iPhone 5 min avant chaque début et chaque fin (à l'heure exacte, app fermée) ; un appui
   ouvre le portail.
+- App : Réglages › Sur cet iPhone › **Ajouter mes missions à l'agenda** : les missions à venir
+  vont dans un calendrier à part, « Missions RMA » (créé dans iCloud si possible), le seul où
+  Marcel écrit. Une mission déjà notée dans un autre calendrier (même heure à 15 min près, même
+  enseigne ou « RMA », « Ferrero », « mission ») n'est pas ajoutée ; une mission déplacée est
+  mise à jour, une mission annulée retirée (futur et calendrier « Missions RMA » seulement).
+  Synchronisé à l'ouverture de l'app et en arrière-plan. Ce calendrier n'est pas joint à
+  « Partager mon agenda » (le planning y est déjà).
 - Installation sur le VPS : `./deploy/install-rma.sh` (identifiant et mot de passe saisis sur
   le VPS, première lecture d'essai sans rien envoyer : `--debug`, capture dans le volume
   `rma-data`) ; puis `docker compose run --rm rma python planning.py --once`.

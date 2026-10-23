@@ -392,6 +392,7 @@ private struct DeviceSection: View {
     @State private var notifications = BackgroundRefresh.isEnabled
     @State private var calendar = UserDefaults.standard.bool(forKey: Agenda.shareKey) && Agenda.isAuthorized
     @State private var workReminders = WorkReminders.isEnabled
+    @State private var missionCalendar = MissionCalendar.isEnabled
     @State private var refused: String?
 
     var body: some View {
@@ -419,6 +420,27 @@ private struct DeviceSection: View {
                         }
                     }
                 }
+            Toggle(isOn: $missionCalendar) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ajouter mes missions à l'agenda")
+                    if missionCalendar, let last = UserDefaults.standard.string(forKey: MissionCalendar.lastSyncKey) {
+                        Text("Calendrier « Missions RMA » : \(last)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .onChange(of: missionCalendar) { _, wanted in
+                Task {
+                    let on = await MissionCalendar.setEnabled(wanted)
+                    if wanted && !on {
+                        missionCalendar = false
+                        refused = "L'accès à l'agenda est refusé pour Marcel dans les réglages de l'iPhone."
+                    } else if on {
+                        await store.syncPlanning(force: true)
+                    }
+                }
+            }
             Toggle("Partager mon agenda", isOn: $calendar)
                 .onChange(of: calendar) { _, wanted in
                     Task {
@@ -447,7 +469,8 @@ private struct DeviceSection: View {
             Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
                  + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
                  + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier. "
-                 + "Les rappels de pointage suivent ton planning RMA lu par le serveur ; un appui ouvre le portail, et tu pointes toi-même sur place.")
+                 + "Les rappels de pointage suivent ton planning RMA lu par le serveur ; un appui ouvre le portail, et tu pointes toi-même sur place. "
+                 + "Les missions vont dans un calendrier à part, « Missions RMA » : Marcel n'écrit nulle part ailleurs, saute une mission que tu as déjà notée, et suit les déplacements et annulations.")
         }
     }
 }
