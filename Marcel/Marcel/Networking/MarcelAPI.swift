@@ -165,6 +165,94 @@ nonisolated struct GoalChange: Encodable, Sendable {
     private enum CodingKeys: String, CodingKey { case title, detail, status, cadence }
 }
 
+/// One automatic check of a goal, and what Marcel decided (`/v1/goals/{id}/checks`).
+nonisolated struct GoalCheck: Decodable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let goalID: String
+    let missionID: String
+    let at: Date
+    /// "notify" (an idea was made), "later" (kept in mind), "nothing" (nothing new) or "failed".
+    let decision: String
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, at, decision, summary
+        case goalID = "goal_id"
+        case missionID = "mission_id"
+    }
+}
+
+/// Something Marcel found by itself while checking a goal (`/v1/ideas`).
+nonisolated struct Idea: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let goalID: String
+    let goalTitle: String
+    let title: String
+    let body: String
+    /// An action Marcel prepared, which only happens once the user asks for it. Empty if none.
+    let action: String
+    let importance: Int
+    /// "new" (not seen yet), "seen", "opened" or "dismissed".
+    var status: String
+    let missionID: String
+    var conversationID: String
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, body, action, importance, status
+        case goalID = "goal_id"
+        case goalTitle = "goal_title"
+        case missionID = "mission_id"
+        case conversationID = "conversation_id"
+        case createdAt = "created_at"
+    }
+}
+
+/// How proactive Marcel is on a server (`/v1/proactive`), with today's counters.
+nonisolated struct ProactiveSettings: Decodable, Hashable, Sendable {
+    /// "off", "quiet" or "normal".
+    var level: String
+    /// Ideas allowed per day in normal mode.
+    var dailyLimit: Int
+    /// Cost ceiling: automatic checks per day.
+    var maxChecksPerDay: Int
+    let checksToday: Int
+    let ideasToday: Int
+    let ideasAllowedToday: Int
+    let unseen: Int
+    /// Hours (server time) during which checks run, e.g. [8, 21].
+    let hours: [Int]
+
+    enum CodingKeys: String, CodingKey {
+        case level, unseen, hours
+        case dailyLimit = "daily_limit"
+        case maxChecksPerDay = "max_checks_per_day"
+        case checksToday = "checks_today"
+        case ideasToday = "ideas_today"
+        case ideasAllowedToday = "ideas_allowed_today"
+    }
+}
+
+/// Fields of the proactivity settings to change; nil ones are left as they are.
+nonisolated struct ProactiveChange: Encodable, Sendable {
+    var level: String?
+    var dailyLimit: Int?
+    var maxChecksPerDay: Int?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(level, forKey: .level)
+        try container.encodeIfPresent(dailyLimit, forKey: .dailyLimit)
+        try container.encodeIfPresent(maxChecksPerDay, forKey: .maxChecksPerDay)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case level
+        case dailyLimit = "daily_limit"
+        case maxChecksPerDay = "max_checks_per_day"
+    }
+}
+
 /// Fields of a fact to change; nil ones are left as they are.
 nonisolated struct MemoryChange: Encodable, Sendable {
     var text: String?
@@ -187,6 +275,8 @@ nonisolated struct ServerHealth: Sendable {
     let status: Int
     /// The server-side emergency stop is on: it refuses every mission.
     let emergency: Bool
+    /// Ideas Marcel found that the user hasn't seen yet.
+    let unseenIdeas: Int
 }
 
 nonisolated enum MarcelAPIError: LocalizedError {
@@ -226,7 +316,8 @@ nonisolated struct MarcelAPI: Sendable {
         authorize(&request)
         guard let (data, response) = try? await Self.session.data(for: request) else { return nil }
         let body = try? JSONDecoder().decode(HealthBody.self, from: data)
-        return ServerHealth(status: (response as? HTTPURLResponse)?.statusCode ?? 0, emergency: body?.emergency ?? false)
+        return ServerHealth(status: (response as? HTTPURLResponse)?.statusCode ?? 0, emergency: body?.emergency ?? false,
+                            unseenIdeas: body?.ideas ?? 0)
     }
 
     func models() async throws -> [ModelOption] {
@@ -329,6 +420,46 @@ nonisolated struct MarcelAPI: Sendable {
 
     func deleteGoal(id: String) async throws {
         let _: Goal = try await call("DELETE", "v1/goals/\(id)")
+    }
+
+    /// Checks a followed goal now, whatever its rhythm. Returns the check's mission.
+    func checkGoal(id: String) async throws -> MissionInfo {
+        try await call("POST", "v1/goals/\(id)/check")
+    }
+
+    func goalChecks(id: String) async throws -> [GoalCheck] {
+        try await call("GET", "v1/goals/\(id)/checks")
+    }
+
+    // MARK: Ideas
+
+    /// Every idea except the dismissed ones.
+    func ideas() async throws -> [Idea] {
+        try await call("GET", "v1/ideas")
+    }
+
+    /// The user saw the list: new ideas become seen (the badge goes away).
+    func markIdeasSeen() async throws {
+        let _: SeenResult = try await call("POST", "v1/ideas/seen")
+    }
+
+    /// "opened" (with the conversation it became) or "dismissed" (remembered as not interesting).
+    func updateIdea(id: String, status: String, conversationID: UUID? = nil) async throws -> Idea {
+        var body = ["status": status]
+        if let conversationID { body["conversation_id"] = conversationID.uuidString }
+        return try await call("PATCH", "v1/ideas/\(id)", body: body)
+    }
+
+    func deleteIdea(id: String) async throws {
+        let _: Idea = try await call("DELETE", "v1/ideas/\(id)")
+    }
+
+    func proactive() async throws -> ProactiveSettings {
+        try await call("GET", "v1/proactive")
+    }
+
+    func updateProactive(_ change: ProactiveChange) async throws -> ProactiveSettings {
+        try await call("PATCH", "v1/proactive", body: change)
     }
 
     /// A JSON request to the backend, decoded with dates in seconds since 1970.
@@ -478,6 +609,11 @@ private nonisolated struct UndoResult: Decodable {
 
 private nonisolated struct HealthBody: Decodable {
     let emergency: Bool?
+    let ideas: Int?
+}
+
+private nonisolated struct SeenResult: Decodable {
+    let seen: Int
 }
 
 private nonisolated struct ModelList: Decodable {

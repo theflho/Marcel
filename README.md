@@ -4,12 +4,14 @@ App iPhone native (Swift + SwiftUI) → backend FastAPI sur le VPS (via Tailscal
 
 ```
 Marcel/      projet Xcode (iOS 18+, Swift 6)
-backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/files, /v1/emergency
+backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/files, /v1/emergency,
+             /v1/memory, /v1/goals, /v1/ideas, /v1/proactive
 ```
 
 ## Protocole
 
-- `GET /health` → `200 {"status":"ok","emergency":false}` ; `401` si le jeton est faux.
+- `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0}` (`ideas` : idées pas encore vues,
+  pour la pastille) ; `401` si le jeton est faux.
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
 Une réponse de Marcel est une **mission** qui tourne sur le VPS : elle continue quand l'app est
@@ -63,10 +65,47 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   au-dessus du composeur avec « Suivre » / « Non merci ». Un objectif refusé (`dismissed`) n'est
   plus jamais reproposé, ni un objectif proche d'un existant. Les objectifs suivis (`active`)
   accompagnent chaque mission. Statuts : `proposed`, `active`, `paused`, `done`, `dismissed` ;
-  rythme : `daily`, `weekly`, `manual` (stocké pour les vérifications automatiques, pas encore
-  exécutées). Routes : `GET /v1/goals` (`?status=`, `?conversation_id=` ; sans statut, tout sauf
-  les refusés), `POST /v1/goals` (`{"title","detail","cadence"}`, suivi tout de suite),
-  `PATCH/DELETE /v1/goals/{id}`. Écran Réglages › Objectifs suivis.
+  rythme : `daily`, `weekly`, `manual`. Routes : `GET /v1/goals` (`?status=`, `?conversation_id=` ;
+  sans statut, tout sauf les refusés), `POST /v1/goals` (`{"title","detail","cadence"}`, suivi tout
+  de suite), `PATCH/DELETE /v1/goals/{id}`. Écran Réglages › Objectifs suivis (balayer vers la
+  droite : « Vérifier » maintenant).
+
+- **Marcel proactif** (`backend/app/proactive.py`) : un planificateur (toutes les
+  `MARCEL_PROACTIVE_TICK_SECONDS`, 15 min par défaut, entre `MARCEL_PROACTIVE_HOURS`, `8-21` par
+  défaut, heure du serveur) lance une **vérification** pour chaque objectif suivi dont le rythme est
+  échu (`daily` : 24 h, `weekly` : 7 jours, `manual` : jamais tout seul ; un objectif jamais vérifié
+  part au tour suivant). Une vérification est une mission Hermes ordinaire (écran Missions,
+  conversation `goal-<id>`), une à la fois, qui laisse toujours une place libre aux missions de
+  l'utilisateur. Rien ne part pendant l'arrêt d'urgence (et il coupe une vérification en cours).
+  Plafond de coût : `max_checks_per_day` vérifications par jour, automatiques et manuelles
+  confondues (`MARCEL_PROACTIVE_MAX_CHECKS`, 6 par défaut, modifiable dans l'app).
+  À la fin, le modèle de la mémoire (`llm_json`) joue le **filtre** : `notify` (prévenir),
+  `later` (garder pour plus tard) ou `nothing` (rien de nouveau), avec une note reprise par la
+  vérification suivante. Seul `notify` crée une **idée**, et seulement si le réglage le permet :
+  - `off` (Désactivée) : aucune vérification automatique, aucune idée ;
+  - `quiet` (Discrète) : importance 4/5 minimum, une idée par jour au plus ;
+  - `normal` (Normale) : jusqu'à `daily_limit` idées par jour (2 par défaut).
+  Au-delà de la limite, ou si l'idée ressemble à une idée des 7 derniers jours ou à une idée
+  refusée, elle est rétrogradée en « plus tard ». Historique : `GET /v1/goals/{id}/checks` ;
+  vérifier tout de suite : `POST /v1/goals/{id}/check` (`409` déjà en cours, `423` arrêt
+  d'urgence, `429` plafond atteint).
+  Routes des idées : `GET /v1/ideas` (`?status=new|seen|opened|dismissed`, `?goal_id=` ; sans
+  statut, tout sauf les refusées), `POST /v1/ideas/seen` (enlève la pastille),
+  `PATCH /v1/ideas/{id}` (`{"status":"opened","conversation_id":"..."}` ou `{"status":"dismissed"}`,
+  « Pas intéressé », retenu dans les archives de la mémoire), `DELETE /v1/ideas/{id}`.
+  Réglage : `GET/PATCH /v1/proactive` (`{"level","daily_limit","max_checks_per_day"}` + compteurs
+  du jour). Dans l'app : ampoule avec pastille en haut de la conversation, « Ouvrir » crée une
+  conversation qui commence par le message de Marcel ; Réglages › Marcel proactif.
+  **Permissions** : Marcel propose et prépare seulement. La consigne de vérification interdit toute
+  action réelle (envoyer, réserver, acheter, publier) ; une action préparée est affichée sur l'idée
+  et mise dans le composeur (« Vas-y : … ») à l'ouverture : elle ne part que si l'utilisateur
+  envoie le message. Cette consigne n'est pas un verrou : pour une vraie garantie, désactiver côté
+  Hermes les outils qui agissent à l'extérieur (ou exiger leur approbation) pour les sessions
+  `goal-*`, à vérifier dans la configuration de Hermes sur le VPS.
+  Hermes Agent (Nous Research) a son propre planificateur (`cronjob`, `hermes cron`) qui livre sur
+  ses plateformes de messagerie : ne pas y recréer les objectifs, sinon chaque vérification
+  partirait deux fois. Les notifications push demandent un compte Apple payant : les idées
+  s'affichent à l'ouverture de l'app (pastille mise à jour avec le test de connexion).
 
 - `POST /v1/files` (multipart, champ `file`, 20 Mo max) → `{"id", "filename", "mime_type", "size"}`.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
@@ -87,6 +126,8 @@ En mock, la mémoire retient les phrases où l'on parle de soi (« Je cherche un
 « Tu te souviens de… » affiche les souvenirs transmis ; écran Réglages › Mémoire de Marcel.
 Une phrase comme « Je cherche… », « Je veux… », « Je prépare… » fait proposer un objectif ;
 « Quels objectifs tu suis ? » liste ceux qui sont suivis.
+En mock, une vérification dure 2 s et ses décisions alternent prévenir → plus tard → rien de nouveau ;
+pour voir le planificateur tourner vite : `MARCEL_PROACTIVE_TICK_SECONDS=10 MARCEL_PROACTIVE_HOURS=0-24`.
 
 La dictée (micro du composeur) est transcrite sur l'iPhone uniquement (`requiresOnDeviceRecognition`) :
 aucun son ne part chez Apple ; si la reconnaissance locale en français manque, elle est refusée.

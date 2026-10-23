@@ -5,6 +5,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
     @State private var showMissions = false
+    @State private var showIdeas = false
     @State private var showSidebar = false
     @GestureState private var drawerDrag: CGFloat = 0
     @FocusState private var composerFocused: Bool
@@ -51,6 +52,16 @@ struct ChatView: View {
         }
         .sheet(isPresented: $showMissions) {
             MissionsView()
+        }
+        .sheet(isPresented: $showIdeas) {
+            NavigationStack {
+                IdeasView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("OK") { showIdeas = false }
+                        }
+                    }
+            }
         }
     }
 
@@ -122,6 +133,30 @@ struct ChatView: View {
                 .tint(.primary)
                 .accessibilityLabel("Menu")
                 Spacer()
+                Button {
+                    composerFocused = false
+                    showIdeas = true
+                } label: {
+                    Image(systemName: "lightbulb")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .background(Theme.surface, in: .circle)
+                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                        .overlay(alignment: .topTrailing) {
+                            let unseen = store.unseenIdeas
+                            if unseen > 0 {
+                                Text("\(unseen)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 18, minHeight: 18)
+                                    .background(Color.accentColor, in: .circle)
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
+                }
+                .tint(.primary)
+                .accessibilityLabel(store.unseenIdeas > 0 ? "Idées, \(store.unseenIdeas) nouvelle(s)" : "Idées")
                 Button {
                     composerFocused = false
                     showMissions = true

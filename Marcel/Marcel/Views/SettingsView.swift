@@ -119,10 +119,16 @@ struct SettingsView: View {
                         Label("Objectifs suivis", systemImage: "scope")
                     }
                     .disabled(store.emergencyActive)
+                    NavigationLink {
+                        ProactiveSettingsView()
+                    } label: {
+                        Label("Marcel proactif", systemImage: "lightbulb")
+                    }
+                    .disabled(store.emergencyActive)
                 } header: {
                     Text("Mémoire")
                 } footer: {
-                    Text("Ce que Marcel retient de vous, sur le serveur actif : un noyau envoyé à chaque mission et des archives sans limite, rangés chaque nuit.")
+                    Text("Ce que Marcel retient de vous, sur le serveur actif : un noyau envoyé à chaque mission et des archives sans limite, rangés chaque nuit. Les objectifs suivis sont vérifiés automatiquement selon les réglages de Marcel proactif.")
                 }
 
                 Section {

@@ -10,6 +10,7 @@ struct GoalsView: View {
     @State private var editing: Goal?
     @State private var adding = false
     @State private var actionError: String?
+    @State private var notice: String?
 
     var body: some View {
         Group {
@@ -51,6 +52,11 @@ struct GoalsView: View {
         } message: {
             Text(actionError ?? "")
         }
+        .alert("Vérification lancée", isPresented: .constant(notice != nil)) {
+            Button("OK") { notice = nil }
+        } message: {
+            Text(notice ?? "")
+        }
     }
 
     private var list: some View {
@@ -58,7 +64,7 @@ struct GoalsView: View {
             section("Proposés par Marcel", status: "proposed",
                     footer: "Repérés dans tes conversations. Rien n'est suivi sans ton accord.")
             section("Suivis", status: "active",
-                    footer: "Marcel connaît ces objectifs dans chaque conversation. Les vérifications automatiques au rythme choisi arrivent bientôt.")
+                    footer: "Marcel connaît ces objectifs dans chaque conversation et les vérifie de lui-même au rythme choisi. Ce qui vaut la peine arrive dans Idées.")
             section("En pause", status: "paused")
             section("Terminés", status: "done")
         }
@@ -101,6 +107,8 @@ struct GoalsView: View {
         .swipeActions(edge: .leading) {
             switch goal.status {
             case "active":
+                Button("Vérifier", systemImage: "arrow.clockwise") { Task { await check(goal) } }
+                    .tint(.blue)
                 Button("Pause", systemImage: "pause.fill") { Task { await setStatus("paused", of: goal) } }
                     .tint(.orange)
                 Button("Terminé", systemImage: "checkmark") { Task { await setStatus("done", of: goal) } }
@@ -123,6 +131,17 @@ struct GoalsView: View {
         await perform { _ = try await $0.updateGoal(id: goal.id, GoalChange(status: status)) }
         // Keep the conversation's proposal card in step with what was decided here.
         await store.refreshGoalProposals()
+    }
+
+    private func check(_ goal: Goal) async {
+        guard !store.emergencyActive, let api = store.settings.api else { return }
+        do {
+            _ = try await api.checkGoal(id: goal.id)
+            notice = "Marcel regarde où en est « \(goal.title) ». S'il trouve quelque chose qui vaut la peine, ce sera dans Idées."
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await load()
     }
 
     private func load() async {
@@ -161,10 +180,19 @@ struct GoalSummary: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
-            Label(Goal.cadenceLabel(goal.cadence), systemImage: "arrow.clockwise")
-                .labelStyle(.compact)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Label(Goal.cadenceLabel(goal.cadence), systemImage: "arrow.clockwise")
+                if goal.status == "active", let lastRunAt = goal.lastRunAt {
+                    Label {
+                        Text("vérifié \(lastRunAt, format: .relative(presentation: .named))")
+                    } icon: {
+                        Image(systemName: "checkmark.circle")
+                    }
+                }
+            }
+            .labelStyle(.compact)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
     }
 }
@@ -218,6 +246,7 @@ struct GoalProposalCard: View {
 }
 
 private struct GoalEditor: View {
+    @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let goal: Goal?
     let onSave: (String, String, String) async -> Void
@@ -225,6 +254,7 @@ private struct GoalEditor: View {
     @State private var detail = ""
     @State private var cadence = "weekly"
     @State private var saving = false
+    @State private var checks: [GoalCheck] = []
 
     var body: some View {
         NavigationStack {
@@ -241,7 +271,28 @@ private struct GoalEditor: View {
                         ForEach(Goal.cadences, id: \.self) { Text(Goal.cadenceLabel($0)).tag($0) }
                     }
                 } footer: {
-                    Text("À quelle fréquence Marcel vérifiera de lui-même où ça en est.")
+                    Text("À quelle fréquence Marcel vérifie de lui-même où ça en est.")
+                }
+                if !checks.isEmpty {
+                    Section("Dernières vérifications") {
+                        ForEach(checks) { check in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(Self.decisionLabel(check.decision))
+                                        .font(.subheadline.weight(.medium))
+                                    Spacer()
+                                    Text(check.at, format: .relative(presentation: .named))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if !check.summary.isEmpty {
+                                    Text(check.summary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .navigationTitle(goal == nil ? "Nouvel objectif" : "Modifier")
@@ -268,8 +319,23 @@ private struct GoalEditor: View {
                 detail = goal.detail
                 cadence = goal.cadence
             }
+            .task {
+                guard let goal, !store.emergencyActive, let api = store.settings.api else { return }
+                checks = (try? await api.goalChecks(id: goal.id)) ?? []
+            }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+extension GoalEditor {
+    static func decisionLabel(_ decision: String) -> String {
+        switch decision {
+        case "notify": "Idée proposée"
+        case "later": "Gardé pour plus tard"
+        case "nothing": "Rien de nouveau"
+        default: "Échec"
+        }
     }
 }
 

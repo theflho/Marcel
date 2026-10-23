@@ -2,8 +2,8 @@
 
 Marcel only proposes a goal (spotted in a conversation); it is followed once the user accepts.
 A goal the user turned down is kept as "dismissed", so the same idea isn't proposed again.
-Active goals are sent with every mission. The cadence is when Marcel should check on a goal
-by itself (scheduled checks come later; for now it is stored and editable).
+Active goals are sent with every mission. The cadence is when Marcel checks on a goal by
+itself (see proactive.py); `last_run_at` is the last of those checks.
 """
 
 import secrets
@@ -112,6 +112,11 @@ class GoalStore:
         goal.updated_at = time.time()
         self._store(goal)
         return goal
+
+    def mark_run(self, goal_id: str, at: float) -> None:
+        """Records a check without touching `updated_at`, so the list keeps its order."""
+        self._db.execute("UPDATE goals SET last_run_at = ? WHERE id = ?", (at, goal_id))
+        self._db.commit()
 
     def delete(self, goal_id: str) -> None:
         self._db.execute("DELETE FROM goals WHERE id = ?", (goal_id,))

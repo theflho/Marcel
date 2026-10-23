@@ -35,6 +35,8 @@ final class ChatStore {
     private(set) var models: [ModelOption] = []
     /// Goals Marcel spotted in the current conversation, waiting for the user to accept or decline.
     private(set) var goalProposals: [Goal] = []
+    /// Ideas Marcel found on its own that the user hasn't looked at yet (badge in the header).
+    private(set) var unseenIdeas = 0
     private var modelChoice: [String: String] {
         didSet { UserDefaults.standard.set(modelChoice, forKey: Self.modelChoiceKey) }
     }
@@ -225,6 +227,7 @@ final class ChatStore {
         switch health?.status {
         case 200:
             serverStatus = .reachable
+            unseenIdeas = health?.unseenIdeas ?? 0
             if health?.emergency == true {
                 // Stopped from elsewhere (another device, curl): honour it here too.
                 applyEmergencyLocally()
@@ -243,6 +246,7 @@ final class ChatStore {
         settings.activeID = profile.id
         models = []
         goalProposals = []
+        unseenIdeas = 0
         serverStatus = .checking
         Task { await checkServer() }
     }
@@ -294,6 +298,39 @@ final class ChatStore {
         }
     }
 
+    // MARK: - Ideas
+
+    func markIdeasSeen() async {
+        guard !emergencyActive, let api = settings.api else { return }
+        if (try? await api.markIdeasSeen()) != nil { unseenIdeas = 0 }
+    }
+
+    /// Opens the conversation an idea became, or starts one with Marcel's message.
+    /// A prepared action is only put in the composer: nothing happens until the user sends it.
+    func open(_ idea: Idea) async {
+        if let id = UUID(uuidString: idea.conversationID), conversations.contains(where: { $0.id == id }) {
+            select(id)
+            return
+        }
+        var text = "**\(idea.title)**\n\n\(idea.body)"
+        if !idea.action.isEmpty {
+            text += "\n\n> Action préparée : \(idea.action)\n> Rien n'est fait sans ton accord : envoie « Vas-y » pour la lancer."
+        }
+        let fresh = Conversation(title: String(idea.title.prefix(60)),
+                                 messages: [ChatMessage(role: .assistant, content: text, serverID: settings.activeID)])
+        dropCurrentIfEmpty()
+        conversations.append(fresh)
+        currentID = fresh.id
+        lastError = nil
+        goalProposals = []
+        persist(fresh.id)
+        if !idea.action.isEmpty && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft = "Vas-y : \(idea.action)"
+        }
+        guard !emergencyActive, let api = settings.api else { return }
+        _ = try? await api.updateIdea(id: idea.id, status: "opened", conversationID: fresh.id)
+    }
+
     // MARK: - Emergency stop
 
     /// Cuts everything: local streams, and every mission on the servers that may be working for us.
@@ -331,6 +368,7 @@ final class ChatStore {
     private func applyEmergencyLocally() {
         emergencyActive = true
         goalProposals = []
+        unseenIdeas = 0
         for task in streamTasks.values { task.cancel() }
         streamTasks = [:]
         for conversation in conversations {

@@ -26,7 +26,9 @@ from pydantic import BaseModel, Field
 
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
-from .missions import MissionStore, valid_id
+from .missions import DONE, MissionStore, valid_id
+from .proactive import (DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours, is_due,
+                        parse_hours)
 
 MARCEL_TOKEN = os.environ.get("MARCEL_TOKEN", "")
 HERMES_URL = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/")
@@ -110,26 +112,34 @@ MEMORY_TIDY_HOUR = int(os.environ.get("MARCEL_MEMORY_TIDY_HOUR") or 3)
 MEMORY_LLM_URL = (os.environ.get("MARCEL_MEMORY_LLM_URL") or HERMES_URL).rstrip("/")
 MEMORY_LLM_KEY = (os.environ.get("MARCEL_MEMORY_LLM_KEY") or HERMES_API_KEY)
 MEMORY_LLM_MODEL = (os.environ.get("MARCEL_MEMORY_LLM_MODEL") or HERMES_MODEL)
+# Proactive checks: how often the scheduler looks for due goals, during which hours, and the
+# default cost ceiling (checks per day, editable in the app).
+PROACTIVE_TICK = int(os.environ.get("MARCEL_PROACTIVE_TICK_SECONDS") or 900)
+PROACTIVE_HOURS = parse_hours(os.environ.get("MARCEL_PROACTIVE_HOURS") or "8-21")
+PROACTIVE_MAX_CHECKS = int(os.environ.get("MARCEL_PROACTIVE_MAX_CHECKS") or 6)
 
 log = logging.getLogger("marcel")
 missions = MissionStore(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
+ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
 # Background jobs (memory extraction) are kept here so they aren't garbage-collected mid-way.
 background: set[asyncio.Task] = set()
 
 
-def spawn(coro) -> None:
+def spawn(coro) -> asyncio.Task:
     task = asyncio.create_task(coro)
     background.add(task)
     task.add_done_callback(background.discard)
+    return task
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    tidy_task = asyncio.create_task(nightly_tidy())
+    jobs = [asyncio.create_task(nightly_tidy()), asyncio.create_task(proactive_loop())]
     yield
-    tidy_task.cancel()
+    for job in jobs:
+        job.cancel()
     await missions.shutdown()
 
 
@@ -162,7 +172,7 @@ def sse(payload: dict) -> str:
 
 @app.get("/health", dependencies=[Depends(require_token)])
 async def health() -> dict:
-    return {"status": "ok", "mock": MOCK, "emergency": missions.emergency}
+    return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen()}
 
 
 @app.get("/v1/models", dependencies=[Depends(require_token)])
@@ -744,6 +754,25 @@ def find_goal(goal_id: str):
     return goal
 
 
+@app.get("/v1/goals/{goal_id}/checks", dependencies=[Depends(require_token)])
+async def goal_checks(goal_id: str) -> list[dict]:
+    """The last checks of a goal and what Marcel decided each time."""
+    find_goal(goal_id)
+    return ideas.checks(goal_id)
+
+
+@app.post("/v1/goals/{goal_id}/check", dependencies=[Depends(require_token)])
+async def check_goal(goal_id: str) -> dict:
+    """Checks a goal now, whatever its cadence (it still counts toward the daily ceiling)."""
+    goal = find_goal(goal_id)
+    if goal.status != ACTIVE:
+        raise HTTPException(409, "Seul un objectif suivi peut être vérifié.")
+    if refusal := check_refusal(goal):
+        raise HTTPException(*refusal)
+    mission, _ = await run_check(goal)
+    return mission.public()
+
+
 @app.get("/v1/goals", dependencies=[Depends(require_token)])
 async def list_goals(status: Literal["proposed", "active", "paused", "done", "dismissed"] | None = None,
                      conversation_id: str | None = None) -> list[dict]:
@@ -767,3 +796,243 @@ async def delete_goal(goal_id: str) -> dict:
     goal = find_goal(goal_id)
     goals.delete(goal_id)
     return goal.public()
+
+
+# MARK: Proactive Marcel
+
+# Goals being checked right now, so the same goal never runs twice at once.
+checking: set[str] = set()
+
+CHECK_PROMPT = """Vérification automatique d'un objectif que l'utilisateur t'a demandé de suivre :
+« {title} »{detail}
+{notes}
+Regarde où ça en est maintenant (nouveautés, prix, disponibilités, dates, étapes suivantes) avec
+les outils dont tu disposes, puis écris un compte rendu court et factuel, avec tes sources.
+Tu peux PRÉPARER une action utile (brouillon de message, panier, réservation à confirmer), mais
+n'effectue aucune action réelle : n'envoie rien, ne réserve rien, n'achète rien, ne publie rien,
+ne modifie aucun compte. Toute action attendra la validation de l'utilisateur dans l'app."""
+
+FILTER_PROMPT = """Tu es le filtre de Marcel, l'assistant personnel de l'utilisateur. Une vérification
+automatique d'un de ses objectifs vient de se terminer. Décide s'il faut le prévenir :
+- "notify" : il y a du nouveau qui mérite vraiment un message maintenant (occasion qui ne durera
+  pas, changement important, échéance proche, décision à prendre) ;
+- "later" : utile à garder en tête, mais pas encore assez pour le déranger ;
+- "nothing" : rien de nouveau par rapport à ce qu'on savait déjà.
+Ne le dérange pas pour rien : en cas de doute, choisis "later". Ne reprends pas une idée qu'il a
+déjà refusée. "message" s'adresse à lui (tutoiement, 3 phrases maximum, l'essentiel et pourquoi
+c'est utile maintenant). "action" décrit en une phrase l'action que Marcel a préparée et qui
+attend son accord (« Commander le Mac mini M4 à 599 € chez … »), sinon "". "note" résume en une
+phrase ce qu'on sait maintenant, pour la prochaine vérification. Importance de 1 à 5.
+Réponds uniquement en JSON :
+{"decision": "notify", "title": "...", "message": "...", "action": "", "importance": 3, "note": "..."}"""
+
+
+def check_refusal(goal, scheduled: bool = False) -> tuple[int, str] | None:
+    """Why a check can't start now, as (HTTP status, message), or None."""
+    if missions.emergency:
+        return 423, "Arrêt d'urgence actif : aucune vérification ne part."
+    if goal.id in checking:
+        return 409, "Une vérification de cet objectif est déjà en cours."
+    # Checks still running count too: they are recorded only once finished.
+    if ideas.checks_today() + len(checking) >= ideas.settings()["max_checks_per_day"]:
+        return 429, "Plafond de vérifications du jour atteint."
+    # Scheduled checks leave a slot free for the user's own missions.
+    if missions.running_count() >= missions.max_running - (1 if scheduled else 0):
+        return 429, "Trop de missions en cours, réessaie dans un instant."
+    return None
+
+
+async def run_check(goal):
+    """Starts a check mission on the goal; returns it with the task that filters its result."""
+    checking.add(goal.id)
+    goals.mark_run(goal.id, time.time())
+    notes = ideas.kept_notes(goal.id)
+    prompt = CHECK_PROMPT.format(
+        title=goal.title, detail=f"\nDétails : {goal.detail}" if goal.detail else "",
+        notes=("\nCe que les vérifications précédentes avaient noté :\n" + "\n".join(f"- {n}" for n in notes) + "\n")
+        if notes else "")
+    request = ChatRequest(conversation_id=f"goal-{goal.id}", messages=[Message(role="user", content=prompt)])
+    note, _ = memory.context(goal.title + " " + goal.detail)
+    model = (await available_models())[0]["id"]
+    source = (lambda: mock_check_stream(goal)) if MOCK else (lambda: hermes_stream(request, model, note))
+    try:
+        mission = missions.start(request.conversation_id, source, model=model, title=f"Vérification : {goal.title}")
+    except Exception:
+        checking.discard(goal.id)
+        raise
+    return mission, spawn(finish_check(goal, mission))
+
+
+async def finish_check(goal, mission) -> None:
+    """Once the check is over, lets the model decide whether it is worth an idea."""
+    try:
+        await asyncio.gather(mission.task, return_exceptions=True)
+        if mission.status != DONE or missions.emergency:
+            ideas.record_check(goal.id, mission.id, FAILED, mission.error or mission.status)
+            return
+        try:
+            verdict = mock_verdict(goal) if MOCK else await llm_json(FILTER_PROMPT, filter_input(goal, mission.text))
+        except Exception:
+            log.exception("proactive filter failed for goal %s", goal.id)
+            ideas.record_check(goal.id, mission.id, FAILED, "le filtre n'a pas répondu")
+            return
+        decision, reason = settle(goal, verdict)
+        note = str(verdict.get("note") or "").strip()
+        if decision == NOTIFY:
+            idea = ideas.add(goal.id, goal.title, str(verdict.get("title") or goal.title),
+                             str(verdict.get("message") or ""), str(verdict.get("action") or ""),
+                             importance(verdict), mission.id)
+            log.info("proactive idea %s for goal %s", idea.id, goal.id)
+        ideas.record_check(goal.id, mission.id, decision, " — ".join(filter(None, [note, reason])))
+    finally:
+        checking.discard(goal.id)
+
+
+def filter_input(goal, report: str) -> str:
+    notes = ideas.kept_notes(goal.id)
+    refused = ideas.dismissed_titles(goal.id)
+    return (f"Objectif : {goal.title}" + (f" ({goal.detail})" if goal.detail else "")
+            + "\n\nCe qu'on savait déjà :\n" + ("\n".join(f"- {n}" for n in notes) or "(rien)")
+            + "\n\nIdées déjà refusées par l'utilisateur :\n" + ("\n".join(f"- {t}" for t in refused) or "(aucune)")
+            + f"\n\nCompte rendu de la vérification :\n{report[:6000]}")
+
+
+def importance(verdict: dict) -> int:
+    try:
+        return int(verdict.get("importance") or 3)
+    except (TypeError, ValueError):
+        return 3
+
+
+def settle(goal, verdict: dict) -> tuple[str, str]:
+    """The model's decision, held back by the proactivity level, the daily limit and duplicates."""
+    decision = str(verdict.get("decision") or NOTHING)
+    if decision not in (NOTIFY, LATER, NOTHING):
+        decision = LATER
+    if decision != NOTIFY:
+        return decision, ""
+    if ideas.settings()["level"] == "off":
+        return LATER, "proactivité désactivée"
+    if importance(verdict) < ideas.min_importance():
+        return LATER, "pas assez important en mode discret"
+    if ideas.daily_limit() <= ideas.ideas_today():
+        return LATER, "limite d'idées du jour atteinte"
+    if ideas.find_similar(goal.id, str(verdict.get("title") or ""), since=time.time() - 7 * DAY):
+        return LATER, "idée déjà proposée ou refusée"
+    return NOTIFY, ""
+
+
+async def run_due_checks() -> int:
+    """One pass of the scheduler: checks the due goals one after the other. Returns how many ran."""
+    if missions.emergency or ideas.settings()["level"] == "off" or not in_hours(PROACTIVE_HOURS, time.time()):
+        return 0
+    ran = 0
+    now = time.time()
+    due = [g for g in goals.list(ACTIVE) if is_due(g.cadence, g.last_run_at, now)]
+    for goal in sorted(due, key=lambda g: g.last_run_at or 0):
+        if refusal := check_refusal(goal, scheduled=True):
+            if refusal[0] != 409:
+                break
+            continue
+        _, finished = await run_check(goal)
+        await finished
+        ran += 1
+    return ran
+
+
+async def proactive_loop() -> None:
+    while True:
+        await asyncio.sleep(PROACTIVE_TICK)
+        try:
+            if ran := await run_due_checks():
+                log.info("proactive: %d goal check(s)", ran)
+        except Exception:
+            log.exception("proactive checks failed")
+
+
+async def mock_check_stream(goal) -> AsyncIterator[str | dict]:
+    """Stand-in for a check through Hermes."""
+    for index, (name, detail) in enumerate([("Recherche", goal.title), ("Comparaison", "3 sources")], start=1):
+        yield {"id": f"check-{index}", "name": name, "detail": detail, "status": "running"}
+        await asyncio.sleep(1)
+        yield {"id": f"check-{index}", "status": "done"}
+    yield f"Compte rendu pour « {goal.title} » : deux nouveautés repérées, sources de test."
+
+
+def mock_verdict(goal) -> dict:
+    """Without a model: the checks of a goal give in turn notify, later, nothing."""
+    decision = (NOTIFY, LATER, NOTHING)[len(ideas.checks(goal.id, limit=100)) % 3]
+    buying = goal.title.lower().startswith("trouver")
+    return {"decision": decision, "title": f"Du nouveau pour « {goal.title} »", "importance": 4,
+            "message": f"J'ai vérifié « {goal.title} » : une occasion intéressante vient d'apparaître (réponse de test).",
+            "action": "Préparer la commande, à valider dans l'app" if buying else "",
+            "note": f"Vérification de test n° {len(ideas.checks(goal.id, limit=100)) + 1}."}
+
+
+class ProactiveUpdate(BaseModel):
+    level: Literal["off", "quiet", "normal"] | None = None
+    daily_limit: int | None = Field(default=None, ge=0, le=10)
+    max_checks_per_day: int | None = Field(default=None, ge=0, le=50)
+
+
+class IdeaUpdate(BaseModel):
+    status: Literal["seen", "opened", "dismissed"]
+    conversation_id: str | None = Field(default=None, max_length=64)
+
+
+def proactive_state() -> dict:
+    return ideas.settings() | {
+        "checks_today": ideas.checks_today(), "ideas_today": ideas.ideas_today(),
+        "ideas_allowed_today": ideas.daily_limit(), "unseen": ideas.unseen(),
+        "hours": list(PROACTIVE_HOURS),
+    }
+
+
+@app.get("/v1/proactive", dependencies=[Depends(require_token)])
+async def get_proactive() -> dict:
+    return proactive_state()
+
+
+@app.patch("/v1/proactive", dependencies=[Depends(require_token)])
+async def update_proactive(body: ProactiveUpdate) -> dict:
+    ideas.update_settings(**body.model_dump(exclude_none=True))
+    return proactive_state()
+
+
+def find_idea(idea_id: str):
+    if not re.fullmatch(r"[0-9a-f]{12}", idea_id) or not (idea := ideas.get(idea_id)):
+        raise HTTPException(404, "Idée introuvable")
+    return idea
+
+
+@app.get("/v1/ideas", dependencies=[Depends(require_token)])
+async def list_ideas(status: Literal["new", "seen", "opened", "dismissed"] | None = None,
+                     goal_id: str | None = None) -> list[dict]:
+    """Every idea except the dismissed ones, or those with `status`."""
+    return [i.public() for i in ideas.list(status, goal_id)]
+
+
+@app.post("/v1/ideas/seen", dependencies=[Depends(require_token)])
+async def ideas_seen() -> dict:
+    """The user saw the list: the badge goes away, the ideas stay."""
+    return {"seen": ideas.mark_seen()}
+
+
+@app.patch("/v1/ideas/{idea_id}", dependencies=[Depends(require_token)])
+async def update_idea(idea_id: str, body: IdeaUpdate) -> dict:
+    idea = find_idea(idea_id)
+    changes: dict = {"status": body.status}
+    if body.status == OPENED and body.conversation_id:
+        changes["conversation_id"] = body.conversation_id
+    if body.status == DISMISSED and idea.status != DISMISSED:
+        # Remembered, so Marcel stops bringing up this kind of thing.
+        memory.add(f"L'utilisateur n'est pas intéressé par : {idea.title} (objectif « {idea.goal_title} »)",
+                   importance=2, source="idees", reason="idée refusée")
+    return ideas.update(idea_id, **changes).public()
+
+
+@app.delete("/v1/ideas/{idea_id}", dependencies=[Depends(require_token)])
+async def delete_idea(idea_id: str) -> dict:
+    idea = find_idea(idea_id)
+    ideas.delete(idea_id)
+    return idea.public()
