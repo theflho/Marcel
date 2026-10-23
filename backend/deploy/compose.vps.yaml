@@ -27,7 +27,9 @@ services:
     restart: unless-stopped
 
   hermes-checks:
-    image: nousresearch/hermes-agent:latest
+    # Pinned (HERMES_IMAGE in .env, e.g. nousresearch/hermes-agent@sha256:…), same as the main
+    # Hermes: no silent update on restart. Updating is a deliberate change of that line.
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
     container_name: hermes-checks
     command: gateway run
     volumes:

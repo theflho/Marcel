@@ -150,6 +150,19 @@ plus forte à la plus faible :
    `manual`, `approvals.unattended_mode: deny` pour les sessions sans humain, et une liste
    `approvals.deny` ; un `terminal.backend: docker` isolerait ses commandes du VPS.
 6. **Arrêt d'urgence** si quelque chose dérape.
+7. **Mémoire protégée** : après une réponse qui s'appuie sur des e-mails ou un fichier joint, la
+   mémoire n'apprend que du message de l'utilisateur, pour qu'un texte externe n'y plante pas
+   de faux « faits » durables.
+
+Autres précautions :
+- **Sauvegardes** : `deploy/backup.sh` (base de Marcel par l'API de sauvegarde SQLite, pièces
+  jointes, accès Gmail, compteur llm-guard, réglages, `~/.hermes-checks`), chiffrées avec `age`
+  pour `~/.age-recipient`, 14 gardées dans `~/backups` ; cron conseillé à 3 h 30. Restaurer :
+  `age -d -i ~/hermes-backup.key <fichier> | tar -xz`. Penser à copier `~/backups` hors du VPS.
+- **Version de Hermes épinglée** (`HERMES_IMAGE` dans `.env`, empreinte `@sha256:` de l'image en
+  service), aussi dans `~/assistant/compose.yaml` : pas de mise à jour silencieuse.
+- **iPhone perdu** : retirer l'appareil dans la console Tailscale, puis changer `MARCEL_TOKEN`.
+- **Telegram** : `TELEGRAM_ALLOWED_USERS` dans `~/.hermes/.env` (seul l'utilisateur parle à Hermes).
 
 ## Tester en local (simulateur)
 

@@ -427,7 +427,10 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
             raise MissionError(BUDGET_ERROR) from error
         raise
     # Only reached when the mission completed: a stopped reply teaches nothing.
-    spawn(remember(request, "".join(reply)))
+    # A reply built on outside content (e-mails, attached files) could repeat what a stranger
+    # wrote: only the user's own message is learnt from, so it can't plant lasting "facts".
+    outside = any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
+    spawn(remember(request, "" if outside else "".join(reply)))
 
 
 @app.get("/v1/missions", dependencies=[Depends(require_token)])
