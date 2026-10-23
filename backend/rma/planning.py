@@ -61,25 +61,38 @@ ACCEPT = re.compile(r"accept|j.accepte|valider|^ok$|continuer|j.ai lu|compris|co
 
 async def accept_terms_window(page) -> None:
     """The terms window the portal may show at sign-in ("Instructions et engagements…"):
-    scroll it to the end (some accept buttons wait for that), then press its accept control."""
+    scroll it to the end (some accept controls wait for that), tick its box if it has one,
+    then press its accept button."""
     title = page.get_by_text(re.compile(r"Instructions et engagements", re.IGNORECASE)).first
     if not await title.count() or not await title.is_visible():
         return
-    # The window is the nearest ancestor of the title that holds a clickable control.
-    window = title.locator("xpath=ancestor::*[.//button or .//a or .//*[@role='button']][1]")
+    window = page.locator("mat-dialog-container, [role=dialog], .cdk-overlay-pane").filter(
+        has_text=re.compile(r"Instructions et engagements", re.IGNORECASE)).last
+    if not await window.count():
+        window = page.locator("body")
     await window.evaluate("w => w.querySelectorAll('*').forEach(e => {"
                           " if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight; })")
     await page.wait_for_timeout(1_000)
-    controls = window.locator("button, a, [role=button], .mat-button, .mat-raised-button")
-    names = [" ".join((await controls.nth(i).inner_text()).split()) for i in range(await controls.count())]
+    boxes = window.get_by_role("checkbox")
+    for index in range(await boxes.count()):
+        if not await boxes.nth(index).is_checked():
+            await boxes.nth(index).check(force=True)
+    await page.wait_for_timeout(500)
+    controls = window.locator("button, a, [role=button], .mat-button, .mat-raised-button, .mat-flat-button")
+    names = []
+    for index in range(await controls.count()):
+        control = controls.nth(index)
+        names.append(" ".join(((await control.inner_text()) or (await control.get_attribute("aria-label")) or "").split()))
     print(f"Fenêtre des CGU, boutons : {names}")
     for index, name in enumerate(names):
         if ACCEPT.search(name):
             await controls.nth(index).click(force=True)
             await page.wait_for_timeout(1_500)
             return
-    end = " ".join((await window.inner_text()).split())[-400:]
-    raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}. Fin du texte : « {end} »")
+    html = await window.evaluate("w => w.outerHTML")
+    print("--- Fin du code de la fenêtre des CGU ---")
+    print(re.sub(r"\s+", " ", html)[-2500:])
+    raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}.")
 
 
 async def sign_in(page, password) -> None:
