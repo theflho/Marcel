@@ -50,6 +50,13 @@ struct ChatView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
+        .onChange(of: store.settingsRequest) { _, route in
+            // An error or the token gauge asks for a precise settings screen.
+            guard route != nil else { return }
+            composerFocused = false
+            closeSidebar()
+            showSettings = true
+        }
         .sheet(isPresented: $showMissions) {
             MissionsView()
         }
@@ -79,6 +86,9 @@ struct ChatView: View {
                         EmergencyBanner()
                     } else {
                         ServerStatusBanner(status: store.serverStatus)
+                        if let usage = store.tokenUsage, usage.fraction >= 0.8 {
+                            TokenBanner(usage: usage)
+                        }
                     }
                 }
                 .background {
@@ -218,10 +228,7 @@ struct ChatView: View {
                             .id(message.id)
                     }
                     if let error = store.lastError {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal)
+                        ErrorNotice(message: error, action: store.lastErrorAction)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -315,24 +322,94 @@ private struct EmergencyBanner: View {
     }
 }
 
+/// The last error under the conversation, with the way out when there is one.
+private struct ErrorNotice: View {
+    @Environment(ChatStore.self) private var store
+    let message: String
+    let action: ErrorAction?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.footnote)
+                .foregroundStyle(.red)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let action {
+                Button(action.label) { store.perform(action) }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal)
+    }
+}
+
+/// Server problems, each with the fix one tap away.
 private struct ServerStatusBanner: View {
+    @Environment(ChatStore.self) private var store
     let status: ServerStatus
 
     var body: some View {
         if status == .unreachable || status == .unauthorized {
-            Label(status == .unauthorized
-                  ? "Jeton refusé — vérifie-le dans les réglages."
-                  : "Serveur inaccessible — vérifie Tailscale. Conversations en cache consultables.",
-                  systemImage: status == .unauthorized ? "key.slash" : "wifi.exclamationmark")
+            Button {
+                if status == .unauthorized {
+                    store.openSettings(.server(store.settings.activeID))
+                } else {
+                    Task { await store.checkServer() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Label(status == .unauthorized
+                          ? "Jeton refusé par le serveur."
+                          : "Serveur inaccessible : vérifie Tailscale. Les conversations restent consultables.",
+                          systemImage: status == .unauthorized ? "key.slash" : "wifi.exclamationmark")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(status == .unauthorized ? "Corriger" : "Réessayer")
+                        .fontWeight(.semibold)
+                }
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(.orange)
                 .padding(.vertical, 8)
                 .padding(.horizontal, 14)
                 .background(.orange.opacity(0.14), in: .rect(cornerRadius: 14))
-                .padding(.horizontal)
-                .padding(.bottom, 6)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+            .padding(.bottom, 6)
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
+    }
+}
+
+/// Shown once most of the day's token budget is spent.
+private struct TokenBanner: View {
+    @Environment(ChatStore.self) private var store
+    let usage: TokenUsage
+
+    var body: some View {
+        let spent = usage.fraction >= 1
+        Button {
+            store.openSettings(.proactive)
+        } label: {
+            HStack(spacing: 8) {
+                Label(spent ? "Budget de tokens du jour épuisé : reprise à minuit."
+                            : "\(Int(usage.fraction * 100)) % du budget de tokens du jour utilisé.",
+                      systemImage: "gauge.with.dots.needle.67percent")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Détails").fontWeight(.semibold)
+            }
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(spent ? Color.red : Color.orange)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 14)
+            .background((spent ? Color.red : .orange).opacity(0.14), in: .rect(cornerRadius: 14))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal)
+        .padding(.bottom, 6)
     }
 }
 

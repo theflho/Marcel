@@ -172,14 +172,27 @@ struct SidebarView: View {
     }
 
     private var footer: some View {
-        Button {
-            onOpenSettings()
-        } label: {
-            Label("Réglages", systemImage: "gearshape")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+        HStack(spacing: 0) {
+            Button {
+                onOpenSettings()
+            } label: {
+                Label("Réglages", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .tint(.primary)
+            if let usage = store.tokenUsage {
+                Button {
+                    store.openSettings(.proactive)
+                } label: {
+                    TokenGauge(usage: usage)
+                        .padding(.horizontal)
+                        .padding(.vertical, 10)
+                }
+                .tint(.primary)
+                .accessibilityLabel("Tokens du jour : \(usage.today) sur \(usage.budget)")
+            }
         }
-        .tint(.primary)
         .background(.bar)
     }
 
@@ -254,6 +267,23 @@ struct SidebarView: View {
         conversation.messages
             .map { "\($0.role == .user ? "Moi" : "Marcel") : \($0.content)" }
             .joined(separator: "\n\n")
+    }
+}
+
+/// Today's tokens against the daily budget, always in sight.
+private struct TokenGauge: View {
+    let usage: TokenUsage
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(usage.summary)
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+            ProgressView(value: usage.fraction)
+                .tint(usage.fraction >= 1 ? .red : usage.fraction >= 0.8 ? .orange : .accentColor)
+                .frame(width: 72)
+        }
+        .foregroundStyle(.secondary)
     }
 }
 

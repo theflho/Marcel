@@ -11,6 +11,7 @@ struct GoalsView: View {
     @State private var adding = false
     @State private var actionError: String?
     @State private var notice: String?
+    @State private var showProactive = false
 
     var body: some View {
         Group {
@@ -48,9 +49,18 @@ struct GoalsView: View {
             }
         }
         .alert("Échec", isPresented: .constant(actionError != nil)) {
-            Button("OK") { actionError = nil }
+            if actionError?.contains("Plafond") == true {
+                Button("Modifier le plafond") {
+                    actionError = nil
+                    showProactive = true
+                }
+            }
+            Button("OK", role: .cancel) { actionError = nil }
         } message: {
             Text(actionError ?? "")
+        }
+        .navigationDestination(isPresented: $showProactive) {
+            ProactiveSettingsView()
         }
         .alert("Vérification lancée", isPresented: .constant(notice != nil)) {
             Button("OK") { notice = nil }

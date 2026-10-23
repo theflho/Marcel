@@ -5,6 +5,25 @@ enum ServerStatus: Equatable {
     case unknown, checking, reachable, unauthorized, unreachable
 }
 
+/// A place in Settings the app can open directly, e.g. from an error about it.
+enum SettingsRoute: Hashable {
+    case server(UUID)
+    case proactive
+}
+
+/// What the user can do about the last error, shown as a button next to it.
+enum ErrorAction: Equatable {
+    case openSettings(SettingsRoute, label: String)
+    case retry
+
+    var label: String {
+        switch self {
+        case .openSettings(_, let label): label
+        case .retry: "Réessayer"
+        }
+    }
+}
+
 @Observable
 final class ChatStore {
     private static let draftKey = "draft"
@@ -20,7 +39,14 @@ final class ChatStore {
     private(set) var projects: [Project]
     private(set) var currentID: UUID
     private(set) var serverStatus: ServerStatus = .unknown
-    private(set) var lastError: String?
+    private(set) var lastError: String? {
+        didSet { lastErrorAction = nil }
+    }
+    private(set) var lastErrorAction: ErrorAction?
+    /// Today's token usage on the active server, refreshed with each health check and after replies.
+    private(set) var tokenUsage: TokenUsage?
+    /// Set to open Settings at a given place; SettingsView takes it when it appears.
+    var settingsRequest: SettingsRoute?
 
     var draft: String {
         didSet { UserDefaults.standard.set(draft, forKey: Self.draftKey) }
@@ -228,6 +254,7 @@ final class ChatStore {
         case 200:
             serverStatus = .reachable
             unseenIdeas = health?.unseenIdeas ?? 0
+            tokenUsage = health?.tokens
             if health?.emergency == true {
                 // Stopped from elsewhere (another device, curl): honour it here too.
                 applyEmergencyLocally()
@@ -247,6 +274,7 @@ final class ChatStore {
         models = []
         goalProposals = []
         unseenIdeas = 0
+        tokenUsage = nil
         serverStatus = .checking
         Task { await checkServer() }
     }
@@ -296,6 +324,54 @@ final class ChatStore {
                 if !goalProposals.isEmpty { return }
             }
         }
+    }
+
+    // MARK: - Errors and settings
+
+    func openSettings(_ route: SettingsRoute) {
+        settingsRequest = route
+    }
+
+    func perform(_ action: ErrorAction) {
+        lastError = nil
+        switch action {
+        case .openSettings(let route, _):
+            openSettings(route)
+        case .retry:
+            if canRegenerate, conversation.messages.last?.status == .failed {
+                regenerate()
+            } else {
+                Task { await checkServer() }
+            }
+        }
+    }
+
+    private func report(_ message: String, action: ErrorAction?) {
+        lastError = message
+        lastErrorAction = action
+    }
+
+    /// The way out of an error: the right settings screen, or trying again.
+    private func action(for error: Error) -> ErrorAction? {
+        switch error {
+        case MarcelAPIError.unauthorized:
+            .openSettings(.server(settings.activeID), label: "Vérifier le jeton")
+        case MarcelAPIError.notConfigured:
+            .openSettings(.server(settings.activeID), label: "Régler le serveur")
+        case MarcelAPIError.http(429, let body) where body.contains("Budget"):
+            .openSettings(.proactive, label: "Voir la consommation")
+        case is URLError:
+            .retry
+        default:
+            nil
+        }
+    }
+
+    /// Asks the server for the badge and token counters again, without the rest of a health check.
+    func refreshCounters() async {
+        guard !emergencyActive, let api = settings.api, let health = await api.health(), health.status == 200 else { return }
+        unseenIdeas = health.unseenIdeas
+        tokenUsage = health.tokens
     }
 
     // MARK: - Ideas
@@ -405,7 +481,7 @@ final class ChatStore {
         let attachments = pendingAttachments
         guard canSend else { return }
         guard let api = settings.api else {
-            lastError = MarcelAPIError.notConfigured.localizedDescription
+            report(MarcelAPIError.notConfigured.localizedDescription, action: action(for: MarcelAPIError.notConfigured))
             return
         }
 
@@ -442,7 +518,8 @@ final class ChatStore {
                 if Task.isCancelled {
                     self.finish(reply.id, in: id, .stopped)
                 } else {
-                    self.finish(reply.id, in: id, .failed, error: "Envoi impossible : \(error.localizedDescription)")
+                    self.finish(reply.id, in: id, .failed, error: "Envoi impossible : \(error.localizedDescription)",
+                                action: self.action(for: error))
                     if error is URLError { self.serverStatus = .unreachable }
                 }
                 self.streamTasks[id] = nil
@@ -528,6 +605,17 @@ final class ChatStore {
     /// Streams a mission's text into the reply, reconnecting from where it left off until it ends.
     private func follow(_ replyID: UUID, in conversationID: UUID) async {
         var delay = Duration.seconds(1)
+        // Text arrives a few characters at a time; redrawing (and re-parsing the Markdown of) the
+        // whole reply for each piece is wasted work, so pieces are applied at most every 80 ms.
+        var pending = ""
+        var lastFlush = ContinuousClock.now
+        func flush() {
+            guard !pending.isEmpty else { return }
+            let chunk = pending
+            pending = ""
+            lastFlush = .now
+            updateMessage(replyID, in: conversationID) { $0.content += chunk }
+        }
         while !Task.isCancelled {
             guard let reply = message(replyID, in: conversationID), reply.status == .streaming,
                   let missionID = reply.missionID else { break }
@@ -536,16 +624,27 @@ final class ChatStore {
                 break
             }
             do {
+                // Pending text must be applied before reconnecting: the offset is read from the reply.
+                defer { flush() }
                 let offset = reply.content.unicodeScalars.count
                 for try await event in api.missionEvents(id: missionID, offset: offset) {
                     serverStatus = .reachable
                     delay = .seconds(1)
+                    if case .delta(let text) = event {
+                        pending += text
+                        if ContinuousClock.now - lastFlush >= .milliseconds(80) { flush() }
+                        continue
+                    }
+                    flush()
                     switch event {
                     case .actions(let actions): updateMessage(replyID, in: conversationID) { $0.actions = actions }
-                    case .delta(let text): updateMessage(replyID, in: conversationID) { $0.content += text }
+                    case .delta: break
                     case .done:
                         finish(replyID, in: conversationID, .complete)
-                        if reply.serverID == settings.activeID { refreshGoalProposalsAfterReply() }
+                        if reply.serverID == settings.activeID {
+                            refreshGoalProposalsAfterReply()
+                            Task { await refreshCounters() }
+                        }
                     case .stopped: finish(replyID, in: conversationID, .stopped)
                     case .error(let message): finish(replyID, in: conversationID, .failed, error: message)
                     }
@@ -572,9 +671,16 @@ final class ChatStore {
         persist(conversationID)
     }
 
-    private func finish(_ replyID: UUID, in conversationID: UUID, _ status: ChatMessage.Status, error: String? = nil) {
+    private func finish(_ replyID: UUID, in conversationID: UUID, _ status: ChatMessage.Status, error: String? = nil,
+                        action: ErrorAction? = nil) {
         updateMessage(replyID, in: conversationID) { $0.status = status }
-        if let error, conversationID == currentID { lastError = error }
+        guard let error, conversationID == currentID else { return }
+        if error.hasPrefix("Budget de tokens") {
+            report(error, action: .openSettings(.proactive, label: "Voir la consommation"))
+            Task { await refreshCounters() }
+        } else {
+            report(error, action: action)
+        }
     }
 
     private func api(forServer serverID: UUID?) -> MarcelAPI? {

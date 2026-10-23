@@ -10,8 +10,11 @@ backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/file
 
 ## Protocole
 
-- `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0}` (`ideas` : idées pas encore vues,
-  pour la pastille) ; `401` si le jeton est faux.
+- `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0,"tokens":{"today":0,"budget":2000000}}`
+  (`ideas` : idées pas encore vues, pour la pastille ; `tokens` : consommation du jour lue dans
+  llm-guard, gardée 10 s, `null` sans garde-fou) ; `401` si le jeton est faux. L'app la montre en
+  direct (jauge en bas de la barre latérale, bandeau à partir de 80 %). Une mission qui échoue
+  parce que le budget est épuisé le dit (« Budget de tokens du jour atteint… »).
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
 Une réponse de Marcel est une **mission** qui tourne sur le VPS : elle continue quand l'app est

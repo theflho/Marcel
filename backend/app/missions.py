@@ -31,6 +31,10 @@ HEARTBEAT = 15.0
 RESTART_ERROR = "Le serveur a redémarré pendant la mission."
 EMERGENCY_ERROR = "Arrêt d'urgence : la mission a été coupée."
 
+class MissionError(Exception):
+    """A failure whose message is meant for the user (shown instead of the generic one)."""
+
+
 # A mission source yields text, or an action dict {"id", "name", "detail", "status"}
 # whenever the agent starts or finishes a step (a tool call, a command…).
 Source = Callable[[], AsyncIterator[str | dict]]
@@ -177,10 +181,10 @@ class MissionStore:
                 mission.status = INTERRUPTED
             else:
                 mission.status = STOPPED
-        except Exception:
+        except Exception as error:
             log.exception("mission %s failed", mission.id)
             mission.status = FAILED
-            mission.error = "Hermes n'a pas pu répondre."
+            mission.error = str(error) if isinstance(error, MissionError) else "Hermes n'a pas pu répondre."
         finally:
             # Steps still marked as running didn't finish.
             for action in mission.actions:

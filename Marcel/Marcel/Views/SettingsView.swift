@@ -8,9 +8,10 @@ struct SettingsView: View {
     @State private var confirmingEmergency = false
     @State private var resuming = false
     @AppStorage(Appearance.storageKey) private var appearance = Appearance.system
+    @State private var path: [SettingsRoute] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section {
                     HStack(spacing: 12) {
@@ -191,6 +192,23 @@ struct SettingsView: View {
                 }
             }
             .emergencyConfirmation(isPresented: $confirmingEmergency)
+            .navigationDestination(for: SettingsRoute.self) { route in
+                switch route {
+                case .server(let id):
+                    if let profile = store.settings.profiles.first(where: { $0.id == id }) {
+                        ServerEditView(profile: profile)
+                    }
+                case .proactive:
+                    ProactiveSettingsView()
+                }
+            }
+            .onAppear {
+                // Opened from an error or the token gauge: go straight to the screen concerned.
+                if let route = store.settingsRequest {
+                    path = [route]
+                    store.settingsRequest = nil
+                }
+            }
             .sheet(isPresented: $addingServer) {
                 NavigationStack {
                     ServerEditView(profile: nil)

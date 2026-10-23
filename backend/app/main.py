@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
-from .missions import DONE, MissionStore, valid_id
+from .missions import DONE, MissionError, MissionStore, valid_id
 from .proactive import (DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours, is_due,
                         parse_hours)
 
@@ -180,7 +180,9 @@ def sse(payload: dict) -> str:
 
 @app.get("/health", dependencies=[Depends(require_token)])
 async def health() -> dict:
-    return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen()}
+    spent = await guard_usage()
+    return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen(),
+            "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}}
 
 
 @app.get("/v1/models", dependencies=[Depends(require_token)])
@@ -312,10 +314,16 @@ async def with_memory(request: ChatRequest, inner, facts) -> AsyncIterator[str |
         detail = f"{core} du noyau, {len(facts) - core} des archives : " + " · ".join(f.text for f in facts)
         yield {"id": "memory", "name": "Mémoire", "detail": detail[:300], "status": "done"}
     reply = []
-    async for item in inner():
-        if isinstance(item, str):
-            reply.append(item)
-        yield item
+    try:
+        async for item in inner():
+            if isinstance(item, str):
+                reply.append(item)
+            yield item
+    except Exception as error:
+        # Hermes can't reach the model once the day's token budget is spent: say so.
+        if (spent := await guard_usage(fresh=True)) and spent["tokens"] >= spent["budget"]:
+            raise MissionError(BUDGET_ERROR) from error
+        raise
     # Only reached when the mission completed: a stopped reply teaches nothing.
     spawn(remember(request, "".join(reply)))
 
@@ -934,19 +942,31 @@ def settle(goal, verdict: dict) -> tuple[str, str]:
     return NOTIFY, ""
 
 
-async def guard_usage() -> dict | None:
+BUDGET_ERROR = "Budget de tokens du jour atteint : Marcel reprend à minuit (heure du serveur)."
+# The app asks for health every 30 s on each device: the guard is asked at most this often.
+GUARD_CACHE_SECONDS = 10
+_guard_cache: tuple[float, dict | None] = (0.0, None)
+
+
+async def guard_usage(fresh: bool = False) -> dict | None:
     """Today's token usage from the LLM guard, or None when there is none (or it can't be reached)."""
+    global _guard_cache
     if not GUARD_URL:
         return None
+    fetched_at, cached = _guard_cache
+    if not fresh and time.monotonic() - fetched_at < GUARD_CACHE_SECONDS:
+        return cached
     headers = {"Authorization": f"Bearer {MEMORY_LLM_KEY}"} if MEMORY_LLM_KEY else {}
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
+        async with httpx.AsyncClient(timeout=3) as client:
             resp = await client.get(f"{GUARD_URL}/usage", headers=headers)
             resp.raise_for_status()
-            return resp.json()
+            usage = resp.json()
     except Exception:
         log.warning("could not read the LLM guard's usage")
-        return None
+        usage = None
+    _guard_cache = (time.monotonic(), usage)
+    return usage
 
 
 async def run_due_checks() -> int:

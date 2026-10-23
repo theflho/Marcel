@@ -276,12 +276,25 @@ nonisolated struct MemoryChange: Encodable, Sendable {
     enum CodingKeys: String, CodingKey { case text, tier, importance, pinned }
 }
 
+/// Tokens spent today on the model, across Hermes, checks and memory (`/health`, from the LLM guard).
+nonisolated struct TokenUsage: Decodable, Equatable, Sendable {
+    let today: Int
+    let budget: Int
+
+    var fraction: Double { budget > 0 ? min(Double(today) / Double(budget), 1) : 0 }
+    var summary: String {
+        "\(today.formatted(.number.notation(.compactName))) / \(budget.formatted(.number.notation(.compactName)))"
+    }
+}
+
 nonisolated struct ServerHealth: Sendable {
     let status: Int
     /// The server-side emergency stop is on: it refuses every mission.
     let emergency: Bool
     /// Ideas Marcel found that the user hasn't seen yet.
     let unseenIdeas: Int
+    /// Nil when the server has no LLM guard.
+    let tokens: TokenUsage?
 }
 
 nonisolated enum MarcelAPIError: LocalizedError {
@@ -298,7 +311,8 @@ nonisolated enum MarcelAPIError: LocalizedError {
         case .unauthorized: "Jeton refusé par le serveur."
         case .missionNotFound: "Mission introuvable sur le serveur."
         case .emergency: "Arrêt d'urgence actif : aucune mission ne peut démarrer."
-        case .http(let code, let body): "Erreur HTTP \(code)\(body.isEmpty ? "" : " : \(body)")"
+        // The server's details are written for the user; the code alone means nothing to them.
+        case .http(let code, let body): body.isEmpty ? "Le serveur a répondu par une erreur (\(code))." : body
         case .server(let message): message
         }
     }
@@ -322,7 +336,7 @@ nonisolated struct MarcelAPI: Sendable {
         guard let (data, response) = try? await Self.session.data(for: request) else { return nil }
         let body = try? JSONDecoder().decode(HealthBody.self, from: data)
         return ServerHealth(status: (response as? HTTPURLResponse)?.statusCode ?? 0, emergency: body?.emergency ?? false,
-                            unseenIdeas: body?.ideas ?? 0)
+                            unseenIdeas: body?.ideas ?? 0, tokens: body?.tokens)
     }
 
     func models() async throws -> [ModelOption] {
@@ -615,6 +629,7 @@ private nonisolated struct UndoResult: Decodable {
 private nonisolated struct HealthBody: Decodable {
     let emergency: Bool?
     let ideas: Int?
+    let tokens: TokenUsage?
 }
 
 private nonisolated struct SeenResult: Decodable {

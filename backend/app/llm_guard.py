@@ -17,6 +17,7 @@ import secrets
 import sqlite3
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -97,7 +98,19 @@ class Usage:
 
 
 usage = Usage(DATA_DIR / "guard.db")
-app = FastAPI(title="Marcel LLM guard", docs_url=None, redoc_url=None, openapi_url=None)
+# One client for every request: keep-alive connections to the provider save a TLS handshake
+# (about 100 ms) on each of the many calls an agent makes for a single answer.
+upstream = httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=600, write=60, pool=30),
+                             limits=httpx.Limits(max_connections=50, max_keepalive_connections=20))
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    yield
+    await upstream.aclose()
+
+
+app = FastAPI(title="Marcel LLM guard", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 def caller(authorization: str) -> str:
@@ -162,13 +175,11 @@ async def proxy(path: str, request: Request, authorization: str = Header(default
     if request.method == "POST":
         usage.add(client, requests=1)
 
-    upstream = httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=600, write=60, pool=10))
     upstream_request = upstream.build_request(request.method, f"{UPSTREAM_URL}/{path}", content=body or None,
                                               headers=headers, params=request.query_params)
     try:
         resp = await upstream.send(upstream_request, stream=True)
     except httpx.HTTPError:
-        await upstream.aclose()
         log.exception("upstream unreachable")
         return JSONResponse({"error": {"message": "Fournisseur du modèle injoignable."}}, status_code=502)
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in HOP_HEADERS}
@@ -185,7 +196,6 @@ async def proxy(path: str, request: Request, authorization: str = Header(default
                     yield (line + "\n").encode()
             finally:
                 await resp.aclose()
-                await upstream.aclose()
 
         return StreamingResponse(relay(), status_code=resp.status_code, headers=out_headers,
                                  media_type="text/event-stream")
@@ -194,7 +204,6 @@ async def proxy(path: str, request: Request, authorization: str = Header(default
         content = await resp.aread()
     finally:
         await resp.aclose()
-        await upstream.aclose()
     if resp.headers.get("content-type", "").startswith("application/json"):
         try:
             count(client, json.loads(content))
