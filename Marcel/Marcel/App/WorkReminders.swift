@@ -3,10 +3,35 @@ import UserNotifications
 
 /// Reminders 5 minutes before each start and end of a work mission (RMA planning read on the
 /// server). The iPhone schedules them itself, so they arrive on time even with the app closed.
-/// They only remind: a tap opens the portal, and clocking in stays the user's own act, on site.
+/// They only remind: a tap opens the portal, or (button) Messages with the reply RMA asks for
+/// already typed ("RMA OK", "RMA fin" to 38200). Clocking in stays the user's own act, on site:
+/// iOS never sends a text message without the user pressing Send.
 enum WorkReminders {
     static let enabledKey = "workReminders"
     static let portalURL = "https://ecollaborateurs.rmasa.com/#/accueil/missions"
+    /// RMA's clock-in by text message: reply "RMA OK" when starting, "RMA fin" when leaving.
+    static let smsNumber = "38200"
+    static let startCategory = "rma-start"
+    static let endCategory = "rma-end"
+    // Read by the notification delegate, outside the main actor.
+    nonisolated static let smsAction = "sms"
+    static let portalAction = "portal"
+
+    /// The reminders' buttons; registered once, at launch.
+    static func registerActions() {
+        let sms = UNNotificationAction(identifier: smsAction, title: "Pointer par SMS", options: [.foreground])
+        let portal = UNNotificationAction(identifier: portalAction, title: "Ouvrir le portail", options: [.foreground])
+        UNUserNotificationCenter.current().setNotificationCategories([
+            UNNotificationCategory(identifier: startCategory, actions: [sms, portal], intentIdentifiers: []),
+            UNNotificationCategory(identifier: endCategory, actions: [sms, portal], intentIdentifiers: []),
+        ])
+    }
+
+    /// Messages, ready to send to RMA: "RMA OK" to start, "RMA fin" to leave.
+    static func smsURL(start: Bool) -> URL? {
+        URL(string: "sms:\(smsNumber)&body=" + (start ? "RMA%20OK" : "RMA%20fin"))
+    }
+
     private static let scheduledKey = "workReminderIDs"
     private static let lead: TimeInterval = 5 * 60
     // iOS keeps at most 64 pending notifications per app; room is left for the others.
@@ -38,9 +63,10 @@ enum WorkReminders {
                 let content = UNMutableNotificationContent()
                 content.title = isStart ? "Pointage de début dans 5 min" : "Pointage de fin dans 5 min"
                 content.body = "\(mission.store) · \(isStart ? "début" : "fin") à \(moment.formatted(date: .omitted, time: .shortened)). "
-                    + "Touche pour ouvrir le portail et pointer sur place."
+                    + "Touche pour le portail, ou appui long › Pointer par SMS, une fois sur place."
                 content.sound = .default
-                content.userInfo = ["url": portalURL]
+                content.categoryIdentifier = isStart ? startCategory : endCategory
+                content.userInfo = ["url": portalURL, "sms": smsURL(start: isStart)?.absoluteString ?? ""]
                 let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
                 let id = "rma-\(mission.id)-\(isStart ? "debut" : "fin")"
                 let request = UNNotificationRequest(identifier: id, content: content,

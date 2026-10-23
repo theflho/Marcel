@@ -10,6 +10,7 @@ struct MarcelApp: App {
     init() {
         // Banners while the app is open, and a tap on a clock-in reminder opens the portal.
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        WorkReminders.registerActions()
     }
 
     var body: some Scene {
