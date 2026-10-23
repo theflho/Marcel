@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MessageBubble: View {
+    @Environment(ChatStore.self) private var store
     let message: ChatMessage
 
     private var isUser: Bool { message.role == .user }
@@ -9,6 +10,9 @@ struct MessageBubble: View {
         HStack {
             if isUser { Spacer(minLength: 60) }
             VStack(alignment: .leading, spacing: 6) {
+                if !isUser && !message.actions.isEmpty {
+                    ActionsCard(actions: message.actions, isRunning: message.status == .streaming)
+                }
                 if message.content.isEmpty && message.status == .streaming {
                     TypingIndicator()
                 } else if isUser {
@@ -17,11 +21,10 @@ struct MessageBubble: View {
                     }
                     if !message.content.isEmpty {
                         Text(message.content)
-                            .textSelection(.enabled)
                     }
                 } else {
+                    // No text selection: it would swallow the long press that opens the menu below.
                     MarkdownView(text: message.content)
-                        .textSelection(.enabled)
                 }
                 statusLine
             }
@@ -31,6 +34,12 @@ struct MessageBubble: View {
             .contextMenu {
                 Button("Copier", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.content }
                 ShareLink(item: message.content)
+                if isUser && !store.isStreaming {
+                    Button("Modifier et renvoyer", systemImage: "pencil") { store.edit(message.id) }
+                }
+                if !isUser && message.id == store.conversation.messages.last?.id && store.canRegenerate {
+                    Button("Régénérer", systemImage: "arrow.clockwise") { store.regenerate() }
+                }
             }
             if !isUser { Spacer(minLength: 40) }
         }
@@ -46,7 +55,11 @@ struct MessageBubble: View {
             Label("Arrêté", systemImage: "stop.circle").font(.caption).foregroundStyle(.secondary)
         case .failed:
             Label("Échec de la réponse", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red)
-        case .complete, .streaming:
+        case .complete:
+            if let model = store.label(forModel: message.model), store.models.count > 1 {
+                Label(model, systemImage: "cpu").font(.caption2).foregroundStyle(.secondary)
+            }
+        case .streaming:
             EmptyView()
         }
     }

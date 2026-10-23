@@ -8,10 +8,12 @@ enum ServerStatus: Equatable {
 @Observable
 final class ChatStore {
     private static let draftKey = "draft"
+    private static let emergencyKey = "emergencyStop"
+    private static let modelChoiceKey = "modelChoice"
 
     let settings: ServerSettings
     private let cache = ConversationCache()
-    /// One stream per conversation, so switching conversations never cuts an answer.
+    /// One task per conversation following its reply, so switching conversations never cuts an answer.
     private var streamTasks: [UUID: Task<Void, Never>] = [:]
 
     private(set) var conversations: [Conversation]
@@ -24,6 +26,19 @@ final class ChatStore {
         didSet { UserDefaults.standard.set(draft, forKey: Self.draftKey) }
     }
 
+    /// Emergency stop: while on, the app sends no request at all, not even health checks.
+    private(set) var emergencyActive: Bool {
+        didSet { UserDefaults.standard.set(emergencyActive, forKey: Self.emergencyKey) }
+    }
+
+    /// Models offered by the active server, and the one picked for each server.
+    private(set) var models: [ModelOption] = []
+    /// Goals Marcel spotted in the current conversation, waiting for the user to accept or decline.
+    private(set) var goalProposals: [Goal] = []
+    private var modelChoice: [String: String] {
+        didSet { UserDefaults.standard.set(modelChoice, forKey: Self.modelChoiceKey) }
+    }
+
     /// Photos and files waiting in the composer for the next message.
     private(set) var pendingAttachments: [Attachment] = []
     private(set) var isPreparingAttachment = false
@@ -31,9 +46,11 @@ final class ChatStore {
     init(settings: ServerSettings) {
         self.settings = settings
         var loaded = cache.loadAll()
-        // A stream interrupted by the app being killed can't resume on-device.
+        // Replies with a server mission are followed again once the server answers;
+        // one cut off before its mission started can't be recovered.
         for c in loaded.indices {
-            for m in loaded[c].messages.indices where loaded[c].messages[m].status == .streaming {
+            for m in loaded[c].messages.indices
+            where loaded[c].messages[m].status == .streaming && loaded[c].messages[m].missionID == nil {
                 loaded[c].messages[m].status = .stopped
             }
         }
@@ -42,6 +59,8 @@ final class ChatStore {
         projects = cache.loadProjects()
         currentID = loaded[0].id
         draft = UserDefaults.standard.string(forKey: Self.draftKey) ?? ""
+        emergencyActive = UserDefaults.standard.bool(forKey: Self.emergencyKey)
+        modelChoice = UserDefaults.standard.dictionary(forKey: Self.modelChoiceKey) as? [String: String] ?? [:]
     }
 
     // MARK: - Current conversation
@@ -50,12 +69,20 @@ final class ChatStore {
         conversations.first { $0.id == currentID } ?? Conversation()
     }
 
-    var isStreaming: Bool { streamTasks[currentID] != nil }
+    var isStreaming: Bool { isStreaming(currentID) }
 
-    func isStreaming(_ id: UUID) -> Bool { streamTasks[id] != nil }
+    /// Replies being written right now, across all conversations.
+    var runningReplies: Int {
+        conversations.filter { $0.messages.last?.status == .streaming }.count
+    }
+
+    /// True while the reply is being generated, even if the app isn't connected to it right now.
+    func isStreaming(_ id: UUID) -> Bool {
+        streamTasks[id] != nil || conversations.first { $0.id == id }?.messages.last?.status == .streaming
+    }
 
     var canSend: Bool {
-        !isStreaming && !isPreparingAttachment
+        !isStreaming && !isPreparingAttachment && !emergencyActive
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty)
     }
 
@@ -77,6 +104,8 @@ final class ChatStore {
         dropCurrentIfEmpty()
         currentID = id
         lastError = nil
+        goalProposals = []
+        Task { await refreshGoalProposals() }
     }
 
     func newConversation(in projectID: UUID? = nil) {
@@ -89,6 +118,7 @@ final class ChatStore {
         conversations.append(fresh)
         currentID = fresh.id
         lastError = nil
+        goalProposals = []
     }
 
     func rename(_ id: UUID, to title: String) {
@@ -185,16 +215,151 @@ final class ChatStore {
     // MARK: - Server
 
     func checkServer() async {
+        guard !emergencyActive else { return }
         guard let api = settings.api else {
             serverStatus = .unreachable
             return
         }
         if serverStatus != .reachable { serverStatus = .checking }
-        switch await api.health() {
-        case 200: serverStatus = .reachable
+        let health = await api.health()
+        switch health?.status {
+        case 200:
+            serverStatus = .reachable
+            if health?.emergency == true {
+                // Stopped from elsewhere (another device, curl): honour it here too.
+                applyEmergencyLocally()
+                return
+            }
+            if models.isEmpty, let loaded = try? await api.models() { models = loaded }
+            resumeMissions()
+            await refreshGoalProposals()
         case 401, 403: serverStatus = .unauthorized
         default: serverStatus = .unreachable
         }
+    }
+
+    func useServer(_ profile: ServerProfile) {
+        guard profile.id != settings.activeID else { return }
+        settings.activeID = profile.id
+        models = []
+        goalProposals = []
+        serverStatus = .checking
+        Task { await checkServer() }
+    }
+
+    // MARK: - Models
+
+    var selectedModel: ModelOption? {
+        models.first { $0.id == modelChoice[settings.activeID.uuidString] } ?? models.first
+    }
+
+    func selectModel(_ model: ModelOption) {
+        modelChoice[settings.activeID.uuidString] = model.id
+    }
+
+    func label(forModel id: String?) -> String? {
+        guard let id else { return nil }
+        return models.first { $0.id == id }?.label ?? id
+    }
+
+    // MARK: - Goals
+
+    func refreshGoalProposals() async {
+        guard !emergencyActive, let api = settings.api else { return }
+        let id = currentID
+        guard let found = try? await api.goals(status: "proposed", conversationID: id) else { return }
+        if id == currentID { goalProposals = found }
+    }
+
+    /// Follows the goal Marcel proposed, or declines it (it won't be proposed again).
+    func answer(_ proposal: Goal, follow: Bool) async {
+        goalProposals.removeAll { $0.id == proposal.id }
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            _ = try await api.updateGoal(id: proposal.id, GoalChange(status: follow ? "active" : "dismissed"))
+        } catch {
+            lastError = error.localizedDescription
+            await refreshGoalProposals()
+        }
+    }
+
+    /// The server looks for goals once the reply is complete, in the background: check a few times.
+    private func refreshGoalProposalsAfterReply() {
+        Task {
+            for wait in [1.5, 6, 20] {
+                try? await Task.sleep(for: .seconds(wait))
+                await refreshGoalProposals()
+                if !goalProposals.isEmpty { return }
+            }
+        }
+    }
+
+    // MARK: - Emergency stop
+
+    /// Cuts everything: local streams, and every mission on the servers that may be working for us.
+    func emergencyStop() {
+        var servers = [settings.activeID]
+        for conversation in conversations {
+            if let reply = conversation.messages.last, reply.status == .streaming, let id = reply.serverID {
+                servers.append(id)
+            }
+        }
+        let targets = Set(servers).compactMap { id in settings.profiles.first { $0.id == id } }.compactMap(settings.api(for:))
+        applyEmergencyLocally()
+        Task {
+            var failures = 0
+            for api in targets {
+                do { try await api.setEmergency(true) } catch { failures += 1 }
+            }
+            if failures > 0 {
+                lastError = "Arrêt local fait, mais \(failures == 1 ? "un serveur n'a" : "\(failures) serveurs n'ont") pas confirmé l'arrêt."
+            }
+        }
+    }
+
+    func emergencyResume() async {
+        emergencyActive = false
+        lastError = nil
+        if let api = settings.api {
+            do { try await api.setEmergency(false) } catch {
+                lastError = "Reprise locale faite, mais le serveur n'a pas confirmé : \(error.localizedDescription)"
+            }
+        }
+        await checkServer()
+    }
+
+    private func applyEmergencyLocally() {
+        emergencyActive = true
+        goalProposals = []
+        for task in streamTasks.values { task.cancel() }
+        streamTasks = [:]
+        for conversation in conversations {
+            guard let reply = conversation.messages.last, reply.status == .streaming else { continue }
+            updateMessage(reply.id, in: conversation.id) { $0.status = .stopped }
+            persist(conversation.id, touch: false)
+        }
+    }
+
+    // MARK: - Missions
+
+    func serverMissions() async throws -> [MissionInfo] {
+        guard let api = settings.api else { throw MarcelAPIError.notConfigured }
+        return try await api.missions()
+    }
+
+    func cancelMission(id: String) async {
+        guard let api = settings.api else { return }
+        do { try await api.cancelMission(id: id) } catch { lastError = error.localizedDescription }
+    }
+
+    /// Opens the local conversation a server mission belongs to, if it's on this iPhone.
+    @discardableResult
+    func openConversation(forMission mission: MissionInfo) -> Bool {
+        guard let id = UUID(uuidString: mission.conversationID), conversations.contains(where: { $0.id == id }) else {
+            return false
+        }
+        select(id)
+        return true
     }
 
     func send() {
@@ -217,24 +382,65 @@ final class ChatStore {
             }
             conversation.messages.append(userMessage)
         }
-        let reply = ChatMessage(role: .assistant, content: "", status: .streaming)
+        startReply(in: id, after: userMessage.id, using: api)
+    }
+
+    /// Adds an empty reply and starts its mission (after uploading the user message's attachments).
+    private func startReply(in id: UUID, after userMessageID: UUID, using api: MarcelAPI) {
+        let model = selectedModel?.id
+        let reply = ChatMessage(role: .assistant, content: "", status: .streaming, serverID: settings.activeID, model: model)
         mutate(id) { $0.messages.append(reply) }
         persist(id)
 
         streamTasks[id] = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.uploadAttachments(of: userMessage.id, in: id, using: api)
+                try await self.uploadAttachments(of: userMessageID, in: id, using: api)
+                let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
+                let mission = try await api.startMission(conversationID: id, messages: history, model: model)
+                self.updateMessage(reply.id, in: id) { $0.missionID = mission.id }
+                self.persist(id)
             } catch {
-                self.updateMessage(reply.id, in: id) { $0.status = .failed }
-                if id == self.currentID { self.lastError = "Envoi des pièces jointes impossible : \(error.localizedDescription)" }
+                if Task.isCancelled {
+                    self.finish(reply.id, in: id, .stopped)
+                } else {
+                    self.finish(reply.id, in: id, .failed, error: "Envoi impossible : \(error.localizedDescription)")
+                    if error is URLError { self.serverStatus = .unreachable }
+                }
                 self.streamTasks[id] = nil
                 self.persist(id)
                 return
             }
-            let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
-            await self.consume(api.streamChat(conversationID: id, messages: history), conversationID: id, replyID: reply.id)
+            await self.follow(reply.id, in: id)
         }
+    }
+
+    /// The last reply can be written again when it's finished and follows a message of the user.
+    var canRegenerate: Bool {
+        let messages = conversation.messages
+        return !isStreaming && !emergencyActive && messages.count >= 2
+            && messages.last?.role == .assistant && messages[messages.count - 2].role == .user
+    }
+
+    func regenerate() {
+        guard canRegenerate, let api = settings.api else { return }
+        let id = currentID
+        let messages = conversation.messages
+        let userMessageID = messages[messages.count - 2].id
+        lastError = nil
+        mutate(id) { _ = $0.messages.removeLast() }
+        startReply(in: id, after: userMessageID, using: api)
+    }
+
+    /// Puts a message of the user back in the composer and removes it with everything after it.
+    func edit(_ messageID: UUID) {
+        guard !isStreaming, let index = conversation.messages.firstIndex(where: { $0.id == messageID }),
+              conversation.messages[index].role == .user else { return }
+        let message = conversation.messages[index]
+        draft = message.content
+        pendingAttachments = message.attachments
+        mutate(currentID) { $0.messages.removeSubrange(index...) }
+        persist(currentID)
     }
 
     /// Uploads attachments not yet on the server and records their remote ids.
@@ -251,30 +457,91 @@ final class ChatStore {
         }
     }
 
+    /// Stops the mission on the server; the reply keeps what was written so far.
     func stop() {
-        streamTasks[currentID]?.cancel()
+        let id = currentID
+        guard let reply = conversation.messages.last, reply.status == .streaming else { return }
+        guard let missionID = reply.missionID, let api = api(forServer: reply.serverID) else {
+            // Still uploading: nothing runs on the server yet.
+            streamTasks[id]?.cancel()
+            return
+        }
+        Task {
+            do {
+                try await api.cancelMission(id: missionID)
+                // The following task, if any, receives "stopped"; otherwise settle it here.
+                if streamTasks[id] == nil { finish(reply.id, in: id, .stopped) }
+            } catch {
+                if id == currentID { lastError = "Impossible d'arrêter la mission : \(error.localizedDescription)" }
+            }
+        }
     }
 
-    private func consume(_ stream: AsyncThrowingStream<StreamEvent, Error>, conversationID: UUID, replyID: UUID) async {
-        do {
-            for try await event in stream {
-                if case .delta(let text) = event {
-                    updateMessage(replyID, in: conversationID) { $0.content += text }
-                }
+    /// Follows every reply still being generated on a server, e.g. after the app was closed.
+    func resumeMissions() {
+        guard !emergencyActive else { return }
+        for conversation in conversations where streamTasks[conversation.id] == nil {
+            guard let reply = conversation.messages.last, reply.status == .streaming, reply.missionID != nil else { continue }
+            let id = conversation.id
+            streamTasks[id] = Task { [weak self] in await self?.follow(reply.id, in: id) }
+        }
+    }
+
+    /// Streams a mission's text into the reply, reconnecting from where it left off until it ends.
+    private func follow(_ replyID: UUID, in conversationID: UUID) async {
+        var delay = Duration.seconds(1)
+        while !Task.isCancelled {
+            guard let reply = message(replyID, in: conversationID), reply.status == .streaming,
+                  let missionID = reply.missionID else { break }
+            guard let api = api(forServer: reply.serverID) else {
+                finish(replyID, in: conversationID, .failed, error: "Le serveur de cette mission n'est plus dans les réglages.")
+                break
             }
-            updateMessage(replyID, in: conversationID) { $0.status = Task.isCancelled ? .stopped : .complete }
-            serverStatus = .reachable
-        } catch is CancellationError {
-            updateMessage(replyID, in: conversationID) { $0.status = .stopped }
-        } catch let error as URLError where error.code == .cancelled {
-            updateMessage(replyID, in: conversationID) { $0.status = .stopped }
-        } catch {
-            updateMessage(replyID, in: conversationID) { $0.status = .failed }
-            if conversationID == currentID { lastError = error.localizedDescription }
-            if error is URLError { serverStatus = .unreachable }
+            do {
+                let offset = reply.content.unicodeScalars.count
+                for try await event in api.missionEvents(id: missionID, offset: offset) {
+                    serverStatus = .reachable
+                    delay = .seconds(1)
+                    switch event {
+                    case .actions(let actions): updateMessage(replyID, in: conversationID) { $0.actions = actions }
+                    case .delta(let text): updateMessage(replyID, in: conversationID) { $0.content += text }
+                    case .done:
+                        finish(replyID, in: conversationID, .complete)
+                        if reply.serverID == settings.activeID { refreshGoalProposalsAfterReply() }
+                    case .stopped: finish(replyID, in: conversationID, .stopped)
+                    case .error(let message): finish(replyID, in: conversationID, .failed, error: message)
+                    }
+                }
+            } catch is CancellationError {
+                break
+            } catch let error as URLError where error.code == .cancelled {
+                break
+            } catch MarcelAPIError.missionNotFound {
+                finish(replyID, in: conversationID, .failed, error: MarcelAPIError.missionNotFound.localizedDescription)
+                break
+            } catch MarcelAPIError.unauthorized {
+                serverStatus = .unauthorized
+                break
+            } catch {
+                // Connection lost (app in background, Tailscale down…): the mission goes on, retry.
+                if error is URLError { serverStatus = .unreachable }
+            }
+            guard message(replyID, in: conversationID)?.status == .streaming else { break }
+            try? await Task.sleep(for: delay)
+            delay = min(delay * 2, .seconds(15))
         }
         streamTasks[conversationID] = nil
         persist(conversationID)
+    }
+
+    private func finish(_ replyID: UUID, in conversationID: UUID, _ status: ChatMessage.Status, error: String? = nil) {
+        updateMessage(replyID, in: conversationID) { $0.status = status }
+        if let error, conversationID == currentID { lastError = error }
+    }
+
+    private func api(forServer serverID: UUID?) -> MarcelAPI? {
+        guard let serverID else { return settings.api }
+        return settings.profiles.first { $0.id == serverID }.flatMap(settings.api(for:))
     }
 
     // MARK: - Helpers
@@ -288,6 +555,10 @@ final class ChatStore {
     private func mutate(_ id: UUID, _ change: (inout Conversation) -> Void) {
         guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
         change(&conversations[index])
+    }
+
+    private func message(_ messageID: UUID, in conversationID: UUID) -> ChatMessage? {
+        conversations.first { $0.id == conversationID }?.messages.first { $0.id == messageID }
     }
 
     private func updateMessage(_ messageID: UUID, in conversationID: UUID, _ change: (inout ChatMessage) -> Void) {

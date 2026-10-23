@@ -15,19 +15,29 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var status: Status
     let createdAt: Date
     var attachments: [Attachment]
+    /// Server-side mission generating this reply, so it can be followed again after the app was closed.
+    var missionID: String?
+    /// The saved server the mission runs on.
+    var serverID: UUID?
+    /// Model that wrote this reply.
+    var model: String?
+    /// Steps the agent took (commands, reads…) while writing this reply.
+    var actions: [MissionAction] = []
 
     init(id: UUID = UUID(), role: Role, content: String, status: Status = .complete,
-         createdAt: Date = .now, attachments: [Attachment] = []) {
+         createdAt: Date = .now, attachments: [Attachment] = [], serverID: UUID? = nil, model: String? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.status = status
         self.createdAt = createdAt
         self.attachments = attachments
+        self.serverID = serverID
+        self.model = model
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, status, createdAt, attachments
+        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions
     }
 
     init(from decoder: Decoder) throws {
@@ -39,6 +49,10 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         // Messages cached before attachments existed have no such key.
         attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        missionID = try container.decodeIfPresent(String.self, forKey: .missionID)
+        serverID = try container.decodeIfPresent(UUID.self, forKey: .serverID)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        actions = try container.decodeIfPresent([MissionAction].self, forKey: .actions) ?? []
     }
 }
 

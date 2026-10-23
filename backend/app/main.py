@@ -1,8 +1,9 @@
 """Marcel backend: the only thing the iPhone talks to.
 
-The iPhone sends chat messages here; this service forwards them to Hermes on the
-internal Docker network and relays the answer as Server-Sent Events. Hermes and
-Scaleway credentials live only in this container's environment.
+The iPhone starts a mission here; this service asks Hermes on the internal Docker
+network for the answer and keeps it, so the mission continues when the app is closed.
+The app follows the answer as Server-Sent Events and can reconnect at any time.
+Hermes and Scaleway credentials live only in this container's environment.
 """
 
 import asyncio
@@ -10,29 +11,129 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
+import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+from .goals import ACTIVE, GoalStore
+from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
+from .missions import MissionStore, valid_id
 
 MARCEL_TOKEN = os.environ.get("MARCEL_TOKEN", "")
 HERMES_URL = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/")
 HERMES_API_KEY = os.environ.get("HERMES_API_KEY", "")
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
 MOCK = os.environ.get("MARCEL_MOCK") == "1"
-FILES_DIR = Path(os.environ.get("MARCEL_DATA_DIR", "/data")) / "files"
+
+
+def parse_models(raw: str) -> list[dict]:
+    """MARCEL_MODELS="id=Label,id2=Label 2" → [{"id", "label"}]; the first one is the default."""
+    models = []
+    for item in filter(None, (part.strip() for part in raw.split(","))):
+        model_id, _, label = item.partition("=")
+        models.append({"id": model_id.strip(), "label": (label or model_id).strip()})
+    return models
+
+
+# Readable names for model ids: "deepseek-r1-distill-llama-70b" → "DeepSeek R1 Distill Llama 70B".
+MODEL_WORDS = {"deepseek": "DeepSeek", "llama": "Llama", "qwen": "Qwen", "mistral": "Mistral", "gpt": "GPT",
+               "gemma": "Gemma", "pixtral": "Pixtral", "instruct": "Instruct", "chat": "Chat"}
+
+
+def model_label(model_id: str) -> str:
+    words = []
+    for part in re.split(r"[-_]", model_id.rsplit("/", 1)[-1]):
+        lower = part.lower()
+        if lower in MODEL_WORDS:
+            words.append(MODEL_WORDS[lower])
+        elif re.fullmatch(r"[a-z]?\d+(\.\d+)?[a-z]?", lower):
+            words.append(part.upper())
+        elif part:
+            words.append(part.capitalize())
+    return " ".join(words) or model_id
+
+
+# MARCEL_MODELS overrides the list; otherwise it is read from Hermes (`GET /v1/models`).
+MODELS_OVERRIDE = parse_models(os.environ.get("MARCEL_MODELS", ""))
+MOCK_MODELS = [{"id": "deepseek-r1-distill-llama-70b", "label": "DeepSeek R1 Distill Llama 70B"},
+               {"id": "deepseek-v3", "label": "DeepSeek V3"}]
+MODELS_CACHE_SECONDS = 300
+_models_cache: tuple[float, list[dict]] = (0.0, [])
+
+
+async def available_models() -> list[dict]:
+    """Models offered in the app; the first one is the default."""
+    global _models_cache
+    if MODELS_OVERRIDE:
+        return MODELS_OVERRIDE
+    if MOCK:
+        return MOCK_MODELS
+    fetched_at, cached = _models_cache
+    if cached and time.monotonic() - fetched_at < MODELS_CACHE_SECONDS:
+        return cached
+    headers = {"Authorization": f"Bearer {HERMES_API_KEY}"} if HERMES_API_KEY else {}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{HERMES_URL}/v1/models", headers=headers)
+            resp.raise_for_status()
+            ids = [item["id"] for item in resp.json().get("data", []) if item.get("id")]
+    except Exception:
+        log.warning("could not list Hermes models, using HERMES_MODEL")
+        ids = []
+    # HERMES_MODEL stays the default when Hermes lists it (or lists nothing).
+    ids = sorted(set(ids), key=lambda i: (i != HERMES_MODEL, i)) or [HERMES_MODEL]
+    models = [{"id": i, "label": model_label(i)} for i in ids]
+    _models_cache = (time.monotonic(), models)
+    return models
+DATA_DIR = Path(os.environ.get("MARCEL_DATA_DIR", "/data"))
+FILES_DIR = DATA_DIR / "files"
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 # Text extracted from a document and passed to Hermes is capped to keep prompts sane.
 MAX_EXTRACTED_CHARS = 20_000
 TEXT_MIME_PREFIXES = ("text/", "application/json", "application/xml")
 
+# Memory: the core is sent with every mission, so it has a character budget.
+MEMORY_CORE_CHARS = int(os.environ.get("MARCEL_MEMORY_CORE_CHARS") or 1500)
+# Hour (server local time) of the nightly tidying.
+MEMORY_TIDY_HOUR = int(os.environ.get("MARCEL_MEMORY_TIDY_HOUR") or 3)
+# Model used to extract and tidy memories (OpenAI-compatible). Defaults to Hermes; pointing it
+# straight at the model provider avoids running the whole agent for these small jobs.
+MEMORY_LLM_URL = (os.environ.get("MARCEL_MEMORY_LLM_URL") or HERMES_URL).rstrip("/")
+MEMORY_LLM_KEY = (os.environ.get("MARCEL_MEMORY_LLM_KEY") or HERMES_API_KEY)
+MEMORY_LLM_MODEL = (os.environ.get("MARCEL_MEMORY_LLM_MODEL") or HERMES_MODEL)
+
 log = logging.getLogger("marcel")
-app = FastAPI(title="Marcel", docs_url=None, redoc_url=None, openapi_url=None)
+missions = MissionStore(DATA_DIR / "marcel.db")
+memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
+goals = GoalStore(DATA_DIR / "marcel.db")
+# Background jobs (memory extraction) are kept here so they aren't garbage-collected mid-way.
+background: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    background.add(task)
+    task.add_done_callback(background.discard)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    tidy_task = asyncio.create_task(nightly_tidy())
+    yield
+    tidy_task.cancel()
+    await missions.shutdown()
+
+
+app = FastAPI(title="Marcel", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 def require_token(authorization: str = Header(default="")) -> None:
@@ -52,6 +153,7 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     conversation_id: str
     messages: list[Message] = Field(min_length=1, max_length=200)
+    model: str | None = None
 
 
 def sse(payload: dict) -> str:
@@ -60,7 +162,32 @@ def sse(payload: dict) -> str:
 
 @app.get("/health", dependencies=[Depends(require_token)])
 async def health() -> dict:
-    return {"status": "ok", "mock": MOCK}
+    return {"status": "ok", "mock": MOCK, "emergency": missions.emergency}
+
+
+@app.get("/v1/models", dependencies=[Depends(require_token)])
+async def list_models() -> dict:
+    models = await available_models()
+    return {"models": models, "default": models[0]["id"]}
+
+
+@app.get("/v1/emergency", dependencies=[Depends(require_token)])
+async def emergency_state() -> dict:
+    return {"active": missions.emergency}
+
+
+@app.post("/v1/emergency/stop", dependencies=[Depends(require_token)])
+async def emergency_stop() -> dict:
+    """Cuts every running mission and refuses new ones: nothing reaches Hermes until resumed."""
+    stopped = await missions.emergency_stop()
+    log.warning("emergency stop: %d mission(s) cut", stopped)
+    return {"active": True, "stopped": stopped}
+
+
+@app.post("/v1/emergency/resume", dependencies=[Depends(require_token)])
+async def emergency_resume() -> dict:
+    missions.emergency_resume()
+    return {"active": False}
 
 
 @app.post("/v1/files", dependencies=[Depends(require_token)])
@@ -138,21 +265,68 @@ def hermes_content(message: Message) -> str | list[dict]:
     return parts
 
 
-@app.post("/v1/chat/stream", dependencies=[Depends(require_token)])
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+@app.post("/v1/missions", dependencies=[Depends(require_token)])
+async def start_mission(request: ChatRequest) -> dict:
+    """Starts generating the reply on the server and returns at once."""
     for message in request.messages:
         for file_id in message.attachments:
-            load_file(file_id)  # fail fast with 404 before streaming starts
-    source = mock_stream(request) if MOCK else hermes_stream(request)
+            load_file(file_id)  # fail fast with 404 before the mission starts
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif : aucune mission ne peut démarrer.")
+    if missions.running_count() >= missions.max_running:
+        raise HTTPException(429, "Trop de missions en cours, réessaie dans un instant.")
+    models = await available_models()
+    model = request.model or models[0]["id"]
+    if model not in {m["id"] for m in models}:
+        raise HTTPException(400, "Modèle inconnu")
+    title = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
+    note, facts = memory.context(title)
+    note = "\n\n".join(filter(None, [note, goals.context()]))
+    inner = (lambda: mock_stream(request, facts)) if MOCK else (lambda: hermes_stream(request, model, note))
+    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts),
+                          model=model, title=title).public()
+
+
+async def with_memory(request: ChatRequest, inner, facts) -> AsyncIterator[str | dict]:
+    """Shows which memories were sent, then, once the reply is complete, learns from the exchange."""
+    if facts:
+        core = sum(1 for f in facts if f.tier == CORE)
+        detail = f"{core} du noyau, {len(facts) - core} des archives : " + " · ".join(f.text for f in facts)
+        yield {"id": "memory", "name": "Mémoire", "detail": detail[:300], "status": "done"}
+    reply = []
+    async for item in inner():
+        if isinstance(item, str):
+            reply.append(item)
+        yield item
+    # Only reached when the mission completed: a stopped reply teaches nothing.
+    spawn(remember(request, "".join(reply)))
+
+
+@app.get("/v1/missions", dependencies=[Depends(require_token)])
+async def list_missions(conversation_id: str | None = None, active: bool = False) -> list[dict]:
+    return [m.public() for m in missions.list(conversation_id, active_only=active)]
+
+
+def find_mission(mission_id: str):
+    if not valid_id(mission_id) or not (mission := missions.get(mission_id)):
+        raise HTTPException(404, "Mission introuvable")
+    return mission
+
+
+@app.get("/v1/missions/{mission_id}", dependencies=[Depends(require_token)])
+async def get_mission(mission_id: str) -> dict:
+    mission = find_mission(mission_id)
+    return mission.public() | {"text": mission.text}
+
+
+@app.get("/v1/missions/{mission_id}/events", dependencies=[Depends(require_token)])
+async def mission_events(mission_id: str, offset: int = Query(default=0, ge=0)) -> StreamingResponse:
+    """The reply from `offset` (in Unicode code points), then live until the mission ends."""
+    mission = find_mission(mission_id)
 
     async def events() -> AsyncIterator[str]:
-        try:
-            async for text in source:
-                yield sse({"type": "delta", "text": text})
-            yield sse({"type": "done"})
-        except Exception:
-            log.exception("chat stream failed")
-            yield sse({"type": "error", "message": "Hermes n'a pas pu répondre."})
+        async for event in missions.follow(mission, offset):
+            yield ": ping\n\n" if event is None else sse(event)
 
     return StreamingResponse(
         events(),
@@ -161,15 +335,36 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     )
 
 
-async def hermes_stream(request: ChatRequest) -> AsyncIterator[str]:
-    """Calls Hermes' OpenAI-compatible endpoint and yields text deltas."""
+@app.post("/v1/missions/{mission_id}/cancel", dependencies=[Depends(require_token)])
+async def cancel_mission(mission_id: str) -> dict:
+    mission = find_mission(mission_id)
+    missions.cancel(mission)
+    if mission.task:
+        await asyncio.gather(mission.task, return_exceptions=True)
+    return mission.public()
+
+
+async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "") -> AsyncIterator[str | dict]:
+    """Calls Hermes' OpenAI-compatible endpoint and yields text deltas.
+
+    Tool calls streamed by Hermes become actions, so the app can show what the agent does.
+    """
     headers = {"Authorization": f"Bearer {HERMES_API_KEY}"} if HERMES_API_KEY else {}
     body = {
-        "model": HERMES_MODEL,
+        "model": model,
         "stream": True,
-        "messages": [{"role": m.role, "content": hermes_content(m)} for m in request.messages],
+        "messages": ([{"role": "system", "content": memory_note}] if memory_note else [])
+        + [{"role": m.role, "content": hermes_content(m)} for m in request.messages],
         "user": request.conversation_id,
     }
+    tools: dict[int, dict] = {}
+
+    def finish_tools() -> list[dict]:
+        done = [{"id": t["id"], "status": "done"} for t in tools.values() if t["status"] == "running"]
+        for tool in tools.values():
+            tool["status"] = "done"
+        return done
+
     timeout = httpx.Timeout(connect=10, read=300, write=30, pool=10)
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", f"{HERMES_URL}/v1/chat/completions", json=body, headers=headers) as resp:
@@ -182,13 +377,43 @@ async def hermes_stream(request: ChatRequest) -> AsyncIterator[str]:
                     break
                 chunk = json.loads(data)
                 for choice in chunk.get("choices", []):
-                    if text := (choice.get("delta") or {}).get("content"):
+                    delta = choice.get("delta") or {}
+                    for call in delta.get("tool_calls") or []:
+                        index = call.get("index", 0)
+                        function = call.get("function") or {}
+                        tool = tools.setdefault(index, {"id": call.get("id") or f"tool-{index}", "name": "",
+                                                        "detail": "", "status": "running"})
+                        tool["name"] += function.get("name") or ""
+                        tool["detail"] = (tool["detail"] + (function.get("arguments") or ""))[:300]
+                        yield dict(tool)
+                    if text := delta.get("content"):
+                        for update in finish_tools():
+                            yield update
                         yield text
+                    if choice.get("finish_reason"):
+                        for update in finish_tools():
+                            yield update
 
 
-async def mock_stream(request: ChatRequest) -> AsyncIterator[str]:
+async def mock_stream(request: ChatRequest, facts=()) -> AsyncIterator[str | dict]:
     """Local stand-in for Hermes, to test the app without the VPS."""
     last = request.messages[-1].content
+    if re.search(r"souviens|m[ée]moire|sais de moi", last.lower()):
+        reply = ("Voici ce qu'on m'a transmis de ta mémoire pour cette question :\n\n"
+                 + "\n".join(f"- {f.text} *({'noyau' if f.tier == CORE else 'archives'})*" for f in facts)
+                 if facts else "Je n'ai reçu aucun souvenir lié à cette question.")
+        for word in reply.split(" "):
+            await asyncio.sleep(0.03)
+            yield word + " "
+        return
+    if re.search(r"objectif", last.lower()):
+        followed = goals.list(ACTIVE)
+        reply = ("Les objectifs que je suis pour toi :\n\n" + "\n".join(f"- {g.title}" for g in followed)
+                 if followed else "Je ne suis aucun objectif pour l'instant.")
+        for word in reply.split(" "):
+            await asyncio.sleep(0.03)
+            yield word + " "
+        return
     if files := request.messages[-1].attachments:
         names = []
         for file_id in files:
@@ -201,6 +426,26 @@ async def mock_stream(request: ChatRequest) -> AsyncIterator[str]:
         for word in reply.split(" "):
             await asyncio.sleep(0.03)
             yield word + " "
+        return
+    if "mission" in last.lower():
+        # A slow reply (about 20 s) with agent steps, to test closing the app while Marcel works.
+        steps = [
+            ("Bash", "ls ~/projets/marcel"),
+            ("Lecture", "README.md"),
+            ("Bash", "git status --short"),
+            ("Recherche", "missions côté serveur"),
+            ("Bash", "pytest -q"),
+            ("Écriture", "rapport.md"),
+            ("Bash", "tailscale status"),
+            ("Envoi", "résumé à Théo"),
+        ]
+        for index, (name, detail) in enumerate(steps, start=1):
+            yield {"id": f"step-{index}", "name": name, "detail": detail, "status": "running"}
+            await asyncio.sleep(2.5)
+            yield {"id": f"step-{index}", "status": "done"}
+            yield f"{'' if index == 1 else chr(10)}{index}. Étape {index} sur {len(steps)} terminée ({name.lower()})."
+        model = request.model or MOCK_MODELS[0]["id"]
+        yield f"\n\n**Mission terminée** avec `{model}`, même si l'app était fermée."
         return
     if "markdown" in last.lower():
         for chunk in MARKDOWN_DEMO.split(" "):
@@ -243,3 +488,282 @@ def bonjour():
 ---
 
 Dis-moi si je lance la première mission."""
+
+
+# MARK: Memory
+
+
+class MemoryCreate(BaseModel):
+    text: str = Field(min_length=2, max_length=300)
+    tier: Literal["core", "archive"] = ARCHIVE
+    importance: int = Field(default=3, ge=1, le=5)
+    pinned: bool = False
+
+
+class MemoryUpdate(BaseModel):
+    text: str | None = Field(default=None, min_length=2, max_length=300)
+    tier: Literal["core", "archive"] | None = None
+    importance: int | None = Field(default=None, ge=1, le=5)
+    pinned: bool | None = None
+
+
+class MemoryImport(BaseModel):
+    text: str = Field(max_length=200_000)
+    tier: Literal["core", "archive"] = ARCHIVE
+
+
+def find_fact(fact_id: str):
+    if not re.fullmatch(r"[0-9a-f]{12}", fact_id) or not (fact := memory.get(fact_id)) or fact.status != "active":
+        raise HTTPException(404, "Souvenir introuvable")
+    return fact
+
+
+@app.get("/v1/memory", dependencies=[Depends(require_token)])
+async def list_memory(q: str | None = None, tier: Literal["core", "archive"] | None = None) -> dict:
+    facts = memory.search(q, limit=100, tier=tier) if q else memory.active(tier)
+    return {"stats": memory.stats(), "items": [f.public() for f in facts]}
+
+
+@app.post("/v1/memory", dependencies=[Depends(require_token)])
+async def add_memory(body: MemoryCreate) -> dict:
+    fact = memory.add(body.text, tier=body.tier, importance=body.importance, pinned=body.pinned,
+                      source="manuel", reason="ajouté à la main")
+    return fact.public()
+
+
+@app.patch("/v1/memory/{fact_id}", dependencies=[Depends(require_token)])
+async def update_memory(fact_id: str, body: MemoryUpdate) -> dict:
+    find_fact(fact_id)
+    return memory.update(fact_id, reason="modifié à la main", **body.model_dump(exclude_unset=True)).public()
+
+
+@app.delete("/v1/memory/{fact_id}", dependencies=[Depends(require_token)])
+async def delete_memory(fact_id: str) -> dict:
+    find_fact(fact_id)
+    return memory.delete(fact_id).public()
+
+
+@app.get("/v1/memory/log", dependencies=[Depends(require_token)])
+async def memory_log(limit: int = Query(default=100, ge=1, le=500)) -> list[dict]:
+    return memory.log(limit)
+
+
+@app.post("/v1/memory/log/{entry_id}/undo", dependencies=[Depends(require_token)])
+async def undo_memory(entry_id: int) -> dict:
+    try:
+        undone = memory.undo(entry_id)
+    except KeyError:
+        raise HTTPException(404, "Entrée introuvable") from None
+    return {"undone": undone, "stats": memory.stats()}
+
+
+@app.post("/v1/memory/tidy", dependencies=[Depends(require_token)])
+async def tidy_memory() -> dict:
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif : le rangement est suspendu.")
+    return await run_tidy()
+
+
+@app.post("/v1/memory/import", dependencies=[Depends(require_token)])
+async def import_memory(body: MemoryImport) -> dict:
+    """Moves entries of another memory (Hermes' MEMORY.md, a note…) into Marcel's."""
+    batch = f"import-{int(time.time())}"
+    entries = split_entries(body.text)
+    for entry in entries:
+        memory.add(entry, tier=body.tier, source="import", reason="importé", batch=batch)
+    return {"imported": len(entries), "batch": batch, "stats": memory.stats()}
+
+
+EXTRACT_PROMPT = """Tu tiens la mémoire à long terme de Marcel, l'assistant personnel de l'utilisateur.
+À partir du dernier échange, retiens seulement les faits durables qui serviront plus tard sur
+l'utilisateur : identité, préférences, habitudes, projets et objectifs en cours, contraintes,
+proches. Ignore le contenu de la tâche elle-même, les politesses et ce qui ne servira plus.
+Une phrase courte par fait (200 caractères max), à la troisième personne (« L'utilisateur… »).
+Si un fait connu est précisé, mets-le à jour par son id ; s'il est contredit ou n'est plus vrai,
+expire-le. Pour un fait temporaire (achat en cours, voyage prévu), donne une durée de vie en jours.
+Importance de 1 (anecdotique) à 5 (essentiel).
+Si l'utilisateur exprime un objectif qui se poursuit dans le temps et que Marcel pourrait suivre
+pour lui (chercher un achat, apprendre quelque chose, préparer un événement, surveiller une
+situation), propose-le dans "goals" : un titre court à l'infinitif (« Trouver un Mac mini »), un
+détail utile (budget, contrainte, échéance) et un rythme de vérification : "daily" si ça bouge
+vite (prix, disponibilité), "weekly" sinon, "manual" si rien n'est à surveiller. Ne propose pas
+une tâche déjà faite dans l'échange, ni un objectif déjà connu. En cas de doute, n'en propose pas.
+Réponds uniquement en JSON :
+{"add": [{"text": "...", "importance": 3, "expires_days": null}], "update": [{"id": "...", "text": "..."}], "expire": ["id"],
+ "goals": [{"title": "...", "detail": "...", "cadence": "weekly"}]}
+Rien à retenir : {"add": [], "update": [], "expire": [], "goals": []}"""
+
+TIDY_PROMPT = """Tu ranges la mémoire de Marcel, l'assistant personnel de l'utilisateur.
+Repère les faits qui disent la même chose (à fusionner en une phrase courte qui garde tout ce qui
+compte) et ceux qui sont contredits par un fait plus récent ou visiblement périmés (à expirer).
+Ne touche pas au reste. Réponds uniquement en JSON :
+{"merge": [{"ids": ["...", "..."], "text": "..."}], "expire": ["id"]}"""
+
+
+async def llm_json(system: str, user: str) -> dict:
+    """Asks the memory model for a JSON answer."""
+    headers = {"Authorization": f"Bearer {MEMORY_LLM_KEY}"} if MEMORY_LLM_KEY else {}
+    body = {"model": MEMORY_LLM_MODEL, "temperature": 0, "stream": False,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120, connect=10)) as client:
+        resp = await client.post(f"{MEMORY_LLM_URL}/v1/chat/completions", json=body, headers=headers)
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"] or ""
+    # Reasoning models (DeepSeek R1) think out loud first.
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    start, end = content.find("{"), content.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("no JSON in the memory model's answer")
+    return json.loads(content[start:end + 1])
+
+
+def mock_facts(text: str) -> list[dict]:
+    """Without a model: sentences where the user talks about themself."""
+    facts = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        sentence = sentence.strip(" .!?")
+        lower = sentence.lower()
+        if len(sentence) < 8 or not re.match(r"(je |j'|j’|mon |ma |mes |moi )", lower):
+            continue
+        temporary = re.search(r"cherche|en ce moment|cette semaine|ce mois|bientôt|prévu", lower)
+        lasting = re.search(r"toujours|jamais|préfère|aime|déteste|allergique", lower)
+        facts.append({"text": f"L'utilisateur a dit : « {sentence[0].upper()}{sentence[1:]} »",
+                      "importance": 4 if lasting else 3, "expires_days": 90 if temporary else None})
+    return facts
+
+
+GOAL_VERBS = {"cherche": "Trouver", "recherche": "Trouver", "prépare": "Préparer", "veux": "", "voudrais": "",
+              "aimerais": "", "compte": "", "dois": "", "essaie de": "", "essaye de": ""}
+
+
+def mock_goals(text: str) -> list[dict]:
+    """Without a model: "je cherche un Mac mini, mais…" → "Trouver un Mac mini"."""
+    found = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        verbs = "|".join(GOAL_VERBS)
+        if not (match := re.search(rf"\b(?:je|j'|j’)\s*({verbs})\s+(.+)", sentence, flags=re.IGNORECASE)):
+            continue
+        verb, rest = match.group(1).lower(), re.split(r",|\bmais\b|\bet je\b", match.group(2))[0].strip(" .!?")
+        if len(rest) < 3:
+            continue
+        title = f"{GOAL_VERBS[verb]} {rest}".strip() if GOAL_VERBS[verb] else rest
+        found.append({"title": title[0].upper() + title[1:], "detail": sentence.strip()[:200],
+                      "cadence": "daily" if GOAL_VERBS[verb] == "Trouver" else "weekly"})
+    return found
+
+
+async def remember(request: ChatRequest, reply: str) -> None:
+    """Learns durable facts from the last exchange (runs after the mission, in the background)."""
+    question = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
+    if missions.emergency or not question.strip():
+        return
+    try:
+        if MOCK:
+            result = {"add": mock_facts(question), "update": [], "expire": [], "goals": mock_goals(question)}
+        else:
+            known = memory.search(question + " " + reply[:1000], limit=15)
+            known_goals = [g.title for g in goals.list()]
+            user = ("Faits déjà connus :\n" + ("\n".join(f"[{f.id}] {f.text}" for f in known) or "(aucun)")
+                    + "\n\nObjectifs déjà connus :\n" + ("\n".join(f"- {t}" for t in known_goals) or "(aucun)")
+                    + f"\n\nMessage de l'utilisateur :\n{question[:4000]}\n\nRéponse de Marcel :\n{reply[:3000]}")
+            result = await llm_json(EXTRACT_PROMPT, user)
+        now = time.time()
+        for item in result.get("add") or []:
+            if isinstance(item, dict) and str(item.get("text", "")).strip():
+                days = item.get("expires_days")
+                memory.add(str(item["text"]), importance=int(item.get("importance") or 3),
+                           source=request.conversation_id, reason="appris dans une conversation",
+                           expires_at=now + float(days) * DAY if isinstance(days, (int, float)) and days > 0 else None)
+        for item in result.get("update") or []:
+            fact = isinstance(item, dict) and memory.get(str(item.get("id")))
+            if fact and fact.status == "active" and str(item.get("text", "")).strip():
+                memory.update(fact.id, text=str(item["text"]), reason="précisé dans une conversation")
+        for fact_id in result.get("expire") or []:
+            if (fact := memory.get(str(fact_id))) and fact.status == "active" and not fact.pinned:
+                memory.update(fact.id, status="expired", reason="contredit dans une conversation")
+        for item in result.get("goals") or []:
+            if isinstance(item, dict) and str(item.get("title", "")).strip():
+                goals.propose(str(item["title"]), str(item.get("detail") or ""),
+                              str(item.get("cadence") or "weekly"), request.conversation_id)
+    except Exception:
+        log.exception("memory extraction failed")
+
+
+async def run_tidy() -> dict:
+    merges, expire = [], []
+    if not MOCK:
+        facts = memory.active()[:150]
+        if len(facts) >= 2:
+            listing = "\n".join(
+                f"[{f.id}] ({'noyau' if f.tier == CORE else 'archives'}, {time.strftime('%Y-%m-%d', time.localtime(f.updated_at))}) {f.text}"
+                for f in facts)
+            try:
+                result = await llm_json(TIDY_PROMPT, listing)
+                merges = [m for m in result.get("merge") or [] if isinstance(m, dict)]
+                expire = [str(i) for i in result.get("expire") or []]
+            except Exception:
+                log.exception("memory tidying by the model failed, applying the rules only")
+    return memory.tidy(merges, expire)
+
+
+async def nightly_tidy() -> None:
+    while True:
+        now = time.localtime()
+        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, MEMORY_TIDY_HOUR, 0, 0, 0, 0, -1))
+        if target <= time.time():
+            target += DAY
+        await asyncio.sleep(target - time.time())
+        if missions.emergency:
+            continue
+        try:
+            summary = await run_tidy()
+            log.info("memory tidied: %s", {k: v for k, v in summary.items() if k != "stats"})
+        except Exception:
+            log.exception("nightly memory tidying failed")
+
+
+# MARK: Goals
+
+
+class GoalCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=120)
+    detail: str = Field(default="", max_length=500)
+    cadence: Literal["daily", "weekly", "manual"] = "weekly"
+
+
+class GoalUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=3, max_length=120)
+    detail: str | None = Field(default=None, max_length=500)
+    status: Literal["proposed", "active", "paused", "done", "dismissed"] | None = None
+    cadence: Literal["daily", "weekly", "manual"] | None = None
+
+
+def find_goal(goal_id: str):
+    if not re.fullmatch(r"[0-9a-f]{12}", goal_id) or not (goal := goals.get(goal_id)):
+        raise HTTPException(404, "Objectif introuvable")
+    return goal
+
+
+@app.get("/v1/goals", dependencies=[Depends(require_token)])
+async def list_goals(status: Literal["proposed", "active", "paused", "done", "dismissed"] | None = None,
+                     conversation_id: str | None = None) -> list[dict]:
+    """Every goal except the dismissed ones, or those with `status`."""
+    return [g.public() for g in goals.list(status, conversation_id)]
+
+
+@app.post("/v1/goals", dependencies=[Depends(require_token)])
+async def add_goal(body: GoalCreate) -> dict:
+    return goals.add(body.title, body.detail, body.cadence).public()
+
+
+@app.patch("/v1/goals/{goal_id}", dependencies=[Depends(require_token)])
+async def update_goal(goal_id: str, body: GoalUpdate) -> dict:
+    find_goal(goal_id)
+    return goals.update(goal_id, **body.model_dump(exclude_unset=True, exclude_none=True)).public()
+
+
+@app.delete("/v1/goals/{goal_id}", dependencies=[Depends(require_token)])
+async def delete_goal(goal_id: str) -> dict:
+    goal = find_goal(goal_id)
+    goals.delete(goal_id)
+    return goal.public()

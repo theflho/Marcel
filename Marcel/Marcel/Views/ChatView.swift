@@ -4,6 +4,7 @@ struct ChatView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSettings = false
+    @State private var showMissions = false
     @State private var showSidebar = false
     @GestureState private var drawerDrag: CGFloat = 0
     @FocusState private var composerFocused: Bool
@@ -48,6 +49,9 @@ struct ChatView: View {
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
+        .sheet(isPresented: $showMissions) {
+            MissionsView()
+        }
     }
 
     private func closeSidebar() {
@@ -60,7 +64,11 @@ struct ChatView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     header
-                    ServerStatusBanner(status: store.serverStatus)
+                    if store.emergencyActive {
+                        EmergencyBanner()
+                    } else {
+                        ServerStatusBanner(status: store.serverStatus)
+                    }
                 }
                 .background {
                     // Messages fade out under the header instead of colliding with it.
@@ -72,13 +80,20 @@ struct ChatView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                ComposerView(focused: $composerFocused)
-                    .background {
-                        LinearGradient(stops: [.init(color: Theme.background.opacity(0), location: 0),
-                                               .init(color: Theme.background, location: 0.35)],
-                                       startPoint: .top, endPoint: .bottom)
-                            .ignoresSafeArea(edges: .bottom)
+                VStack(spacing: 8) {
+                    if let proposal = store.goalProposals.first, !store.emergencyActive {
+                        GoalProposalCard(goal: proposal)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
+                    ComposerView(focused: $composerFocused)
+                }
+                .animation(.snappy, value: store.goalProposals)
+                .background {
+                    LinearGradient(stops: [.init(color: Theme.background.opacity(0), location: 0),
+                                           .init(color: Theme.background, location: 0.35)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea(edges: .bottom)
+                }
             }
             .task(id: scenePhase) {
                 // Poll reachability only while the app is in the foreground.
@@ -107,6 +122,30 @@ struct ChatView: View {
                 .tint(.primary)
                 .accessibilityLabel("Menu")
                 Spacer()
+                Button {
+                    composerFocused = false
+                    showMissions = true
+                } label: {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(width: 44, height: 44)
+                        .background(Theme.surface, in: .circle)
+                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                        .overlay(alignment: .topTrailing) {
+                            let running = store.runningReplies
+                            if running > 0 {
+                                Text("\(running)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 18, minHeight: 18)
+                                    .background(Color.accentColor, in: .circle)
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
+                }
+                .tint(.primary)
+                .accessibilityLabel(store.runningReplies > 0 ? "Missions, \(store.runningReplies) en cours" : "Missions")
             }
             .padding(.horizontal)
             .padding(.top, 4)
@@ -161,6 +200,10 @@ struct ChatView: View {
             .onChange(of: store.conversation.messages.count) {
                 withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
             }
+            .onChange(of: store.goalProposals.first?.id) {
+                // The proposal card grows the bottom inset: keep the end of the reply visible.
+                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
             .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
         }
     }
@@ -187,6 +230,53 @@ private struct EmptyChatView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 40)
         .padding(.top, 60)
+    }
+}
+
+/// Shown while the emergency stop is on, with a way out.
+private struct EmergencyBanner: View {
+    @Environment(ChatStore.self) private var store
+    @State private var resuming = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Arrêt d'urgence actif")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.red)
+                Text("Aucune requête n'est envoyée.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                resuming = true
+                Task {
+                    await store.emergencyResume()
+                    resuming = false
+                }
+            } label: {
+                if resuming {
+                    ProgressView().controlSize(.small).tint(.white)
+                } else {
+                    Text("Reprendre").font(.footnote.weight(.semibold)).foregroundStyle(.white)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
+            .disabled(resuming)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        // Opaque, so messages scrolling underneath don't show through.
+        .background(Theme.surface, in: .rect(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.red.opacity(0.35)))
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+        .padding(.horizontal)
+        .padding(.bottom, 6)
     }
 }
 

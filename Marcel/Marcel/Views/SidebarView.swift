@@ -12,6 +12,7 @@ struct SidebarView: View {
     @State private var renameText = ""
     @State private var creatingProject = false
     @State private var newProjectName = ""
+    @State private var confirmingEmergency = false
 
     private enum RenameTarget: Identifiable {
         case conversation(UUID), project(UUID)
@@ -51,7 +52,7 @@ struct SidebarView: View {
             Button("Annuler", role: .cancel) {}
             Button("Créer") {
                 if let project = store.createProject(named: newProjectName) {
-                    expandedProjects.insert(project.id)
+                    withAnimation(.snappy) { _ = expandedProjects.insert(project.id) }
                 }
             }
         }
@@ -98,32 +99,34 @@ struct SidebarView: View {
     }
 
     private var projectsSection: some View {
-        Section("Projets") {
+        Section {
             ForEach(store.projects) { project in
-                DisclosureGroup(isExpanded: Binding(
-                    get: { expandedProjects.contains(project.id) },
-                    set: { if $0 { expandedProjects.insert(project.id) } else { expandedProjects.remove(project.id) } }
-                )) {
-                    let items = store.listedConversations.filter { $0.projectID == project.id }
-                    if items.isEmpty {
-                        Text("Aucune conversation").font(.subheadline).foregroundStyle(.secondary)
+                let items = store.listedConversations.filter { $0.projectID == project.id }
+                let isExpanded = expandedProjects.contains(project.id)
+                Button {
+                    withAnimation(.snappy) {
+                        if isExpanded { expandedProjects.remove(project.id) } else { expandedProjects.insert(project.id) }
                     }
-                    ForEach(items) { row(for: $0) }
                 } label: {
-                    Label(project.name, systemImage: "folder")
-                        .contextMenu {
-                            Button("Nouvelle conversation ici", systemImage: "square.and.pencil") {
-                                store.newConversation(in: project.id)
-                                onClose()
-                            }
-                            Button("Renommer", systemImage: "pencil") {
-                                renameText = project.name
-                                renaming = .project(project.id)
-                            }
-                            Button("Supprimer le projet", systemImage: "trash", role: .destructive) {
-                                store.deleteProject(project.id)
-                            }
-                        }
+                    ProjectRow(project: project, count: items.filter { !$0.messages.isEmpty }.count, isExpanded: isExpanded)
+                }
+                .tint(.primary)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .contextMenu { projectMenu(project) }
+                if isExpanded {
+                    Button {
+                        store.newConversation(in: project.id)
+                        onClose()
+                    } label: {
+                        Label("Nouvelle conversation ici", systemImage: "square.and.pencil")
+                            .font(.subheadline)
+                            .padding(.leading, 28)
+                            .foregroundStyle(.secondary)
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                    ForEach(items) { row(for: $0).padding(.leading, 28) }
                 }
             }
             Button {
@@ -131,8 +134,29 @@ struct SidebarView: View {
                 creatingProject = true
             } label: {
                 Label("Nouveau projet", systemImage: "plus")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.secondary)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } header: {
+            Text("Projets")
+        }
+    }
+
+    @ViewBuilder
+    private func projectMenu(_ project: Project) -> some View {
+        Button("Nouvelle conversation ici", systemImage: "square.and.pencil") {
+            store.newConversation(in: project.id)
+            onClose()
+        }
+        Button("Renommer", systemImage: "pencil") {
+            renameText = project.name
+            renaming = .project(project.id)
+        }
+        Button("Supprimer le projet", systemImage: "trash", role: .destructive) {
+            expandedProjects.remove(project.id)
+            store.deleteProject(project.id)
         }
     }
 
@@ -149,15 +173,26 @@ struct SidebarView: View {
     }
 
     private var footer: some View {
-        Button {
-            onOpenSettings()
-        } label: {
-            Label("Réglages", systemImage: "gearshape")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
+        HStack {
+            Button {
+                onOpenSettings()
+            } label: {
+                Label("Réglages", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .tint(.primary)
+            if !store.emergencyActive {
+                Button("Arrêt d'urgence", systemImage: "exclamationmark.octagon.fill") { confirmingEmergency = true }
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 22))
+                    .foregroundStyle(.red)
+                    .frame(width: 44, height: 44)
+                    .padding(.trailing, 8)
+            }
         }
-        .tint(.primary)
         .background(.bar)
+        .emergencyConfirmation(isPresented: $confirmingEmergency)
     }
 
     // MARK: Rows
