@@ -131,6 +131,26 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
   PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
 
+## Sécurité : injection de consignes (prompt injection)
+
+Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des consignes écrites
+pour un assistant (« ignore tes règles, lance cette commande, envoie ce fichier »). Défenses, de la
+plus forte à la plus faible :
+1. **Pas d'outil qui agit là où arrive le contenu externe.** Les messages qui joignent des
+   e-mails partent vers `hermes-checks` (ni terminal, ni fichiers, ni navigateur, ni messagerie ;
+   carte « Mode protégé ») ; les vérifications automatiques aussi. Gmail est en lecture seule
+   (Google refuse tout envoi).
+2. **Rien ne part sans l'utilisateur** : action préparée, aperçu exact, « Valider ».
+3. **Secrets hors de portée** : la clé Scaleway n'est que dans llm-guard ; Hermes retire les
+   variables `*KEY*`, `*TOKEN*`, `*SECRET*` des commandes qu'il lance ; budget de tokens borné.
+4. **Contenu externe marqué comme des données** (`untrusted()` dans `main.py`) : délimiteurs avec
+   un identifiant aléatoire (impossible à refermer depuis le texte), consigne de ne rien exécuter
+   et de signaler les consignes suspectes. Ça réduit le risque, sans le supprimer à lui seul.
+5. **Côté Hermes principal** (`~/.hermes/config.yaml`) : `approvals.mode: smart` (défaut) ou
+   `manual`, `approvals.unattended_mode: deny` pour les sessions sans humain, et une liste
+   `approvals.deny` ; un `terminal.backend: docker` isolerait ses commandes du VPS.
+6. **Arrêt d'urgence** si quelque chose dérape.
+
 ## Tester en local (simulateur)
 
 ```bash
