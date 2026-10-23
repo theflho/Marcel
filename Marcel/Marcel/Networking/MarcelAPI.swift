@@ -222,9 +222,14 @@ nonisolated struct ProactiveSettings: Decodable, Hashable, Sendable {
     let unseen: Int
     /// Hours (server time) during which checks run, e.g. [8, 21].
     let hours: [Int]
+    /// Tokens spent today across Hermes, checks and memory, and the daily budget (nil without the LLM guard).
+    let tokensToday: Int?
+    let tokenBudget: Int?
 
     enum CodingKeys: String, CodingKey {
         case level, unseen, hours
+        case tokensToday = "tokens_today"
+        case tokenBudget = "token_budget"
         case dailyLimit = "daily_limit"
         case maxChecksPerDay = "max_checks_per_day"
         case checksToday = "checks_today"

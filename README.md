@@ -152,6 +152,16 @@ aucun son ne part chez Apple ; si la reconnaissance locale en français manque, 
 3b. Marcel proactif : créer le profil `hermes-checks` (voir plus haut), puis
    `docker compose exec hermes-checks hermes tools` pour vérifier que seuls web, recherche et
    vision restent ; renseigner `MARCEL_CHECK_HERMES_URL` et `MARCEL_CHECK_HERMES_KEY`.
+3b'. Garde-fou de dépense : `./deploy/install-guard.sh [tokens par jour]` (2 000 000 par défaut)
+   installe **llm-guard** (`app/llm_guard.py`), seul accès à Scaleway : la clé Scaleway part dans
+   `guard.env`, Hermes, hermes-checks et la mémoire de Marcel reçoivent chacun leur clé llm-guard.
+   Il additionne les tokens facturés (`usage`, `stream_options.include_usage` ajouté aux flux) et
+   répond `429` au-delà du budget du jour (minuit, heure du serveur) ; les vérifications
+   automatiques s'arrêtent dès `GUARD_CHECKS_SHARE` (60 %) du budget, pour garder le reste aux
+   messages de l'utilisateur. Consommation : `GET /usage` (clé llm-guard), et dans l'app
+   Réglages › Marcel proactif. Chaque fichier modifié est sauvegardé ; retour arrière :
+   `./deploy/install-guard.sh --annuler <date>`. Si llm-guard est arrêté, Hermes (Telegram compris)
+   ne peut plus joindre le modèle. En plus, créer une alerte de facturation dans la console Scaleway.
 3c. Essayer avec le vrai modèle, sans toucher aux données de Marcel :
    `docker compose exec marcel-api python -m app.try_proactive` (le filtre doit répondre en JSON
    valide aux trois exemples), puis `… --check "Trouver un Mac mini"` (une vraie vérification :

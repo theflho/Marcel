@@ -122,6 +122,9 @@ PROACTIVE_MAX_CHECKS = int(os.environ.get("MARCEL_PROACTIVE_MAX_CHECKS") or 6)
 CHECK_HERMES_URL = (os.environ.get("MARCEL_CHECK_HERMES_URL") or HERMES_URL).rstrip("/")
 CHECK_HERMES_KEY = os.environ.get("MARCEL_CHECK_HERMES_KEY") or (HERMES_API_KEY if CHECK_HERMES_URL == HERMES_URL else "")
 CHECK_HERMES_MODEL = os.environ.get("MARCEL_CHECK_HERMES_MODEL", "")
+# The LLM guard (app/llm_guard.py) counts every token sent to the model provider; Marcel reads
+# its usage with the memory model's key, to show it and to pause checks once their share is spent.
+GUARD_URL = os.environ.get("MARCEL_GUARD_URL", "").rstrip("/")
 
 log = logging.getLogger("marcel")
 missions = MissionStore(DATA_DIR / "marcel.db")
@@ -931,9 +934,26 @@ def settle(goal, verdict: dict) -> tuple[str, str]:
     return NOTIFY, ""
 
 
+async def guard_usage() -> dict | None:
+    """Today's token usage from the LLM guard, or None when there is none (or it can't be reached)."""
+    if not GUARD_URL:
+        return None
+    headers = {"Authorization": f"Bearer {MEMORY_LLM_KEY}"} if MEMORY_LLM_KEY else {}
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{GUARD_URL}/usage", headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        log.warning("could not read the LLM guard's usage")
+        return None
+
+
 async def run_due_checks() -> int:
     """One pass of the scheduler: checks the due goals one after the other. Returns how many ran."""
     if missions.emergency or ideas.settings()["level"] == "off" or not in_hours(PROACTIVE_HOURS, time.time()):
+        return 0
+    if (spent := await guard_usage()) and spent["tokens"] >= spent["checks_budget"]:
         return 0
     ran = 0
     now = time.time()
@@ -989,23 +1009,25 @@ class IdeaUpdate(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=64)
 
 
-def proactive_state() -> dict:
+async def proactive_state() -> dict:
+    spent = await guard_usage()
     return ideas.settings() | {
         "checks_today": ideas.checks_today(), "ideas_today": ideas.ideas_today(),
         "ideas_allowed_today": ideas.daily_limit(), "unseen": ideas.unseen(),
         "hours": list(PROACTIVE_HOURS),
+        "tokens_today": spent and spent["tokens"], "token_budget": spent and spent["budget"],
     }
 
 
 @app.get("/v1/proactive", dependencies=[Depends(require_token)])
 async def get_proactive() -> dict:
-    return proactive_state()
+    return await proactive_state()
 
 
 @app.patch("/v1/proactive", dependencies=[Depends(require_token)])
 async def update_proactive(body: ProactiveUpdate) -> dict:
     ideas.update_settings(**body.model_dump(exclude_none=True))
-    return proactive_state()
+    return await proactive_state()
 
 
 def find_idea(idea_id: str):

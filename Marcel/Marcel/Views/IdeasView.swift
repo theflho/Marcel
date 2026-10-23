@@ -201,6 +201,14 @@ struct ProactiveSettingsView: View {
                         LabeledContent("Vérifications par jour, au plus", value: "\(settings.maxChecksPerDay)")
                     }
                     LabeledContent("Aujourd'hui", value: "\(settings.checksToday) vérif. · \(settings.ideasToday) idée(s)")
+                    if let tokens = settings.tokensToday, let budget = settings.tokenBudget, budget > 0 {
+                        VStack(alignment: .leading, spacing: 6) {
+                            LabeledContent("Tokens du jour",
+                                           value: "\(tokens.formatted()) / \(budget.formatted())")
+                            ProgressView(value: min(Double(tokens), Double(budget)), total: Double(budget))
+                                .tint(tokens >= budget ? .red : .accentColor)
+                        }
+                    }
                 } header: {
                     Text("Coût")
                 } footer: {

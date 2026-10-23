@@ -2,9 +2,22 @@
 # Hermes reste dans son propre compose (~/assistant) : Marcel rejoint son réseau assistant_default.
 # hermes-checks : second Hermes réservé aux vérifications automatiques, outils qui agissent retirés
 # (~/.hermes-checks/config.yaml, voir hermes-checks.config.yaml) et sans messagerie.
+# llm-guard : installé par deploy/install-guard.sh (crée guard.env et rebranche Hermes dessus).
 services:
+  # Le seul accès au fournisseur du modèle : compte les tokens et coupe au-delà du budget du jour.
+  llm-guard:
+    build: .
+    image: marcel-backend
+    container_name: llm-guard
+    command: ["uvicorn", "app.llm_guard:app", "--host", "0.0.0.0", "--port", "4000"]
+    env_file: guard.env
+    volumes:
+      - guard-data:/data
+    restart: unless-stopped
+
   marcel-api:
     build: .
+    image: marcel-backend
     container_name: marcel-api
     env_file: .env
     ports:
@@ -32,3 +45,4 @@ networks:
     external: true
 volumes:
   marcel-data:
+  guard-data:

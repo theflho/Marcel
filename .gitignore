@@ -15,3 +15,6 @@ __pycache__/
 *.log
 
 .DS_Store
+backend/compose.yaml
+backend/guard.env*
+*.avant-guard-*
