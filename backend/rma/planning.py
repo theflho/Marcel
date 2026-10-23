@@ -56,6 +56,27 @@ def parse(text: str) -> list[dict]:
     return missions
 
 
+async def sign_in(page, password) -> None:
+    """The portal's sign-in form: login, password, the terms box (required at each sign-in,
+    the same one the user ticks), then "Valider"."""
+    login = page.locator("input[type=text], input[type=email], input:not([type])").first
+    await login.fill(LOGIN)
+    await password.first.fill(PASSWORD)
+    terms = page.get_by_text(re.compile(r"J.accepte les conditions", re.IGNORECASE)).first
+    if await terms.count():
+        await terms.click()
+    button = page.get_by_role("button", name=re.compile(r"Valider", re.IGNORECASE))
+    if await button.count():
+        await button.first.click()
+    else:
+        await page.get_by_text("Valider", exact=True).first.click()
+    await page.wait_for_load_state("networkidle", timeout=60_000)
+    await page.wait_for_timeout(2_000)
+    if await page.locator("input[type=password]:visible").count():
+        raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env "
+                           "(ou une nouvelle case à cocher sur la page de connexion).")
+
+
 async def read(debug: bool = False) -> list[dict]:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -64,12 +85,13 @@ async def read(debug: bool = False) -> list[dict]:
             await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
             password = page.locator("input[type=password]")
             if await password.count():
-                login = page.locator("input:not([type=password]):not([type=hidden]):visible").first
-                await login.fill(LOGIN)
-                await password.first.fill(PASSWORD)
-                await password.first.press("Enter")
-                await page.wait_for_load_state("networkidle", timeout=60_000)
+                await sign_in(page, password)
                 await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
+                # The list is drawn after the page loads: wait for a first time slot.
+                try:
+                    await page.get_by_text(re.compile(r"\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}")).first.wait_for(timeout=20_000)
+                except PlaywrightTimeout:
+                    print("Aucune mission affichée après la connexion (liste vide ou encore en chargement).")
             missions: dict[tuple, dict] = {}
             for view in VIEWS:
                 try:
@@ -88,6 +110,13 @@ async def read(debug: bool = False) -> list[dict]:
                 print(text[:4000])
                 print("--- Capture : /data/rma-debug.png ---")
             return list(missions.values())
+        except Exception:
+            if debug:
+                DATA.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(DATA / "rma-debug.png"), full_page=True)
+                print("--- Texte visible au moment de l'échec ---")
+                print((await page.locator("body").inner_text())[:4000])
+            raise
         finally:
             await browser.close()
 
