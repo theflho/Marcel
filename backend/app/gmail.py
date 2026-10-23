@@ -34,6 +34,10 @@ MAIL_WORDS = re.compile(r"\b(e-?mails?|mails?|courriels?|bo[iî]te de r[ée]cept
 DEFAULT_QUERY = "newer_than:7d -category:promotions -category:social"
 
 
+class GmailExpired(Exception):
+    """Google withdrew the access (every 7 days while the Google app stays in "Test")."""
+
+
 class Gmail:
     def __init__(self, data_dir: Path, client_id: str, client_secret: str):
         self.client_id, self.client_secret = client_id, client_secret
@@ -135,6 +139,9 @@ class Gmail:
                 resp = await client.post(TOKEN_URL, data={
                     "client_id": self.client_id, "client_secret": self.client_secret,
                     "refresh_token": token["refresh_token"], "grant_type": "refresh_token"})
+            if resp.status_code == 400 and "invalid_grant" in resp.text:
+                self._token_path.unlink(missing_ok=True)
+                raise GmailExpired()
             resp.raise_for_status()
             fresh = resp.json()
             token.update(access_token=fresh["access_token"], expires_at=time.time() + int(fresh.get("expires_in", 3600)))

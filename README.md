@@ -158,7 +158,9 @@ Réglages › Sur cet iPhone :
   client OAuth « Application de bureau » de ton propre projet Google Cloud
   (`MARCEL_GOOGLE_CLIENT_ID`, `MARCEL_GOOGLE_CLIENT_SECRET` dans `.env`), puis
   `docker compose exec marcel-api python -m app.gmail_auth` (`--check`, `--revoke`).
-  `/health` indique `"mail": true` une fois connecté.
+  `/health` indique `"mail": true` une fois connecté. Tant que l'app Google reste en « Test »
+  (la publier demande une page d'accueil et de confidentialité), Google coupe l'accès tous les
+  7 jours : la carte « E-mail » le dit, et il suffit de relancer `app.gmail_auth`.
 
 La dictée (micro du composeur) est transcrite sur l'iPhone uniquement (`requiresOnDeviceRecognition`) :
 aucun son ne part chez Apple ; si la reconnaissance locale en français manque, elle est refusée.

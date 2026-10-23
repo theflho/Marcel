@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from .gmail import Gmail
+from .gmail import Gmail, GmailExpired
 
 
 async def run() -> int:
@@ -30,7 +30,11 @@ async def run() -> int:
         if not gmail.connected:
             print("Gmail n'est pas connecté.")
             return 1
-        mails = await gmail.recent(limit=3)
+        try:
+            mails = await gmail.recent(limit=3)
+        except GmailExpired:
+            print("L'accès a expiré (Google le coupe tous les 7 jours en mode Test) : relance sans --check.")
+            return 1
         print(f"Connecté en lecture seule. {len(mails)} e-mail(s) récent(s) :")
         for mail in mails:
             print(f"- {mail['subject']}")
