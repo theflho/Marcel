@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Met à jour Marcel sur le VPS : à lancer depuis backend/ (là où sont .env et le compose).
-#   ./deploy/update.sh            reconstruit et redémarre marcel-api, puis teste /health
+#   ./deploy/update.sh            reconstruit et redémarre Marcel (et llm-guard), puis teste /health
 #   ./deploy/update.sh --try      lance aussi l'essai du filtre avec le vrai modèle
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 docker() { if command docker info >/dev/null 2>&1; then command docker "$@"; else sudo docker "$@"; fi; }
 
 git pull --ff-only
-docker compose up -d --build marcel-api
+docker compose up -d --build
 
 token=$(grep -E '^MARCEL_TOKEN=' .env | cut -d= -f2-)
 for _ in $(seq 1 30); do
