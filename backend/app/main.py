@@ -16,6 +16,8 @@ import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Literal
 
@@ -310,10 +312,51 @@ async def start_mission(request: ChatRequest) -> dict:
     device = (f"Informations partagées par l'iPhone de l'utilisateur (lecture seule) :\n{request.device_context}"
               if request.device_context else "")
     mail, extra = await mail_context(title)
-    note = "\n\n".join(filter(None, [note, goals.context(), device, mail]))
+    note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(), device, mail]))
     inner = (lambda: mock_stream(request, facts)) if MOCK else (lambda: hermes_stream(request, model, note))
     return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra),
                           model=model, title=title).public()
+
+
+# The user's time zone, for "today", "tomorrow at 9"… (the server runs in UTC).
+try:
+    USER_TZ = ZoneInfo(os.environ.get("MARCEL_TIMEZONE") or "Europe/Paris")
+except ZoneInfoNotFoundError:
+    USER_TZ = None
+
+APP_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur, et tu lui parles dans l'app iPhone
+« Marcel » (son propre serveur, son agent Hermes, le modèle DeepSeek). Réponds en français, en
+tutoyant, de façon courte et lisible sur un téléphone ; le Markdown s'affiche (titres, listes,
+tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'inventer :
+- Mémoire : tu retiens tout seul ce qui dure (préférences, projets) après chaque échange ; l'utilisateur
+  la voit et la corrige dans Réglages › Mémoire de Marcel.
+- Objectifs : pour suivre quelque chose dans le temps (un achat, un prix, un projet),
+  l'app propose sous ta réponse « Marcel peut suivre ça pour toi » ; on peut aussi l'ajouter
+  dans Réglages › Objectifs suivis, au rythme chaque heure, jour ou semaine. Tu vérifies alors
+  seul et, si ça vaut la peine, une idée arrive sous l'ampoule en haut de l'écran.
+- Actions : tu prépares (brouillon, panier, réservation) mais rien ne part sans lui. Pour une
+  action réelle, donne le contenu exact (destinataire, texte, montant) et attends son accord
+  explicite dans la conversation ; sur une idée, l'app propose le bouton « Valider ».
+- L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
+  l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
+{state}"""
+
+
+def app_context(agenda_shared: bool) -> str:
+    """What Marcel is and what is plugged in right now, sent with every mission."""
+    now = datetime.now(USER_TZ) if USER_TZ else datetime.now()
+    days = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+    months = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+              "octobre", "novembre", "décembre")
+    state = [f"Nous sommes le {days[now.weekday()]} {now.day} {months[now.month - 1]} {now.year}, {now:%H:%M}."]
+    state.append("E-mail : Gmail est connecté en lecture seule ; les derniers e-mails te sont joints quand son "
+                 "message en parle ; tu ne peux ni envoyer, ni supprimer, ni modifier." if gmail.connected else
+                 "E-mail : non connecté ; tu n'as pas accès à ses e-mails.")
+    state.append("Agenda : l'utilisateur partage les 7 prochains jours de son iPhone (joints ci-dessous), en lecture seule."
+                 if agenda_shared else "Agenda : non partagé (Réglages › Sur cet iPhone › Partager mon agenda).")
+    level = {"off": "désactivées", "quiet": "discrètes (l'important seulement)", "normal": "normales"}
+    state.append(f"Vérifications automatiques des objectifs : {level.get(ideas.settings()['level'], 'normales')}.")
+    return APP_PROMPT.format(state="\n".join(state))
 
 
 async def mail_context(question: str) -> tuple[str, list[dict]]:

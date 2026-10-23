@@ -10,6 +10,12 @@ backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/file
 
 ## Protocole
 
+Chaque mission envoie à Hermes, avant la mémoire, une présentation de l'app (`APP_PROMPT` dans
+`backend/app/main.py`) : qui est Marcel, ce que l'app sait faire (mémoire, objectifs, idées,
+validation des actions, voix, notifications), la date et l'heure (`MARCEL_TIMEZONE`,
+`Europe/Paris` par défaut) et ce qui est branché (Gmail, agenda, niveau de proactivité). Le
+caractère de Marcel peut se régler dans le `SOUL.md` de Hermes.
+
 - `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0,"tokens":{"today":0,"budget":2000000}}`
   (`ideas` : idées pas encore vues, pour la pastille ; `tokens` : consommation du jour lue dans
   llm-guard, gardée 10 s, `null` sans garde-fou) ; `401` si le jeton est faux. L'app la montre en
