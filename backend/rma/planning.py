@@ -129,6 +129,21 @@ async def sign_in(page, password) -> None:
         raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env.")
 
 
+async def show(page, view: str) -> bool:
+    """Selects a view of the list ("Sem.", "Mois", "∞"): the radio button itself, not its text."""
+    radio = page.get_by_role("radio", name=view, exact=True)
+    if await radio.count():
+        await radio.first.check(force=True)
+    else:
+        option = page.locator("mat-radio-button, label").filter(has_text=re.compile(rf"^\s*{re.escape(view)}\s*$"))
+        if not await option.count():
+            return False
+        await option.first.click(force=True)
+    await page.wait_for_load_state("networkidle", timeout=30_000)
+    await page.wait_for_timeout(1_500)
+    return True
+
+
 async def wait_for_missions(page, seconds: int = 30) -> bool:
     """Waits until a mission's time slot ("26/10/2026 20:00 - 23:00") is on the page."""
     try:
@@ -148,21 +163,20 @@ async def read(debug: bool = False) -> list[dict]:
             if await password.count():
                 await sign_in(page, password)
                 await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
-            # A new browser first downloads the missions (the portal works offline):
-            # wait for a first time slot, and reload once if the list stays empty.
-            if not await wait_for_missions(page):
-                await page.reload(wait_until="networkidle", timeout=60_000)
-                if not await wait_for_missions(page):
-                    print("Aucune mission affichée (liste vide ou encore en chargement).")
+            if debug:
+                radios = page.get_by_role("radio")
+                names = [await radios.nth(i).get_attribute("aria-label") or await radios.nth(i).get_attribute("value")
+                         for i in range(await radios.count())]
+                print(f"Choix de vue trouvés : {names}")
             missions: dict[tuple, dict] = {}
             for view in VIEWS:
-                try:
-                    # Only the view selector at the top of the list is ever clicked.
-                    await page.get_by_text(view, exact=True).first.click(timeout=10_000)
-                    await page.wait_for_load_state("networkidle", timeout=30_000)
-                    await page.wait_for_timeout(3_000)
-                except PlaywrightTimeout:
+                # Only the view selector at the top of the list is ever clicked.
+                if not await show(page, view):
                     print(f"Vue « {view} » introuvable sur la page.")
+                    continue
+                # A new browser first downloads the missions (the portal works offline).
+                if not await wait_for_missions(page, 20):
+                    print(f"Vue « {view} » : aucune mission affichée.")
                 text = await page.locator("body").inner_text()
                 for mission in parse(text):
                     missions[(mission["date"], mission["start"], mission["store"])] = mission
