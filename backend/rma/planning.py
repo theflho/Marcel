@@ -24,6 +24,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 
 PORTAL = "https://ecollaborateurs.rmasa.com/"
+HOME = PORTAL + "#/accueil"
 MISSIONS = PORTAL + "#/accueil/missions"
 LOGIN = os.environ.get("RMA_LOGIN", "")
 PASSWORD = os.environ.get("RMA_PASSWORD", "")
@@ -169,12 +170,24 @@ async def read(debug: bool = False) -> list[dict]:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         page = await browser.new_page(locale="fr-FR", timezone_id="Europe/Paris")
+        exchanges: list[str] = []
+        if debug:
+            # What the portal asks its server (path and status only: no tokens, no content).
+            def note(response):
+                if response.request.resource_type in ("xhr", "fetch"):
+                    path = response.url.split("?")[0].replace(PORTAL, "/")
+                    exchanges.append(f"{response.request.method} {path} → {response.status}")
+            page.on("response", note)
         try:
             await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
             password = page.locator("input[type=password]")
             if await password.count():
                 await sign_in(page, password)
+                # Like a person: the home page first, which lets the portal sync the missions.
+                await page.goto(HOME, wait_until="networkidle", timeout=60_000)
+                await page.wait_for_timeout(8_000)
                 await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
+                await page.wait_for_timeout(3_000)
             if debug:
                 radios = page.get_by_role("radio")
                 names = [await radios.nth(i).get_attribute("aria-label") or await radios.nth(i).get_attribute("value")
@@ -198,6 +211,8 @@ async def read(debug: bool = False) -> list[dict]:
                 print("--- Texte visible de la page (sans les identifiants) ---")
                 print(text[:4000])
                 print("--- Capture : /data/rma-debug.png ---")
+                print("--- Échanges du portail avec son serveur ---")
+                print("\n".join(exchanges[-60:]) or "(aucun)")
             return list(missions.values())
         except Exception:
             if debug:
