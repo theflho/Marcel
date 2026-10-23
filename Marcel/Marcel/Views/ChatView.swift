@@ -208,12 +208,19 @@ struct ChatView: View {
             } label: {
                 VStack(spacing: -6) {
                     MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
-                    Text("Marcel")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(Theme.surface, in: .capsule)
-                        .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+                    VStack(spacing: 0) {
+                        Text("Marcel")
+                            .font(.subheadline.weight(.semibold))
+                        if store.isStreaming {
+                            TypingStatus()
+                                .transition(.opacity)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Theme.surface, in: .capsule)
+                    .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+                    .animation(.easeInOut(duration: 0.2), value: store.isStreaming)
                 }
             }
             .tint(.primary)
@@ -280,6 +287,21 @@ private struct EmptyChatView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 40)
         .padding(.top, 60)
+    }
+}
+
+/// "écrit…" under Marcel's name while a reply is being written, like a messaging app.
+private struct TypingStatus: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.45)) { context in
+            let dots = Int(context.date.timeIntervalSinceReferenceDate / 0.45) % 3 + 1
+            Text("écrit" + String(repeating: ".", count: dots))
+                .font(.caption2)
+                .foregroundStyle(Color.accentColor)
+                // A fixed width, so the capsule doesn't twitch as the dots change.
+                .frame(width: 44, alignment: .leading)
+        }
+        .accessibilityHidden(true)
     }
 }
 
