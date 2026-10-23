@@ -60,23 +60,26 @@ ACCEPT = re.compile(r"accept|j.accepte|valider|^ok$|continuer|j.ai lu|compris|co
 
 
 async def accept_terms_window(page) -> None:
-    """The terms window the portal may show at sign-in: scroll it to the end (some accept
-    buttons wait for that), then press its accept button."""
-    window = page.locator("mat-dialog-container, [role=dialog], .cdk-overlay-pane").last
-    if not await window.count() or not await window.is_visible():
+    """The terms window the portal may show at sign-in ("Instructions et engagements…"):
+    scroll it to the end (some accept buttons wait for that), then press its accept control."""
+    title = page.get_by_text(re.compile(r"Instructions et engagements", re.IGNORECASE)).first
+    if not await title.count() or not await title.is_visible():
         return
+    # The window is the nearest ancestor of the title that holds a clickable control.
+    window = title.locator("xpath=ancestor::*[.//button or .//a or .//*[@role='button']][1]")
     await window.evaluate("w => w.querySelectorAll('*').forEach(e => {"
                           " if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight; })")
     await page.wait_for_timeout(1_000)
-    buttons = window.get_by_role("button")
-    names = [" ".join((await buttons.nth(i).inner_text()).split()) for i in range(await buttons.count())]
+    controls = window.locator("button, a, [role=button], .mat-button, .mat-raised-button")
+    names = [" ".join((await controls.nth(i).inner_text()).split()) for i in range(await controls.count())]
     print(f"Fenêtre des CGU, boutons : {names}")
     for index, name in enumerate(names):
         if ACCEPT.search(name):
-            await buttons.nth(index).click(force=True)
+            await controls.nth(index).click(force=True)
             await page.wait_for_timeout(1_500)
             return
-    raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}.")
+    end = " ".join((await window.inner_text()).split())[-400:]
+    raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}. Fin du texte : « {end} »")
 
 
 async def sign_in(page, password) -> None:
