@@ -38,6 +38,21 @@ class GmailExpired(Exception):
     """Google withdrew the access (every 7 days while the Google app stays in "Test")."""
 
 
+class GmailRefused(Exception):
+    """Google refused the request; the message is Google's own explanation."""
+
+
+def check(resp: httpx.Response) -> None:
+    """Raises with Google's explanation (e.g. "Gmail API has not been used in project…")."""
+    if resp.status_code in (401, 403):
+        try:
+            message = resp.json()["error"]["message"]
+        except (ValueError, KeyError, TypeError):
+            message = resp.text[:300]
+        raise GmailRefused(message)
+    resp.raise_for_status()
+
+
 class Gmail:
     def __init__(self, data_dir: Path, client_id: str, client_secret: str):
         self.client_id, self.client_secret = client_id, client_secret
@@ -104,13 +119,13 @@ class Gmail:
         headers = {"Authorization": f"Bearer {await self._access_token()}"}
         async with httpx.AsyncClient(timeout=15, headers=headers) as client:
             resp = await client.get(f"{API_URL}/messages", params={"q": query, "maxResults": limit})
-            resp.raise_for_status()
+            check(resp)
             ids = [m["id"] for m in resp.json().get("messages", [])]
 
             async def one(message_id: str) -> dict:
                 r = await client.get(f"{API_URL}/messages/{message_id}", params={
                     "format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]})
-                r.raise_for_status()
+                check(r)
                 data = r.json()
                 fields = {h["name"]: h["value"] for h in data.get("payload", {}).get("headers", [])}
                 return {"from": fields.get("From", ""), "subject": fields.get("Subject", "(sans objet)"),

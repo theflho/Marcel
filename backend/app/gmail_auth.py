@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from .gmail import Gmail, GmailExpired
+from .gmail import Gmail, GmailExpired, GmailRefused
 
 
 async def run() -> int:
@@ -35,6 +35,10 @@ async def run() -> int:
         except GmailExpired:
             print("L'accès a expiré (Google le coupe tous les 7 jours en mode Test) : relance sans --check.")
             return 1
+        except GmailRefused as error:
+            print(f"Connecté, mais Google refuse la lecture : {error}")
+            print("Si l'API Gmail n'est pas activée : console Google Cloud › API Gmail › Activer, puis réessaie dans 2 minutes.")
+            return 1
         print(f"Connecté en lecture seule. {len(mails)} e-mail(s) récent(s) :")
         for mail in mails:
             print(f"- {mail['subject']}")
@@ -51,7 +55,13 @@ async def run() -> int:
     except (ValueError, FileNotFoundError) as error:
         print(f"\nÉchec : {error}")
         return 1
-    mails = await gmail.recent(limit=3)
+    try:
+        mails = await gmail.recent(limit=3)
+    except GmailRefused as error:
+        print(f"\nConnexion enregistrée, mais Google refuse encore la lecture : {error}")
+        print("Si l'API Gmail n'est pas activée : console Google Cloud › API Gmail › Activer, puis, "
+              "dans 2 minutes : python -m app.gmail_auth --check (pas besoin de refaire la connexion).")
+        return 1
     print(f"\nGmail connecté en lecture seule. Derniers sujets : {', '.join(m['subject'] for m in mails) or 'aucun'}")
     return 0
 

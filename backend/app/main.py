@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .gmail import MAIL_WORDS, Gmail, GmailExpired
+from .gmail import MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
@@ -322,6 +322,10 @@ async def mail_context(question: str) -> tuple[str, list[dict]]:
         return "", []
     try:
         mails = await gmail.recent()
+    except GmailRefused as error:
+        log.warning("Gmail refused: %s", error)
+        return "", [{"id": "mail", "name": "E-mail", "detail": f"Google refuse la lecture : {error}"[:300],
+                     "status": "cancelled"}]
     except GmailExpired:
         detail = "Accès à Gmail expiré : relance la connexion sur le VPS (python -m app.gmail_auth)."
         return ("L'accès aux e-mails de l'utilisateur a expiré : dis-lui de relancer la connexion Gmail.",
