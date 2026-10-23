@@ -111,15 +111,20 @@ struct ChatView: View {
             .padding(.horizontal)
             .padding(.top, 4)
 
-            VStack(spacing: -6) {
-                MarcelAvatar(size: 60, isThinking: store.isStreaming)
-                Text("Marcel")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(Theme.surface, in: .capsule)
-                    .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+            Menu {
+                MoodPicker(conversation: store.conversation)
+            } label: {
+                VStack(spacing: -6) {
+                    MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
+                    Text("Marcel")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 5)
+                        .background(Theme.surface, in: .capsule)
+                        .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
+                }
             }
+            .tint(.primary)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(store.isStreaming ? "Marcel écrit" : "Marcel")
             .accessibilityAddTraits(.isHeader)
@@ -164,6 +169,14 @@ struct ChatView: View {
 private struct EmptyChatView: View {
     var body: some View {
         VStack(spacing: 12) {
+            Image("MarcelHero")
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: 300)
+                .frame(height: 200)
+                .clipShape(.rect(cornerRadius: 28))
+                .accessibilityHidden(true)
+                .padding(.bottom, 8)
             Text("Bonjour, je suis Marcel.")
                 .font(.title3.weight(.semibold))
             Text("Demande-moi quelque chose. Les missions continuent sur le serveur, même quand l'app est fermée.")
@@ -173,7 +186,7 @@ private struct EmptyChatView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 40)
-        .padding(.top, 120)
+        .padding(.top, 60)
     }
 }
 

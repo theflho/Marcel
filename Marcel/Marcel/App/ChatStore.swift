@@ -103,6 +103,11 @@ final class ChatStore {
         persist(id, touch: false)
     }
 
+    func setMood(_ id: UUID, _ mood: MarcelMood?) {
+        mutate(id) { $0.mood = mood }
+        persist(id, touch: false)
+    }
+
     func delete(_ id: UUID) {
         streamTasks[id]?.cancel()
         if let conversation = conversations.first(where: { $0.id == id }) {

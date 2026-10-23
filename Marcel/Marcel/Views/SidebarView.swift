@@ -168,6 +168,7 @@ struct SidebarView: View {
             onClose()
         } label: {
             HStack(spacing: 10) {
+                MarcelAvatar(size: 36, mood: conversation.displayMood)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(conversation.title)
                         .font(.body.weight(conversation.id == store.currentID ? .semibold : .regular))
@@ -201,6 +202,9 @@ struct SidebarView: View {
                 ForEach(store.projects) { project in
                     Button(project.name) { store.move(conversation.id, to: project.id) }
                 }
+            }
+            Menu("Illustration", systemImage: "photo") {
+                MoodPicker(conversation: conversation)
             }
             ShareLink(item: transcript(of: conversation))
             Button("Supprimer", systemImage: "trash", role: .destructive) { store.delete(conversation.id) }

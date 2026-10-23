@@ -48,14 +48,17 @@ nonisolated struct Conversation: Identifiable, Codable, Hashable, Sendable {
     var messages: [ChatMessage]
     var updatedAt: Date
     var projectID: UUID?
+    /// Illustration chosen by the user; nil means automatic.
+    var mood: MarcelMood?
 
     init(id: UUID = UUID(), title: String = "Nouvelle conversation", messages: [ChatMessage] = [],
-         updatedAt: Date = .now, projectID: UUID? = nil) {
+         updatedAt: Date = .now, projectID: UUID? = nil, mood: MarcelMood? = nil) {
         self.id = id
         self.title = title
         self.messages = messages
         self.updatedAt = updatedAt
         self.projectID = projectID
+        self.mood = mood
     }
 }
 
