@@ -31,8 +31,8 @@ docker compose exec -T marcel-api python -m app.backup /data > "$work/marcel-dat
 if docker compose ps --services --status running | grep -qx llm-guard; then
   docker compose exec -T llm-guard python -m app.backup /data > "$work/guard-data.tar.gz"
 fi
-for file in .env guard.env compose.yaml; do
-  [[ -f "$file" ]] && cp "$file" "$work/"
+for file in .env guard.env rma.env compose.yaml; do
+  if [[ -f "$file" ]]; then cp "$file" "$work/"; fi
 done
 if [[ -d "$HOME/.hermes-checks" ]]; then
   sudo tar -czf "$work/hermes-checks.tar.gz" -C "$HOME" .hermes-checks

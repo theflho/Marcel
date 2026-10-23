@@ -386,10 +386,12 @@ struct ServerEditView: View {
 
 /// What happens on the iPhone itself: voice, notifications, and what it shares with Marcel.
 private struct DeviceSection: View {
+    @Environment(ChatStore.self) private var store
     @Environment(\.openURL) private var openURL
     @AppStorage(Speaker.autoReadKey) private var readAloud = false
     @State private var notifications = BackgroundRefresh.isEnabled
     @State private var calendar = UserDefaults.standard.bool(forKey: Agenda.shareKey) && Agenda.isAuthorized
+    @State private var workReminders = WorkReminders.isEnabled
     @State private var refused: String?
 
     var body: some View {
@@ -402,6 +404,18 @@ private struct DeviceSection: View {
                         if wanted && !on {
                             notifications = false
                             refused = "Les notifications sont refusées pour Marcel dans les réglages de l'iPhone."
+                        }
+                    }
+                }
+            Toggle("Rappels de pointage (5 min avant)", isOn: $workReminders)
+                .onChange(of: workReminders) { _, wanted in
+                    Task {
+                        let on = await WorkReminders.setEnabled(wanted)
+                        if wanted && !on {
+                            workReminders = false
+                            refused = "Les notifications sont refusées pour Marcel dans les réglages de l'iPhone."
+                        } else if on {
+                            await store.syncPlanning(force: true)
                         }
                     }
                 }
@@ -432,7 +446,8 @@ private struct DeviceSection: View {
         } footer: {
             Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
                  + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
-                 + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier.")
+                 + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier. "
+                 + "Les rappels de pointage suivent ton planning RMA lu par le serveur ; un appui ouvre le portail, et tu pointes toi-même sur place.")
         }
     }
 }

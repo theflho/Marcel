@@ -30,6 +30,7 @@ from .gmail import MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
+from .planning import PlanningStore
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
 
@@ -134,6 +135,8 @@ missions = MissionStore(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
 ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
+# Key the rma robot uses to hand over the planning it read (it has no access to anything else).
+PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 # Gmail, read only (connected once with python -m app.gmail_auth).
 gmail = Gmail(DATA_DIR, os.environ.get("MARCEL_GOOGLE_CLIENT_ID", ""), os.environ.get("MARCEL_GOOGLE_CLIENT_SECRET", ""))
 # Background jobs (memory extraction) are kept here so they aren't garbage-collected mid-way.
@@ -327,7 +330,8 @@ async def start_mission(request: ChatRequest) -> dict:
     # The calendar can hold invitations written by others: read as data.
     device = untrusted("AGENDA DE L'IPHONE", request.device_context) if request.device_context else ""
     mail, extra = await mail_context(title)
-    note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(), device, mail]))
+    note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
+                                      planning.context(), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -372,6 +376,9 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
 {state}"""
+
+
+planning = PlanningStore(DATA_DIR / "marcel.db", USER_TZ)
 
 
 def app_context(agenda_shared: bool) -> str:
@@ -1210,3 +1217,34 @@ async def delete_idea(idea_id: str) -> dict:
     idea = find_idea(idea_id)
     ideas.delete(idea_id)
     return idea.public()
+
+
+# MARK: Planning (RMA missions)
+
+
+class PlanningMission(BaseModel):
+    store: str = Field(max_length=200)
+    kind: str = Field(default="", max_length=200)
+    client: str = Field(default="", max_length=200)
+    date: str = Field(pattern=r"^\d{2}/\d{2}/\d{4}$")
+    start: str = Field(pattern=r"^\d{1,2}:\d{2}$")
+    end: str = Field(pattern=r"^\d{1,2}:\d{2}$")
+
+
+class PlanningUpdate(BaseModel):
+    missions: list[PlanningMission] = Field(max_length=500)
+
+
+@app.put("/v1/planning")
+async def put_planning(body: PlanningUpdate, x_planning_key: str = Header(default="")) -> dict:
+    """The rma robot's reading. Its own key: it can hand over the planning, nothing else."""
+    if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
+        raise HTTPException(401, "Invalid key")
+    return {"count": planning.replace([m.model_dump() for m in body.missions])}
+
+
+@app.get("/v1/planning", dependencies=[Depends(require_token)])
+async def get_planning(days: int = Query(default=14, ge=1, le=60)) -> list[dict]:
+    """Missions from yesterday to `days` ahead (times in seconds since 1970)."""
+    now = time.time()
+    return planning.list(now - 86_400, now + days * 86_400)

@@ -131,6 +131,25 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
   PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
 
+## Planning RMA et rappels de pointage
+
+Un robot (`backend/rma`, conteneur `rma`, Playwright) lit chaque jour à 19 h le planning du
+portail salarié RMA, **en lecture seule** : connexion, liste des missions (vues « Sem. » et
+« Mois »), lecture des cartes (magasin, type, date, horaires, client). Il ne clique jamais sur une
+mission ni sur le pointage : pointer atteste une présence sur place et reste un geste de
+l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les identifiants RMA
+(`rma.env`) ; il remet le planning à Marcel avec sa propre clé (`PUT /v1/planning`,
+`X-Planning-Key`), qui ne donne accès à rien d'autre.
+- Marcel connaît les missions des 7 prochains jours (« Je bosse où lundi ? »).
+- `GET /v1/planning?days=14` → missions (heures en secondes depuis 1970) ; les missions à venir
+  que le robot ne voit plus sont retirées (annulées), les passées gardées 45 jours.
+- App : Réglages › Sur cet iPhone › **Rappels de pointage** : notifications locales programmées
+  par l'iPhone 5 min avant chaque début et chaque fin (à l'heure exacte, app fermée) ; un appui
+  ouvre le portail.
+- Installation sur le VPS : `./deploy/install-rma.sh` (identifiant et mot de passe saisis sur
+  le VPS, première lecture d'essai sans rien envoyer : `--debug`, capture dans le volume
+  `rma-data`) ; puis `docker compose run --rm rma python planning.py --once`.
+
 ## Sécurité : injection de consignes (prompt injection)
 
 Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des consignes écrites

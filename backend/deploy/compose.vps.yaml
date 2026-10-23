@@ -41,6 +41,24 @@ services:
           memory: 2G
           cpus: "1.0"
 
+  # Robot de lecture du planning RMA (deploy/install-rma.sh) : navigateur invisible, lecture seule,
+  # seul à connaître les identifiants RMA (rma.env) ; il ne fait que remettre le planning à Marcel.
+  rma:
+    build: ./rma
+    container_name: rma
+    env_file: rma.env
+    environment:
+      TZ: Europe/Paris
+      MARCEL_URL: http://marcel-api:8000
+    volumes:
+      - rma-data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+
 networks:
   default:
     name: assistant_default
@@ -48,3 +66,4 @@ networks:
 volumes:
   marcel-data:
   guard-data:
+  rma-data:

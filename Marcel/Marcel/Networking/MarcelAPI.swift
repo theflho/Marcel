@@ -241,6 +241,22 @@ nonisolated struct ProactiveSettings: Decodable, Hashable, Sendable {
     }
 }
 
+/// One work mission from the RMA planning (`/v1/planning`), read on the server.
+nonisolated struct PlanningMission: Decodable, Hashable, Sendable, Identifiable {
+    let id: String
+    let store: String
+    let kind: String
+    let client: String
+    let startAt: Date
+    let endAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, store, kind, client
+        case startAt = "start_at"
+        case endAt = "end_at"
+    }
+}
+
 /// Fields of the proactivity settings to change; nil ones are left as they are.
 nonisolated struct ProactiveChange: Encodable, Sendable {
     var level: String?
@@ -480,6 +496,11 @@ nonisolated struct MarcelAPI: Sendable {
 
     func deleteIdea(id: String) async throws {
         let _: Idea = try await call("DELETE", "v1/ideas/\(id)")
+    }
+
+    /// Work missions from yesterday to `days` ahead.
+    func planning(days: Int = 14) async throws -> [PlanningMission] {
+        try await call("GET", "v1/planning", query: [URLQueryItem(name: "days", value: String(days))])
     }
 
     func proactive() async throws -> ProactiveSettings {

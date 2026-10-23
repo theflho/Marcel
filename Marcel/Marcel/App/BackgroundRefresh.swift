@@ -61,6 +61,11 @@ enum BackgroundRefresh {
             notified.insert("mission-\(missionID)")
         }
 
+        // The planning may have changed (a mission added or moved): reminders follow it.
+        if WorkReminders.isEnabled, let missions = try? await api.planning() {
+            await WorkReminders.schedule(missions)
+        }
+
         // Keep the list short: only recent ids can come back.
         UserDefaults.standard.set(Array(notified.suffix(100)), forKey: notifiedKey)
     }

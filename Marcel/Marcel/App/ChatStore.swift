@@ -49,6 +49,7 @@ final class ChatStore {
     private(set) var tokenUsage: TokenUsage?
     /// Set to open Settings at a given place; SettingsView takes it when it appears.
     var settingsRequest: SettingsRoute?
+    private var lastPlanningSync: Date?
 
     var draft: String {
         didSet { UserDefaults.standard.set(draft, forKey: Self.draftKey) }
@@ -257,6 +258,7 @@ final class ChatStore {
             serverStatus = .reachable
             unseenIdeas = health?.unseenIdeas ?? 0
             tokenUsage = health?.tokens
+            Task { await syncPlanning() }
             if health?.emergency == true {
                 // Stopped from elsewhere (another device, curl): honour it here too.
                 applyEmergencyLocally()
@@ -374,6 +376,16 @@ final class ChatStore {
         guard !emergencyActive, let api = settings.api, let health = await api.health(), health.status == 200 else { return }
         unseenIdeas = health.unseenIdeas
         tokenUsage = health.tokens
+    }
+
+    /// Fetches the work planning and schedules the clock-in reminders, at most every 10 minutes
+    /// (the health check runs every 30 s) unless `force`.
+    func syncPlanning(force: Bool = false) async {
+        guard WorkReminders.isEnabled, !emergencyActive, let api = settings.api else { return }
+        if !force, let last = lastPlanningSync, Date.now.timeIntervalSince(last) < 600 { return }
+        lastPlanningSync = .now
+        guard let missions = try? await api.planning() else { return }
+        await WorkReminders.schedule(missions)
     }
 
     // MARK: - Ideas
