@@ -27,8 +27,8 @@ from pydantic import BaseModel, Field
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
-from .proactive import (DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours, is_due,
-                        parse_hours)
+from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
+                        is_due, parse_hours)
 
 MARCEL_TOKEN = os.environ.get("MARCEL_TOKEN", "")
 HERMES_URL = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/")
@@ -172,6 +172,9 @@ class ChatRequest(BaseModel):
     conversation_id: str
     messages: list[Message] = Field(min_length=1, max_length=200)
     model: str | None = None
+    # What the iPhone shares by itself when the user allowed it (upcoming calendar events…),
+    # read-only information sent with this mission only.
+    device_context: str | None = Field(default=None, max_length=8000)
 
 
 def sse(payload: dict) -> str:
@@ -301,7 +304,9 @@ async def start_mission(request: ChatRequest) -> dict:
         raise HTTPException(400, "Modèle inconnu")
     title = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
     note, facts = memory.context(title)
-    note = "\n\n".join(filter(None, [note, goals.context()]))
+    device = (f"Informations partagées par l'iPhone de l'utilisateur (lecture seule) :\n{request.device_context}"
+              if request.device_context else "")
+    note = "\n\n".join(filter(None, [note, goals.context(), device]))
     inner = (lambda: mock_stream(request, facts)) if MOCK else (lambda: hermes_stream(request, model, note))
     return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts),
                           model=model, title=title).public()
@@ -612,8 +617,9 @@ Importance de 1 (anecdotique) à 5 (essentiel).
 Si l'utilisateur exprime un objectif qui se poursuit dans le temps et que Marcel pourrait suivre
 pour lui (chercher un achat, apprendre quelque chose, préparer un événement, surveiller une
 situation), propose-le dans "goals" : un titre court à l'infinitif (« Trouver un Mac mini »), un
-détail utile (budget, contrainte, échéance) et un rythme de vérification : "daily" si ça bouge
-vite (prix, disponibilité), "weekly" sinon, "manual" si rien n'est à surveiller. Ne propose pas
+détail utile (budget, contrainte, échéance) et un rythme de vérification : "hourly" seulement si
+quelques heures de retard feraient rater l'occasion (vente flash, places qui partent), "daily" si
+ça bouge vite (prix, disponibilité), "weekly" sinon, "manual" si rien n'est à surveiller. Ne propose pas
 une tâche déjà faite dans l'échange, ni un objectif déjà connu. En cas de doute, n'en propose pas.
 Réponds uniquement en JSON :
 {"add": [{"text": "...", "importance": 3, "expires_days": null}], "update": [{"id": "...", "text": "..."}], "expire": ["id"],
@@ -755,14 +761,14 @@ async def nightly_tidy() -> None:
 class GoalCreate(BaseModel):
     title: str = Field(min_length=3, max_length=120)
     detail: str = Field(default="", max_length=500)
-    cadence: Literal["daily", "weekly", "manual"] = "weekly"
+    cadence: Literal["hourly", "daily", "weekly", "manual"] = "weekly"
 
 
 class GoalUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=3, max_length=120)
     detail: str | None = Field(default=None, max_length=500)
     status: Literal["proposed", "active", "paused", "done", "dismissed"] | None = None
-    cadence: Literal["daily", "weekly", "manual"] | None = None
+    cadence: Literal["hourly", "daily", "weekly", "manual"] | None = None
 
 
 def find_goal(goal_id: str):
@@ -826,7 +832,8 @@ Vérification automatique d'un objectif que l'utilisateur t'a demandé de suivre
 {notes}
 Regarde où ça en est maintenant (nouveautés, prix, disponibilités, dates, étapes suivantes) avec
 les outils dont tu disposes, puis écris un compte rendu court et factuel, avec tes sources.
-Tu peux PRÉPARER une action utile (brouillon de message, panier, réservation à confirmer), mais
+Tu peux PRÉPARER une action utile (brouillon de message, panier, réservation à confirmer) : écris-la
+en entier dans le compte rendu (destinataire, texte exact du message, montant, lien), mais
 n'effectue aucune action réelle : n'envoie rien, ne réserve rien, n'achète rien, ne publie rien,
 ne modifie aucun compte. Toute action attendra la validation de l'utilisateur dans l'app. Ne propose pas de créer
 une surveillance ou une tâche planifiée : c'est Marcel qui s'en charge."""
@@ -840,10 +847,12 @@ automatique d'un de ses objectifs vient de se terminer. Décide s'il faut le pr�
 Ne le dérange pas pour rien : en cas de doute, choisis "later". Ne reprends pas une idée qu'il a
 déjà refusée. "message" s'adresse à lui (tutoiement, 3 phrases maximum, l'essentiel et pourquoi
 c'est utile maintenant). "action" décrit en une phrase l'action que Marcel a préparée et qui
-attend son accord (« Commander le Mac mini M4 à 599 € chez … »), sinon "". "note" résume en une
-phrase ce qu'on sait maintenant, pour la prochaine vérification. Importance de 1 à 5.
+attend son accord (« Commander le Mac mini M4 à 599 € chez … »), sinon "". "action_detail" reprend
+mot pour mot ce qui partirait s'il valide : destinataire ou site, texte exact du message, montant,
+lien ; "" s'il n'y a pas d'action. N'invente rien qui ne soit pas dans le compte rendu. "note"
+résume en une phrase ce qu'on sait maintenant, pour la prochaine vérification. Importance de 1 à 5.
 Réponds uniquement en JSON :
-{"decision": "notify", "title": "...", "message": "...", "action": "", "importance": 3, "note": "..."}"""
+{"decision": "notify", "title": "...", "message": "...", "action": "", "action_detail": "", "importance": 3, "note": "..."}"""
 
 
 def check_refusal(goal, scheduled: bool = False) -> tuple[int, str] | None:
@@ -901,7 +910,7 @@ async def finish_check(goal, mission) -> None:
         if decision == NOTIFY:
             idea = ideas.add(goal.id, goal.title, str(verdict.get("title") or goal.title),
                              str(verdict.get("message") or ""), str(verdict.get("action") or ""),
-                             importance(verdict), mission.id)
+                             importance(verdict), mission.id, str(verdict.get("action_detail") or ""))
             log.info("proactive idea %s for goal %s", idea.id, goal.id)
         ideas.record_check(goal.id, mission.id, decision, " — ".join(filter(None, [note, reason])))
     finally:
@@ -1014,7 +1023,9 @@ def mock_verdict(goal) -> dict:
     buying = goal.title.lower().startswith("trouver")
     return {"decision": decision, "title": f"Du nouveau pour « {goal.title} »", "importance": 4,
             "message": f"J'ai vérifié « {goal.title} » : une occasion intéressante vient d'apparaître (réponse de test).",
-            "action": "Préparer la commande, à valider dans l'app" if buying else "",
+            "action": "Envoyer un message au vendeur" if buying else "",
+            "action_detail": ("À : vendeur de l'annonce (test)\n\nBonjour, votre article est-il toujours disponible ? "
+                              "Je peux passer le chercher cette semaine.") if buying else "",
             "note": f"Vérification de test n° {len(ideas.checks(goal.id, limit=100)) + 1}."}
 
 
@@ -1025,7 +1036,8 @@ class ProactiveUpdate(BaseModel):
 
 
 class IdeaUpdate(BaseModel):
-    status: Literal["seen", "opened", "dismissed"]
+    # "approved": the user validated the prepared action; the app then sends it as a message.
+    status: Literal["seen", "opened", "approved", "dismissed"]
     conversation_id: str | None = Field(default=None, max_length=64)
 
 
@@ -1057,7 +1069,7 @@ def find_idea(idea_id: str):
 
 
 @app.get("/v1/ideas", dependencies=[Depends(require_token)])
-async def list_ideas(status: Literal["new", "seen", "opened", "dismissed"] | None = None,
+async def list_ideas(status: Literal["new", "seen", "opened", "approved", "dismissed"] | None = None,
                      goal_id: str | None = None) -> list[dict]:
     """Every idea except the dismissed ones, or those with `status`."""
     return [i.public() for i in ideas.list(status, goal_id)]
@@ -1073,7 +1085,7 @@ async def ideas_seen() -> dict:
 async def update_idea(idea_id: str, body: IdeaUpdate) -> dict:
     idea = find_idea(idea_id)
     changes: dict = {"status": body.status}
-    if body.status == OPENED and body.conversation_id:
+    if body.status in (OPENED, APPROVED) and body.conversation_id:
         changes["conversation_id"] = body.conversation_id
     if body.status == DISMISSED and idea.status != DISMISSED:
         # Remembered, so Marcel stops bringing up this kind of thing.

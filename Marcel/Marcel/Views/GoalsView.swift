@@ -208,10 +208,11 @@ struct GoalSummary: View {
 }
 
 extension Goal {
-    static let cadences = ["daily", "weekly", "manual"]
+    static let cadences = ["hourly", "daily", "weekly", "manual"]
 
     static func cadenceLabel(_ cadence: String) -> String {
         switch cadence {
+        case "hourly": "Chaque heure"
         case "daily": "Chaque jour"
         case "manual": "Seulement quand je demande"
         default: "Chaque semaine"
@@ -281,7 +282,9 @@ private struct GoalEditor: View {
                         ForEach(Goal.cadences, id: \.self) { Text(Goal.cadenceLabel($0)).tag($0) }
                     }
                 } footer: {
-                    Text("À quelle fréquence Marcel vérifie de lui-même où ça en est.")
+                    Text(cadence == "hourly"
+                         ? "Pour ce qui part vite (vente flash, places). Chaque vérification compte dans le plafond du jour : réglable dans Marcel proactif."
+                         : "À quelle fréquence Marcel vérifie de lui-même où ça en est.")
                 }
                 if !checks.isEmpty {
                     Section("Dernières vérifications") {

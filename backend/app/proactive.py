@@ -19,22 +19,23 @@ from pathlib import Path
 
 from .memory import DAY, similarity
 
-NEW, SEEN, OPENED, DISMISSED = "new", "seen", "opened", "dismissed"
-IDEA_STATUSES = (NEW, SEEN, OPENED, DISMISSED)
+NEW, SEEN, OPENED, APPROVED, DISMISSED = "new", "seen", "opened", "approved", "dismissed"
+IDEA_STATUSES = (NEW, SEEN, OPENED, APPROVED, DISMISSED)
 NOTIFY, LATER, NOTHING, FAILED = "notify", "later", "nothing", "failed"
 LEVELS = ("off", "quiet", "normal")
 # How long after the last check a goal is due again, by cadence.
-CADENCE_SECONDS = {"daily": DAY, "weekly": 7 * DAY}
-# Checks of the same goal drift by a few minutes each day: don't wait a whole extra day for that.
+CADENCE_SECONDS = {"hourly": 3600, "daily": DAY, "weekly": 7 * DAY}
+# Checks drift by a few minutes (the scheduler wakes every 15 min): don't wait a whole extra
+# period for that. A tenth of the period, at most 30 minutes.
 DUE_SLACK = 30 * 60
 # In quiet mode, only important ideas get through, at most one a day.
 QUIET_MIN_IMPORTANCE, QUIET_DAILY_LIMIT = 4, 1
 # An idea this close to a recent or dismissed one isn't shown again.
 DUPLICATE_SIMILARITY = 0.6
-MAX_TITLE_CHARS, MAX_BODY_CHARS, MAX_ACTION_CHARS = 120, 2000, 300
+MAX_TITLE_CHARS, MAX_BODY_CHARS, MAX_ACTION_CHARS, MAX_DETAIL_CHARS = 120, 2000, 300, 3000
 
 IDEA_COLUMNS = ("id", "goal_id", "goal_title", "title", "body", "action", "importance", "status",
-                "mission_id", "conversation_id", "created_at", "updated_at")
+                "mission_id", "conversation_id", "created_at", "updated_at", "action_detail")
 CHECK_COLUMNS = ("id", "goal_id", "mission_id", "at", "decision", "summary")
 DEFAULT_SETTINGS = {"level": "normal", "daily_limit": 2, "max_checks_per_day": 6}
 
@@ -53,6 +54,8 @@ class Idea:
     conversation_id: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
+    # Exactly what would be sent or done once the user approves (recipient, message, amount…).
+    action_detail: str = ""
 
     def public(self) -> dict:
         return {c: getattr(self, c) for c in IDEA_COLUMNS}
@@ -62,7 +65,8 @@ def is_due(cadence: str, last_run_at: float | None, now: float) -> bool:
     """A goal never checked is due at once; "manual" goals only run on demand."""
     if cadence not in CADENCE_SECONDS:
         return False
-    return last_run_at is None or now - last_run_at >= CADENCE_SECONDS[cadence] - DUE_SLACK
+    period = CADENCE_SECONDS[cadence]
+    return last_run_at is None or now - last_run_at >= period - min(DUE_SLACK, period / 10)
 
 
 def start_of_day(now: float) -> float:
@@ -119,6 +123,9 @@ class IdeaStore:
             CREATE INDEX IF NOT EXISTS goal_checks_goal ON goal_checks (goal_id);
             CREATE TABLE IF NOT EXISTS proactive_settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);"""
         )
+        # Columns added after the first version.
+        if "action_detail" not in {row[1] for row in self._db.execute("PRAGMA table_info(ideas)")}:
+            self._db.execute("ALTER TABLE ideas ADD COLUMN action_detail TEXT NOT NULL DEFAULT ''")
         self._db.commit()
 
     # MARK: Settings
@@ -216,12 +223,14 @@ class IdeaStore:
         return [title for (title,) in rows]
 
     def add(self, goal_id: str, goal_title: str, title: str, body: str = "", action: str = "",
-            importance: int = 3, mission_id: str = "") -> Idea:
+            importance: int = 3, mission_id: str = "", action_detail: str = "") -> Idea:
         now = time.time()
+        action = " ".join(action.split())[:MAX_ACTION_CHARS]
         idea = Idea(id=secrets.token_hex(6), goal_id=goal_id, goal_title=goal_title,
                     title=" ".join(title.split())[:MAX_TITLE_CHARS], body=body.strip()[:MAX_BODY_CHARS],
-                    action=" ".join(action.split())[:MAX_ACTION_CHARS], importance=max(1, min(5, importance)),
-                    mission_id=mission_id, created_at=now, updated_at=now)
+                    action=action, importance=max(1, min(5, importance)),
+                    mission_id=mission_id, created_at=now, updated_at=now,
+                    action_detail=action_detail.strip()[:MAX_DETAIL_CHARS] if action else "")
         self._store(idea)
         return idea
 

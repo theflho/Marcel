@@ -102,6 +102,14 @@ struct ChatView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 8) {
+                    if store.speaker.speakingID != nil {
+                        Button("Arrêter la lecture", systemImage: "speaker.slash.fill") { store.speaker.stop() }
+                            .font(.footnote.weight(.semibold))
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .clipShape(.capsule)
+                            .transition(.opacity)
+                    }
                     if let proposal = store.goalProposals.first, !store.emergencyActive {
                         GoalProposalCard(goal: proposal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))

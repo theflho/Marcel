@@ -33,6 +33,13 @@ struct MessageBubble: View {
             .background(isUser ? Theme.userBubble : Theme.assistantBubble, in: .rect(cornerRadius: 20))
             .contextMenu {
                 Button("Copier", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.content }
+                if !isUser && message.status != .streaming && !message.content.isEmpty {
+                    let reading = store.speaker.speakingID == message.id
+                    Button(reading ? "Arrêter la lecture" : "Lire à voix haute",
+                           systemImage: reading ? "speaker.slash" : "speaker.wave.2") {
+                        store.speaker.toggle(message)
+                    }
+                }
                 ShareLink(item: message.content)
                 if isUser && !store.isStreaming {
                     Button("Modifier et renvoyer", systemImage: "pencil") { store.edit(message.id) }

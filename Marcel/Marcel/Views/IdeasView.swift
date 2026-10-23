@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// What Marcel found by itself while checking the followed goals, on the active server.
-/// Marcel only proposes: opening an idea starts a conversation, and a prepared action waits
-/// in the composer until the user sends it.
+/// Marcel only proposes: opening an idea starts a conversation, and a prepared action happens
+/// only once the user approves it after seeing exactly what will be sent.
 struct IdeasView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -10,6 +10,7 @@ struct IdeasView: View {
     @State private var loaded = false
     @State private var error: String?
     @State private var actionError: String?
+    @State private var approving: Idea?
 
     var body: some View {
         Group {
@@ -44,6 +45,15 @@ struct IdeasView: View {
             await store.markIdeasSeen()
         }
         .refreshable { await load() }
+        .sheet(item: $approving) { idea in
+            ApprovalSheet(idea: idea) {
+                approving = nil
+                Task {
+                    await store.approve(idea)
+                    dismiss()
+                }
+            }
+        }
         .alert("Échec", isPresented: .constant(actionError != nil)) {
             Button("OK") { actionError = nil }
         } message: {
@@ -55,8 +65,9 @@ struct IdeasView: View {
         List {
             section("Nouvelles", status: "new")
             section("À voir", status: "seen")
-            section("Ouvertes", status: "opened",
-                    footer: "Rien n'est envoyé, réservé ni acheté sans que tu le demandes dans la conversation.")
+            section("Ouvertes", status: "opened")
+            section("Validées", status: "approved",
+                    footer: "Rien n'est envoyé, réservé ni acheté sans ta validation, après avoir vu ce qui part.")
         }
     }
 
@@ -66,11 +77,13 @@ struct IdeasView: View {
         if !matching.isEmpty {
             Section {
                 ForEach(matching) { idea in
-                    IdeaCard(idea: idea, isNew: status == "new") {
+                    IdeaCard(idea: idea, isNew: status == "new", canApprove: !store.emergencyActive) {
                         Task {
                             await store.open(idea)
                             dismiss()
                         }
+                    } onApprove: {
+                        approving = idea
                     } onDismiss: {
                         Task { await perform { _ = try await $0.updateIdea(id: idea.id, status: "dismissed") } }
                     }
@@ -114,8 +127,12 @@ struct IdeasView: View {
 private struct IdeaCard: View {
     let idea: Idea
     let isNew: Bool
+    let canApprove: Bool
     let onOpen: () -> Void
+    let onApprove: () -> Void
     let onDismiss: () -> Void
+
+    private var isDone: Bool { idea.status == "opened" || idea.status == "approved" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -142,9 +159,9 @@ private struct IdeaCard: View {
             }
             if !idea.action.isEmpty {
                 Label {
-                    Text("Préparé, attend ton accord : \(idea.action)")
+                    Text(idea.status == "approved" ? "Validé : \(idea.action)" : "Préparé, attend ton accord : \(idea.action)")
                 } icon: {
-                    Image(systemName: "hand.raised")
+                    Image(systemName: idea.status == "approved" ? "checkmark.seal" : "hand.raised")
                 }
                 .font(.caption)
                 .padding(8)
@@ -152,9 +169,17 @@ private struct IdeaCard: View {
                 .background(Theme.surface, in: .rect(cornerRadius: 10))
             }
             HStack {
-                Button(idea.status == "opened" ? "Reprendre" : "Ouvrir", action: onOpen)
-                    .buttonStyle(.borderedProminent)
-                if idea.status != "opened" {
+                if !idea.action.isEmpty && idea.status != "approved" {
+                    Button("Valider…", action: onApprove)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!canApprove)
+                    Button(isDone ? "Reprendre" : "Ouvrir", action: onOpen)
+                        .buttonStyle(.bordered)
+                } else {
+                    Button(isDone ? "Reprendre" : "Ouvrir", action: onOpen)
+                        .buttonStyle(.borderedProminent)
+                }
+                if !isDone {
                     Button("Pas intéressé", action: onDismiss)
                         .buttonStyle(.bordered)
                 }
@@ -163,6 +188,78 @@ private struct IdeaCard: View {
         }
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Shows exactly what will be sent before the user lets Marcel act, like a "send" preview.
+private struct ApprovalSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let idea: Idea
+    let onConfirm: () -> Void
+
+    private var detail: String? {
+        guard let detail = idea.actionDetail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty else { return nil }
+        return detail
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(idea.goalTitle, systemImage: "scope")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        Text(idea.action)
+                            .font(.title3.weight(.semibold))
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Ce qui va partir")
+                            .font(.caption.weight(.semibold))
+                            .textCase(.uppercase)
+                            .foregroundStyle(.secondary)
+                        if let detail {
+                            Text(detail)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.surface, in: .rect(cornerRadius: 12))
+                        } else {
+                            Label("Marcel n'a pas précisé le texte exact : il te le montrera et attendra ton accord avant d'envoyer quoi que ce soit.",
+                                  systemImage: "info.circle")
+                                .font(.callout)
+                        }
+                    }
+                    Label("Marcel le fait dans une conversation, où tu suis chaque étape. Si quelque chose a changé (prix, disponibilité, destinataire), il s'arrête et t'explique.",
+                          systemImage: "checkmark.shield")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    onConfirm()
+                } label: {
+                    Text(detail == nil ? "Valider" : "Valider et envoyer")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding()
+                .background(.bar)
+            }
+            .navigationTitle("Valider l'action")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuler") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

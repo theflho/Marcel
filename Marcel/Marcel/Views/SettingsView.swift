@@ -74,6 +74,8 @@ struct SettingsView: View {
                     Text("Apparence")
                 }
 
+                DeviceSection()
+
                 Section {
                     if store.emergencyActive {
                         Button {
@@ -378,6 +380,59 @@ struct ServerEditView: View {
         case 200: .reachable
         case 401, 403: .unauthorized
         default: .unreachable
+        }
+    }
+}
+
+/// What happens on the iPhone itself: voice, notifications, and what it shares with Marcel.
+private struct DeviceSection: View {
+    @Environment(\.openURL) private var openURL
+    @AppStorage(Speaker.autoReadKey) private var readAloud = false
+    @State private var notifications = BackgroundRefresh.isEnabled
+    @State private var calendar = UserDefaults.standard.bool(forKey: Agenda.shareKey) && Agenda.isAuthorized
+    @State private var refused: String?
+
+    var body: some View {
+        Section {
+            Toggle("Lire les réponses à voix haute", isOn: $readAloud)
+            Toggle("Notifications", isOn: $notifications)
+                .onChange(of: notifications) { _, wanted in
+                    Task {
+                        let on = await BackgroundRefresh.setEnabled(wanted)
+                        if wanted && !on {
+                            notifications = false
+                            refused = "Les notifications sont refusées pour Marcel dans les réglages de l'iPhone."
+                        }
+                    }
+                }
+            Toggle("Partager mon agenda", isOn: $calendar)
+                .onChange(of: calendar) { _, wanted in
+                    Task {
+                        let on = wanted ? await Agenda.requestAccess() : false
+                        UserDefaults.standard.set(on, forKey: Agenda.shareKey)
+                        if wanted && !on {
+                            calendar = false
+                            refused = "L'accès à l'agenda est refusé pour Marcel dans les réglages de l'iPhone."
+                        }
+                    }
+                }
+            if let refused {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(refused, systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Button("Ouvrir les réglages de l'iPhone") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    }
+                    .font(.footnote.weight(.semibold))
+                }
+            }
+        } header: {
+            Text("Sur cet iPhone")
+        } footer: {
+            Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
+                 + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
+                 + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier.")
         }
     }
 }

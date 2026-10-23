@@ -25,7 +25,9 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   « DeepSeek R1 Distill Llama 70B »). `MARCEL_MODELS="id=Libellé,id2=Libellé 2"` la remplace :
   séparateur virgule, espaces ignorés, pas de virgule dans un libellé, le premier est le défaut.
   L'app n'affiche le choix du modèle que s'il y en a plusieurs.
-- `POST /v1/missions` corps `{"conversation_id": "...", "messages": [{"role":"user","content":"..."}], "model": "..."}`
+- `POST /v1/missions` corps `{"conversation_id": "...", "messages": [{"role":"user","content":"..."}], "model": "...", "device_context": "..."}`
+  (`device_context` facultatif : ce que l'iPhone partage quand l'utilisateur l'a permis, aujourd'hui
+  l'agenda des 7 prochains jours, lu avec EventKit en lecture seule, ajouté à la note de la mission)
   (chaque message peut porter `"attachments": ["<id>", …]`, ids renvoyés par `/v1/files` ; `model` facultatif)
   → `{"id", "status", "length", "model", "title", "actions", …}` immédiatement ;
   `429` si 4 missions tournent déjà, `423` pendant l'arrêt d'urgence, `400` si le modèle est inconnu.
@@ -68,7 +70,7 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   au-dessus du composeur avec « Suivre » / « Non merci ». Un objectif refusé (`dismissed`) n'est
   plus jamais reproposé, ni un objectif proche d'un existant. Les objectifs suivis (`active`)
   accompagnent chaque mission. Statuts : `proposed`, `active`, `paused`, `done`, `dismissed` ;
-  rythme : `daily`, `weekly`, `manual`. Routes : `GET /v1/goals` (`?status=`, `?conversation_id=` ;
+  rythme : `hourly` (pour ce qui part vite), `daily`, `weekly`, `manual`. Routes : `GET /v1/goals` (`?status=`, `?conversation_id=` ;
   sans statut, tout sauf les refusés), `POST /v1/goals` (`{"title","detail","cadence"}`, suivi tout
   de suite), `PATCH/DELETE /v1/goals/{id}`. Écran Réglages › Objectifs suivis (balayer vers la
   droite : « Vérifier » maintenant).
@@ -92,7 +94,13 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   refusée, elle est rétrogradée en « plus tard ». Historique : `GET /v1/goals/{id}/checks` ;
   vérifier tout de suite : `POST /v1/goals/{id}/check` (`409` déjà en cours, `423` arrêt
   d'urgence, `429` plafond atteint).
-  Routes des idées : `GET /v1/ideas` (`?status=new|seen|opened|dismissed`, `?goal_id=` ; sans
+  Une idée peut porter une action préparée (`action`, une phrase) et son contenu exact
+  (`action_detail` : destinataire, texte du message, montant, lien). Dans l'app, « Valider… »
+  montre ce contenu ; confirmer l'envoie comme message de l'utilisateur dans la conversation de
+  l'idée (« Je valide… Fais exactement ceci, rien de plus… »), exécuté par le Hermes principal,
+  et passe l'idée en `approved`. Sans `action_detail`, Marcel doit montrer le texte exact et
+  attendre un nouvel accord.
+  Routes des idées : `GET /v1/ideas` (`?status=new|seen|opened|approved|dismissed`, `?goal_id=` ; sans
   statut, tout sauf les refusées), `POST /v1/ideas/seen` (enlève la pastille),
   `PATCH /v1/ideas/{id}` (`{"status":"opened","conversation_id":"..."}` ou `{"status":"dismissed"}`,
   « Pas intéressé », retenu dans les archives de la mémoire), `DELETE /v1/ideas/{id}`.
@@ -134,6 +142,15 @@ Une phrase comme « Je cherche… », « Je veux… », « Je prépare… » fai
 « Quels objectifs tu suis ? » liste ceux qui sont suivis.
 En mock, une vérification dure 2 s et ses décisions alternent prévenir → plus tard → rien de nouveau ;
 pour voir le planificateur tourner vite : `MARCEL_PROACTIVE_TICK_SECONDS=10 MARCEL_PROACTIVE_HOURS=0-24`.
+
+Réglages › Sur cet iPhone :
+- **Lire les réponses à voix haute** : voix française de l'iPhone (`AVSpeechSynthesizer`), hors ligne ;
+  appui long sur une réponse pour l'écouter ou l'arrêter.
+- **Notifications** : rafraîchissement en arrière-plan (`BGAppRefreshTask`,
+  `com.theobrosselin.marcel.refresh`) qui cherche les nouvelles idées et les réponses terminées,
+  puis notification locale ; iOS décide du moment (souvent une heure ou plus). Aucun compte payant.
+- **Partager mon agenda** : les 7 prochains jours accompagnent chaque message (`device_context`).
+- E-mail : pas dans l'app ; à brancher côté Hermes (connexion du compte, lecture seule) sur le VPS.
 
 La dictée (micro du composeur) est transcrite sur l'iPhone uniquement (`requiresOnDeviceRecognition`) :
 aucun son ne part chez Apple ; si la reconnaissance locale en français manque, elle est refusée.

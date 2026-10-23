@@ -189,10 +189,12 @@ nonisolated struct Idea: Codable, Hashable, Sendable, Identifiable {
     let goalTitle: String
     let title: String
     let body: String
-    /// An action Marcel prepared, which only happens once the user asks for it. Empty if none.
+    /// An action Marcel prepared, which only happens once the user approves it. Empty if none.
     let action: String
+    /// Exactly what would be sent or done (recipient, message, amount…). Nil from older servers.
+    let actionDetail: String?
     let importance: Int
-    /// "new" (not seen yet), "seen", "opened" or "dismissed".
+    /// "new" (not seen yet), "seen", "opened", "approved" or "dismissed".
     var status: String
     let missionID: String
     var conversationID: String
@@ -202,6 +204,7 @@ nonisolated struct Idea: Codable, Hashable, Sendable, Identifiable {
         case id, title, body, action, importance, status
         case goalID = "goal_id"
         case goalTitle = "goal_title"
+        case actionDetail = "action_detail"
         case missionID = "mission_id"
         case conversationID = "conversation_id"
         case createdAt = "created_at"
@@ -347,6 +350,10 @@ nonisolated struct MarcelAPI: Sendable {
         return try JSONDecoder().decode(ModelList.self, from: data).models
     }
 
+    func mission(id: String) async throws -> MissionInfo {
+        try await call("GET", "v1/missions/\(id)")
+    }
+
     func missions() async throws -> [MissionInfo] {
         var request = URLRequest(url: baseURL.appending(path: "v1/missions"), timeoutInterval: 10)
         authorize(&request)
@@ -368,7 +375,8 @@ nonisolated struct MarcelAPI: Sendable {
     }
 
     /// Starts generating the reply on the server. Returns as soon as the mission exists.
-    func startMission(conversationID: UUID, messages: [ChatMessage], model: String?) async throws -> MissionInfo {
+    func startMission(conversationID: UUID, messages: [ChatMessage], model: String?,
+                      deviceContext: String? = nil) async throws -> MissionInfo {
         var request = URLRequest(url: baseURL.appending(path: "v1/missions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -379,7 +387,8 @@ nonisolated struct MarcelAPI: Sendable {
                 .init(role: $0.role.rawValue, content: $0.content,
                       attachments: $0.attachments.compactMap(\.remoteID))
             },
-            model: model
+            model: model,
+            deviceContext: deviceContext
         ))
         let (data, response) = try await Self.session.data(for: request)
         try Self.check(response, body: data)
@@ -615,9 +624,12 @@ private nonisolated struct ChatRequest: Encodable {
     let conversationId: String
     let messages: [Message]
     let model: String?
+    /// Read-only information the iPhone shares, when the user allowed it (upcoming events).
+    let deviceContext: String?
 
     enum CodingKeys: String, CodingKey {
         case conversationId = "conversation_id"
+        case deviceContext = "device_context"
         case messages, model
     }
 }

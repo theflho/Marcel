@@ -31,6 +31,8 @@ final class ChatStore {
     private static let modelChoiceKey = "modelChoice"
 
     let settings: ServerSettings
+    /// Reads replies aloud, on the iPhone.
+    let speaker = Speaker()
     private let cache = ConversationCache()
     /// One task per conversation following its reply, so switching conversations never cuts an answer.
     private var streamTasks: [UUID: Task<Void, Never>] = [:]
@@ -383,7 +385,7 @@ final class ChatStore {
 
     /// Opens the conversation an idea became, or starts one with Marcel's message.
     /// A prepared action is only put in the composer: nothing happens until the user sends it.
-    func open(_ idea: Idea) async {
+    func open(_ idea: Idea, prefillAction: Bool = true) async {
         if let id = UUID(uuidString: idea.conversationID), conversations.contains(where: { $0.id == id }) {
             select(id)
             return
@@ -400,11 +402,39 @@ final class ChatStore {
         lastError = nil
         goalProposals = []
         persist(fresh.id)
-        if !idea.action.isEmpty && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if prefillAction, !idea.action.isEmpty, draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft = "Vas-y : \(idea.action)"
         }
         guard !emergencyActive, let api = settings.api else { return }
         _ = try? await api.updateIdea(id: idea.id, status: "opened", conversationID: fresh.id)
+    }
+
+    /// The user approved the action shown in the preview: it is sent as their message in the
+    /// idea's conversation, with the exact content, and Marcel (the full Hermes) carries it out.
+    func approve(_ idea: Idea) async {
+        guard !emergencyActive, !idea.action.isEmpty else { return }
+        await open(idea, prefillAction: false)
+        var message = "Je valide l'action préparée : \(idea.action)"
+        if let detail = idea.actionDetail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+            message += "\n\nFais exactement ceci, rien de plus :\n\(detail)"
+            message += "\n\nSi quelque chose a changé (prix, disponibilité, destinataire), ne fais rien et explique-moi."
+        } else {
+            message += "\n\nMontre-moi d'abord le texte exact et attends mon accord avant d'envoyer quoi que ce soit."
+        }
+        guard !isStreaming else {
+            report("Marcel répond encore dans cette conversation : valide à nouveau quand il a fini.", action: nil)
+            return
+        }
+        // What was waiting in the composer stays there and doesn't leave with the approval.
+        let previousDraft = draft
+        let previousAttachments = pendingAttachments
+        draft = message
+        pendingAttachments = []
+        send()
+        draft = previousDraft
+        pendingAttachments = previousAttachments
+        guard let api = settings.api else { return }
+        _ = try? await api.updateIdea(id: idea.id, status: "approved", conversationID: currentID)
     }
 
     // MARK: - Emergency stop
@@ -511,7 +541,8 @@ final class ChatStore {
             do {
                 try await self.uploadAttachments(of: userMessageID, in: id, using: api)
                 let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
-                let mission = try await api.startMission(conversationID: id, messages: history, model: model)
+                let mission = try await api.startMission(conversationID: id, messages: history, model: model,
+                                                         deviceContext: Agenda.upcoming())
                 self.updateMessage(reply.id, in: id) { $0.missionID = mission.id }
                 self.persist(id)
             } catch {
@@ -641,6 +672,10 @@ final class ChatStore {
                     case .delta: break
                     case .done:
                         finish(replyID, in: conversationID, .complete)
+                        if conversationID == currentID, UserDefaults.standard.bool(forKey: Speaker.autoReadKey),
+                           let finished = message(replyID, in: conversationID) {
+                            speaker.speak(finished)
+                        }
                         if reply.serverID == settings.activeID {
                             refreshGoalProposalsAfterReply()
                             Task { await refreshCounters() }

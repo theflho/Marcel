@@ -16,7 +16,7 @@ from .memory import similarity
 
 PROPOSED, ACTIVE, PAUSED, DONE, DISMISSED = "proposed", "active", "paused", "done", "dismissed"
 STATUSES = (PROPOSED, ACTIVE, PAUSED, DONE, DISMISSED)
-CADENCES = ("daily", "weekly", "manual")
+CADENCES = ("hourly", "daily", "weekly", "manual")
 # A proposal this close to an existing goal (even a dismissed one) is dropped.
 DUPLICATE_SIMILARITY = 0.6
 MAX_TITLE_CHARS, MAX_DETAIL_CHARS = 120, 500
