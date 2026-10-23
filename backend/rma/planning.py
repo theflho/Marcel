@@ -62,19 +62,29 @@ async def sign_in(page, password) -> None:
     login = page.locator("input[type=text], input[type=email], input:not([type])").first
     await login.fill(LOGIN)
     await password.first.fill(PASSWORD)
-    terms = page.get_by_text(re.compile(r"J.accepte les conditions", re.IGNORECASE)).first
-    if await terms.count():
-        await terms.click()
-    button = page.get_by_role("button", name=re.compile(r"Valider", re.IGNORECASE))
-    if await button.count():
-        await button.first.click()
+    # The box itself, not its label: the label holds a link that opens the terms instead.
+    boxes = page.get_by_role("checkbox")
+    terms = page.get_by_role("checkbox", name=re.compile(r"accepte", re.IGNORECASE))
+    box = terms.first if await terms.count() else boxes.last
+    if await boxes.count():
+        await box.check(force=True)
+    # If the terms window opened anyway, close it.
+    await page.keyboard.press("Escape")
+    button = page.get_by_role("button", name=re.compile(r"Valider", re.IGNORECASE)).first
+    for _ in range(20):
+        if await button.count() and await button.is_enabled():
+            break
+        await page.wait_for_timeout(500)
     else:
-        await page.get_by_text("Valider", exact=True).first.click()
+        filled = {"identifiant": bool(await login.input_value()), "mot de passe": bool(await password.first.input_value()),
+                  "case CGU": await box.is_checked() if await boxes.count() else False}
+        missing = ", ".join(name for name, ok in filled.items() if not ok) or "aucun champ vide repéré"
+        raise RuntimeError(f"Le bouton Valider reste grisé ({missing}).")
+    await button.click()
     await page.wait_for_load_state("networkidle", timeout=60_000)
     await page.wait_for_timeout(2_000)
     if await page.locator("input[type=password]:visible").count():
-        raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env "
-                           "(ou une nouvelle case à cocher sur la page de connexion).")
+        raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env.")
 
 
 async def read(debug: bool = False) -> list[dict]:
