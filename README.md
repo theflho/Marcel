@@ -38,7 +38,7 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Les missions sont enregistrées dans `MARCEL_DATA_DIR/marcel.db` (SQLite).
 - Arrêt d'urgence : `POST /v1/emergency/stop` coupe toutes les missions et refuse les nouvelles
   (`423`) jusqu'à `POST /v1/emergency/resume` ; état dans `GET /v1/emergency`. Il survit aux
-  redémarrages. Côté app (bouton rouge dans la barre latérale ou Réglages › Sécurité), plus aucune
+  redémarrages. Côté app (Réglages › Sécurité), plus aucune
   requête ne part — ni test de connexion, ni envoi, ni reprise — tant qu'on n'a pas touché « Reprendre ».
 
 - Mémoire en trois niveaux (`MARCEL_DATA_DIR/marcel.db`), pour ne jamais saturer :

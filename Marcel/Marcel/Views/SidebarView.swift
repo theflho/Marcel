@@ -12,7 +12,6 @@ struct SidebarView: View {
     @State private var renameText = ""
     @State private var creatingProject = false
     @State private var newProjectName = ""
-    @State private var confirmingEmergency = false
 
     private enum RenameTarget: Identifiable {
         case conversation(UUID), project(UUID)
@@ -173,26 +172,15 @@ struct SidebarView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button {
-                onOpenSettings()
-            } label: {
-                Label("Réglages", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-            .tint(.primary)
-            if !store.emergencyActive {
-                Button("Arrêt d'urgence", systemImage: "exclamationmark.octagon.fill") { confirmingEmergency = true }
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 22))
-                    .foregroundStyle(.red)
-                    .frame(width: 44, height: 44)
-                    .padding(.trailing, 8)
-            }
+        Button {
+            onOpenSettings()
+        } label: {
+            Label("Réglages", systemImage: "gearshape")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
         }
+        .tint(.primary)
         .background(.bar)
-        .emergencyConfirmation(isPresented: $confirmingEmergency)
     }
 
     // MARK: Rows
