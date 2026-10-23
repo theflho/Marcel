@@ -5,6 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Docker may need sudo depending on how the session was opened.
+docker() { if command docker info >/dev/null 2>&1; then command docker "$@"; else sudo docker "$@"; fi; }
+
 git pull --ff-only
 docker compose up -d --build marcel-api
 

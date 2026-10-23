@@ -1,0 +1,34 @@
+# Compose de Marcel sur le VPS, à copier en backend/compose.yaml (c'est ce que lance deploy/update.sh).
+# Hermes reste dans son propre compose (~/assistant) : Marcel rejoint son réseau assistant_default.
+# hermes-checks : second Hermes réservé aux vérifications automatiques, outils qui agissent retirés
+# (~/.hermes-checks/config.yaml, voir hermes-checks.config.yaml) et sans messagerie.
+services:
+  marcel-api:
+    build: .
+    container_name: marcel-api
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - marcel-data:/data
+    restart: unless-stopped
+
+  hermes-checks:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-checks
+    command: gateway run
+    volumes:
+      - /home/ubuntu/.hermes-checks:/opt/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+
+networks:
+  default:
+    name: assistant_default
+    external: true
+volumes:
+  marcel-data:

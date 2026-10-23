@@ -143,6 +143,12 @@ aucun son ne part chez Apple ; si la reconnaissance locale en français manque, 
    `marcel-internal`, aucun port publié pour Hermes, backend sur `127.0.0.1:8000`.
 3. Vérifier l'URL et le format de l'API de Hermes (`HERMES_URL`, compatible OpenAI
    `/v1/chat/completions` en streaming supposé).
+   Sur le VPS actuel, Hermes a son propre compose (`~/assistant`) : Marcel a le sien,
+   `backend/compose.yaml` copié de `deploy/compose.vps.yaml`, qui rejoint le réseau
+   `assistant_default`. Hermes doit écouter sur ce réseau : `API_SERVER_HOST=0.0.0.0` dans
+   `~/.hermes/.env` (aucun port publié, `API_SERVER_KEY` obligatoire). Lancer la configuration de
+   Hermes avec `docker compose exec hermes hermes …`, jamais `docker compose run` (qui démarre
+   un second Hermes complet sur les mêmes données).
 3b. Marcel proactif : créer le profil `hermes-checks` (voir plus haut), puis
    `docker compose exec hermes-checks hermes tools` pour vérifier que seuls web, recherche et
    vision restent ; renseigner `MARCEL_CHECK_HERMES_URL` et `MARCEL_CHECK_HERMES_KEY`.
