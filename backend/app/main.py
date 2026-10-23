@@ -809,14 +809,16 @@ async def delete_goal(goal_id: str) -> dict:
 # Goals being checked right now, so the same goal never runs twice at once.
 checking: set[str] = set()
 
-CHECK_PROMPT = """Vérification automatique d'un objectif que l'utilisateur t'a demandé de suivre :
+CHECK_PROMPT = """Réponds uniquement en français.
+Vérification automatique d'un objectif que l'utilisateur t'a demandé de suivre :
 « {title} »{detail}
 {notes}
 Regarde où ça en est maintenant (nouveautés, prix, disponibilités, dates, étapes suivantes) avec
 les outils dont tu disposes, puis écris un compte rendu court et factuel, avec tes sources.
 Tu peux PRÉPARER une action utile (brouillon de message, panier, réservation à confirmer), mais
 n'effectue aucune action réelle : n'envoie rien, ne réserve rien, n'achète rien, ne publie rien,
-ne modifie aucun compte. Toute action attendra la validation de l'utilisateur dans l'app."""
+ne modifie aucun compte. Toute action attendra la validation de l'utilisateur dans l'app. Ne propose pas de créer
+une surveillance ou une tâche planifiée : c'est Marcel qui s'en charge."""
 
 FILTER_PROMPT = """Tu es le filtre de Marcel, l'assistant personnel de l'utilisateur. Une vérification
 automatique d'un de ses objectifs vient de se terminer. Décide s'il faut le prévenir :
