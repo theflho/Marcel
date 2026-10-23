@@ -32,7 +32,7 @@ PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 HOUR = int(os.environ.get("RMA_HOUR") or 19)
 DATA = Path(os.environ.get("RMA_DATA_DIR", "/data"))
 # The views the portal offers; the week and the month together cover what's coming.
-VIEWS = ("Sem.", "Mois", "∞")
+VIEWS = ("Sem.", "Mois", "∞")  # see VIEW_VALUES
 # "26/10/2026 20:00 - 23:00 FERRERO FRANCE COMMERCIALE" (the client may be on the next line).
 SLOT = re.compile(r"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*(.*)")
 
@@ -132,16 +132,25 @@ async def sign_in(page, password) -> None:
                        "dans rma.env, ou réessaie.")
 
 
+# The value behind each view of the portal's list.
+VIEW_VALUES = {"Sem.": "S", "Mois": "M", "∞": "TOUS"}
+
+
 async def show(page, view: str) -> bool:
-    """Selects a view of the list ("Sem.", "Mois", "∞"): the radio button itself, not its text."""
-    radio = page.get_by_role("radio", name=view, exact=True)
-    if await radio.count():
-        await radio.first.check(force=True)
-    else:
-        option = page.locator("mat-radio-button, label").filter(has_text=re.compile(rf"^\s*{re.escape(view)}\s*$"))
-        if not await option.count():
-            return False
-        await option.first.click(force=True)
+    """Selects a view of the list ("Sem.", "Mois", "∞"). The real radio input is hidden behind
+    its drawing (Angular Material), so the drawn button around it is clicked."""
+    radio = page.locator(f"input[type=radio][value='{VIEW_VALUES[view]}']").first
+    if not await radio.count():
+        return False
+    if not await radio.is_checked():
+        await radio.locator("xpath=ancestor::mat-radio-button[1]").click()
+        await page.wait_for_timeout(500)
+    if not await radio.is_checked():
+        await radio.dispatch_event("click")
+        await page.wait_for_timeout(500)
+    if not await radio.is_checked():
+        print(f"Vue « {view} » : impossible de la sélectionner.")
+        return False
     await page.wait_for_load_state("networkidle", timeout=30_000)
     await page.wait_for_timeout(1_500)
     return True
