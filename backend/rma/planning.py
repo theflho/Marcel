@@ -56,6 +56,29 @@ def parse(text: str) -> list[dict]:
     return missions
 
 
+ACCEPT = re.compile(r"accept|j.accepte|valider|^ok$|continuer|j.ai lu|compris|confirmer", re.IGNORECASE)
+
+
+async def accept_terms_window(page) -> None:
+    """The terms window the portal may show at sign-in: scroll it to the end (some accept
+    buttons wait for that), then press its accept button."""
+    window = page.locator("mat-dialog-container, [role=dialog], .cdk-overlay-pane").last
+    if not await window.count() or not await window.is_visible():
+        return
+    await window.evaluate("w => w.querySelectorAll('*').forEach(e => {"
+                          " if (e.scrollHeight > e.clientHeight) e.scrollTop = e.scrollHeight; })")
+    await page.wait_for_timeout(1_000)
+    buttons = window.get_by_role("button")
+    names = [" ".join((await buttons.nth(i).inner_text()).split()) for i in range(await buttons.count())]
+    print(f"Fenêtre des CGU, boutons : {names}")
+    for index, name in enumerate(names):
+        if ACCEPT.search(name):
+            await buttons.nth(index).click(force=True)
+            await page.wait_for_timeout(1_500)
+            return
+    raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}.")
+
+
 async def sign_in(page, password) -> None:
     """The portal's sign-in form: login, password, the terms box (required at each sign-in,
     the same one the user ticks), then "Valider"."""
@@ -68,8 +91,9 @@ async def sign_in(page, password) -> None:
     box = terms.first if await terms.count() else boxes.last
     if await boxes.count():
         await box.check(force=True)
-    # If the terms window opened anyway, close it.
-    await page.keyboard.press("Escape")
+        await page.wait_for_timeout(1_000)
+    # Ticking the box may open the terms window: accept it like the user does.
+    await accept_terms_window(page)
     button = page.get_by_role("button", name=re.compile(r"Valider", re.IGNORECASE)).first
     for _ in range(20):
         if await button.count() and await button.is_enabled():
@@ -83,6 +107,8 @@ async def sign_in(page, password) -> None:
     await button.click()
     await page.wait_for_load_state("networkidle", timeout=60_000)
     await page.wait_for_timeout(2_000)
+    await accept_terms_window(page)
+    await page.wait_for_load_state("networkidle", timeout=60_000)
     if await page.locator("input[type=password]:visible").count():
         raise RuntimeError("Connexion refusée : vérifie l'identifiant et le mot de passe dans rma.env.")
 
