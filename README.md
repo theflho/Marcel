@@ -144,8 +144,13 @@ l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les id
 - `GET /v1/planning?days=14` → missions (heures en secondes depuis 1970) ; les missions à venir
   que le robot ne voit plus sont retirées (annulées), les passées gardées 45 jours.
 - App : Réglages › Sur cet iPhone › **Rappels de pointage** : notifications locales programmées
-  par l'iPhone 5 min avant chaque début et chaque fin (à l'heure exacte, app fermée) ; un appui
-  ouvre le portail.
+  par l'iPhone 5 min avant chaque début et chaque fin (à l'heure exacte, app fermée). Chacune
+  prépare le pointage par SMS que RMA propose (« RMA OK » à l'entrée, « RMA fin » à la sortie, au
+  38200) et demande « J'envoie ? » : **Oui** (à chaque fois, une fois sur place) lance le raccourci
+  « Pointer RMA » qui envoie le SMS, ou sans raccourci ouvre Messages avec le texte prêt ;
+  **Non** ne fait rien ; un appui ouvre le portail. Raccourci à créer une fois dans l'app
+  Raccourcis : « Envoyer un message », message = Entrée du raccourci, destinataire 38200,
+  « Afficher lors de l'exécution » désactivé ; puis cocher « Envoyer avec le raccourci ».
 - App : Réglages › Sur cet iPhone › **Ajouter mes missions à l'agenda** : les missions à venir
   vont dans un calendrier à part, « Missions RMA » (créé dans iCloud si possible), le seul où
   Marcel écrit. Une mission déjà notée dans un autre calendrier (même heure à 15 min près, même

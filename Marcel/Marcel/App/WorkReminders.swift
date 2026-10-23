@@ -3,33 +3,43 @@ import UserNotifications
 
 /// Reminders 5 minutes before each start and end of a work mission (RMA planning read on the
 /// server). The iPhone schedules them itself, so they arrive on time even with the app closed.
-/// They only remind: a tap opens the portal, or (button) Messages with the reply RMA asks for
-/// already typed ("RMA OK", "RMA fin" to 38200). Clocking in stays the user's own act, on site:
-/// iOS never sends a text message without the user pressing Send.
+/// Each one prepares RMA's text-message clock-in ("RMA OK" to start, "RMA fin" to leave, to
+/// 38200) and asks "J'envoie ?": nothing is sent without the user's "Oui", given each time.
+/// iOS lets no app send a text by itself: "Oui" runs the user's Shortcut « Pointer RMA »
+/// (sends without another screen), or, without it, opens Messages with the text ready.
 enum WorkReminders {
     static let enabledKey = "workReminders"
     static let portalURL = "https://ecollaborateurs.rmasa.com/#/accueil/missions"
     /// RMA's clock-in by text message: reply "RMA OK" when starting, "RMA fin" when leaving.
     static let smsNumber = "38200"
-    static let startCategory = "rma-start"
-    static let endCategory = "rma-end"
-    // Read by the notification delegate, outside the main actor.
-    nonisolated static let smsAction = "sms"
+    static let category = "rma-clock"
+    static let yesAction = "send"
+    static let noAction = "skip"
     static let portalAction = "portal"
+    /// The user made the Shortcut « Pointer RMA » (Settings › Sur cet iPhone).
+    static let shortcutKey = "clockShortcut"
+    static let shortcutName = "Pointer RMA"
 
     /// The reminders' buttons; registered once, at launch.
     static func registerActions() {
-        let sms = UNNotificationAction(identifier: smsAction, title: "Pointer par SMS", options: [.foreground])
+        let yes = UNNotificationAction(identifier: yesAction, title: "Oui, envoyer", options: [.foreground])
+        let no = UNNotificationAction(identifier: noAction, title: "Non", options: [])
         let portal = UNNotificationAction(identifier: portalAction, title: "Ouvrir le portail", options: [.foreground])
         UNUserNotificationCenter.current().setNotificationCategories([
-            UNNotificationCategory(identifier: startCategory, actions: [sms, portal], intentIdentifiers: []),
-            UNNotificationCategory(identifier: endCategory, actions: [sms, portal], intentIdentifiers: []),
+            UNNotificationCategory(identifier: category, actions: [yes, no, portal], intentIdentifiers: []),
         ])
     }
 
-    /// Messages, ready to send to RMA: "RMA OK" to start, "RMA fin" to leave.
-    static func smsURL(start: Bool) -> URL? {
-        URL(string: "sms:\(smsNumber)&body=" + (start ? "RMA%20OK" : "RMA%20fin"))
+    static func message(start: Bool) -> String { start ? "RMA OK" : "RMA fin" }
+
+    /// What "Oui" opens: the Shortcut that sends the text, or Messages with it ready.
+    static func sendURL(start: Bool) -> URL? {
+        let text = message(start: start).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if UserDefaults.standard.bool(forKey: shortcutKey) {
+            let name = shortcutName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+            return URL(string: "shortcuts://run-shortcut?name=\(name)&input=text&text=\(text)")
+        }
+        return URL(string: "sms:\(smsNumber)&body=\(text)")
     }
 
     private static let scheduledKey = "workReminderIDs"
@@ -61,12 +71,12 @@ enum WorkReminders {
                 let fire = moment.addingTimeInterval(-lead)
                 guard fire > .now, ids.count < maxPending else { continue }
                 let content = UNMutableNotificationContent()
-                content.title = isStart ? "Pointage de début dans 5 min" : "Pointage de fin dans 5 min"
-                content.body = "\(mission.store) · \(isStart ? "début" : "fin") à \(moment.formatted(date: .omitted, time: .shortened)). "
-                    + "Touche pour le portail, ou appui long › Pointer par SMS, une fois sur place."
+                content.title = "Pointage de \(isStart ? "début" : "fin") · \(mission.store)"
+                content.body = "\(isStart ? "Début" : "Fin") à \(moment.formatted(date: .omitted, time: .shortened)). "
+                    + "Je prépare « \(message(start: isStart)) » pour le \(smsNumber). J'envoie ? (une fois sur place)"
                 content.sound = .default
-                content.categoryIdentifier = isStart ? startCategory : endCategory
-                content.userInfo = ["url": portalURL, "sms": smsURL(start: isStart)?.absoluteString ?? ""]
+                content.categoryIdentifier = category
+                content.userInfo = ["url": portalURL, "start": isStart]
                 let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
                 let id = "rma-\(mission.id)-\(isStart ? "debut" : "fin")"
                 let request = UNNotificationRequest(identifier: id, content: content,

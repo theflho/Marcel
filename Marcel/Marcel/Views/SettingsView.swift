@@ -393,6 +393,7 @@ private struct DeviceSection: View {
     @State private var calendar = UserDefaults.standard.bool(forKey: Agenda.shareKey) && Agenda.isAuthorized
     @State private var workReminders = WorkReminders.isEnabled
     @State private var missionCalendar = MissionCalendar.isEnabled
+    @AppStorage(WorkReminders.shortcutKey) private var clockShortcut = false
     @State private var refused: String?
 
     var body: some View {
@@ -420,6 +421,17 @@ private struct DeviceSection: View {
                         }
                     }
                 }
+            if workReminders {
+                Toggle(isOn: $clockShortcut) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Envoyer avec le raccourci « \(WorkReminders.shortcutName) »")
+                        Text(clockShortcut ? "« Oui » envoie le SMS directement."
+                                           : "Sans raccourci, « Oui » ouvre Messages avec le texte prêt.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             Toggle(isOn: $missionCalendar) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Ajouter mes missions à l'agenda")
@@ -469,7 +481,7 @@ private struct DeviceSection: View {
             Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
                  + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
                  + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier. "
-                 + "Les rappels de pointage suivent ton planning RMA lu par le serveur ; un appui ouvre le portail, et tu pointes toi-même sur place. "
+                 + "Les rappels de pointage suivent ton planning RMA : 5 min avant, Marcel prépare « RMA OK » ou « RMA fin » pour le 38200 et te demande s'il envoie ; rien ne part sans ton « Oui », à donner une fois sur place. "
                  + "Les missions vont dans un calendrier à part, « Missions RMA » : Marcel n'écrit nulle part ailleurs, saute une mission que tu as déjà notée, et suit les déplacements et annulations.")
         }
     }
