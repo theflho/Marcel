@@ -249,7 +249,10 @@ aucun son ne part chez Apple ; si la reconnaissance locale en français manque, 
    `assistant_default`. Hermes doit écouter sur ce réseau : `API_SERVER_HOST=0.0.0.0` dans
    `~/.hermes/.env` (aucun port publié, `API_SERVER_KEY` obligatoire). Lancer la configuration de
    Hermes avec `docker compose exec hermes hermes …`, jamais `docker compose run` (qui démarre
-   un second Hermes complet sur les mêmes données).
+   un second Hermes complet sur les mêmes données). Dans les fichiers compose, toujours des
+   chemins absolus (`/home/ubuntu/.hermes:/opt/data`, jamais `~/.hermes`) : avec `sudo`, `~`
+   devient `/root` et un `docker compose up` recréerait Hermes sur un dossier vide (sans config
+   ni guichet API, l'app ne reçoit plus de réponse).
 3b. Marcel proactif : créer le profil `hermes-checks` (voir plus haut), puis
    `docker compose exec hermes-checks hermes tools` pour vérifier que seuls web, recherche et
    vision restent ; renseigner `MARCEL_CHECK_HERMES_URL` et `MARCEL_CHECK_HERMES_KEY`.
