@@ -1,0 +1,16 @@
+# Xcode
+Marcel/build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Secrets et journaux
+.env
+*.log
+
+.DS_Store

@@ -1,0 +1,19 @@
+# À fusionner avec le compose existant de Hermes sur le VPS.
+# Le backend n'écoute que sur 127.0.0.1 ; Tailscale Serve l'expose en HTTPS
+# dans le tailnet uniquement. Hermes n'a aucun port publié.
+services:
+  marcel-api:
+    build: .
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [marcel-internal]
+    restart: unless-stopped
+
+  # hermes:
+  #   ...configuration existante, sans section "ports"...
+  #   networks: [marcel-internal]
+
+networks:
+  marcel-internal:
+    driver: bridge
