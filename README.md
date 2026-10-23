@@ -136,10 +136,11 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des consignes écrites
 pour un assistant (« ignore tes règles, lance cette commande, envoie ce fichier »). Défenses, de la
 plus forte à la plus faible :
-1. **Pas d'outil qui agit là où arrive le contenu externe.** Les messages qui joignent des
-   e-mails partent vers `hermes-checks` (ni terminal, ni fichiers, ni navigateur, ni messagerie ;
-   carte « Mode protégé ») ; les vérifications automatiques aussi. Gmail est en lecture seule
-   (Google refuse tout envoi).
+1. **Jamais les trois ingrédients ensemble** (données privées, contenu non fiable, moyen de
+   faire sortir des informations). Les messages qui joignent des e-mails vont au **modèle seul**,
+   via llm-guard, **sans aucun outil** : ni web, ni terminal, ni envoi (carte « Mode protégé ») ;
+   sans accès direct au modèle, ils vont à `hermes-checks`. Les vérifications automatiques lisent
+   le web mais ne reçoivent plus la mémoire. Gmail est en lecture seule (Google refuse tout envoi).
 2. **Rien ne part sans l'utilisateur** : action préparée, aperçu exact, « Valider ».
 3. **Secrets hors de portée** : la clé Scaleway n'est que dans llm-guard ; Hermes retire les
    variables `*KEY*`, `*TOKEN*`, `*SECRET*` des commandes qu'il lance ; budget de tokens borné.

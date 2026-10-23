@@ -330,9 +330,16 @@ async def start_mission(request: ChatRequest) -> dict:
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
+    elif mail and MEMORY_LLM_URL != HERMES_URL:
+        # E-mails hold private data and are written by anyone: they go to the model alone, with
+        # no tool at all (no web, no terminal, no messaging), so nothing can be acted on or sent
+        # out, whatever an e-mail asks. The memory model's address is the LLM guard on the VPS.
+        extra.append({"id": "shield", "name": "Mode protégé",
+                      "detail": "E-mails lus par le modèle seul, sans aucun outil : ni web, ni envoi, ni terminal",
+                      "status": "done"})
+        inner = lambda: hermes_stream(request, MEMORY_LLM_MODEL, note, MEMORY_LLM_URL, MEMORY_LLM_KEY)  # noqa: E731
     elif mail:
-        # E-mails are written by anyone: they go to the Hermes without terminal, files, browser
-        # or messaging, so an e-mail asking it to act can't make it act.
+        # Without a direct access to the model, the Hermes without terminal, files or messaging.
         extra.append({"id": "shield", "name": "Mode protégé",
                       "detail": "E-mails lus par le Hermes bridé : ni terminal, ni fichiers, ni envoi", "status": "done"})
         inner = lambda: hermes_stream(request, CHECK_HERMES_MODEL or model, note,  # noqa: E731
@@ -487,8 +494,10 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
         "stream": True,
         "messages": ([{"role": "system", "content": memory_note}] if memory_note else [])
         + [{"role": m.role, "content": hermes_content(m)} for m in request.messages],
-        "user": request.conversation_id,
     }
+    if url in (HERMES_URL, CHECK_HERMES_URL):
+        # Hermes keeps one session per conversation; the model provider has no use for it.
+        body["user"] = request.conversation_id
     tools: dict[int, dict] = {}
 
     def finish_tools() -> list[dict]:
@@ -980,7 +989,9 @@ async def run_check(goal):
         notes=("\nCe que les vérifications précédentes avaient noté :\n" + "\n".join(f"- {n}" for n in notes) + "\n")
         if notes else "")
     request = ChatRequest(conversation_id=f"goal-{goal.id}", messages=[Message(role="user", content=prompt)])
-    note, _ = memory.context(goal.title + " " + goal.detail)
+    # No memory: a check reads the open web and could leak what it carries (in a search or a
+    # URL). The goal and its detail are enough to know what to look for.
+    note = ""
     model = CHECK_HERMES_MODEL or (await available_models())[0]["id"]
     source = ((lambda: mock_check_stream(goal)) if MOCK
               else (lambda: hermes_stream(request, model, note, CHECK_HERMES_URL, CHECK_HERMES_KEY)))
