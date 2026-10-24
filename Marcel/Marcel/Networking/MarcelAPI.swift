@@ -258,6 +258,110 @@ nonisolated struct PlanningMission: Decodable, Hashable, Sendable, Identifiable 
 }
 
 /// Fields of the proactivity settings to change; nil ones are left as they are.
+/// A setting's value: a number, yes/no or text, as the server sends it.
+nonisolated enum SettingValue: Codable, Hashable, Sendable {
+    case int(Int), bool(Bool), text(String)
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Int.self) { self = .int(value) }
+        else if let value = try? container.decode(Double.self) { self = .int(Int(value)) }
+        else { self = .text(try container.decode(String.self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .int(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .text(let value): try container.encode(value)
+        }
+    }
+}
+
+/// One of Marcel's assistants (Planning, Pointage, Mails, Veille), tuned in its own conversation.
+nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
+    struct Setting: Decodable, Hashable, Sendable, Identifiable {
+        struct Choice: Decodable, Hashable, Sendable {
+            let value: String
+            let label: String
+        }
+
+        let key: String
+        let label: String
+        let kind: String
+        let value: SettingValue
+        let min: Int
+        let max: Int
+        let choices: [Choice]
+        let help: String
+        var id: String { key }
+
+        /// The value as shown to the user ("10", "Oui", "Discrète"…).
+        func shown(_ value: SettingValue) -> String {
+            switch value {
+            case .int(let number): "\(number)"
+            case .bool(let on): on ? "Oui" : "Non"
+            case .text(let text):
+                choices.first { $0.value == text }?.label ?? (text.isEmpty ? "—" : text)
+            }
+        }
+    }
+
+    struct Instruction: Decodable, Hashable, Sendable, Identifiable {
+        let id: String
+        let text: String
+    }
+
+    let id: String
+    let name: String
+    let emoji: String
+    let summary: String
+    let welcome: String
+    let status: String
+    let settings: [Setting]
+    let instructions: [Instruction]
+
+    func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
+}
+
+/// A change an assistant proposed in its conversation, applied only when the user taps "Appliquer".
+nonisolated struct AssistantProposal: Codable, Hashable, Sendable {
+    var changes: [String: SettingValue] = [:]
+    var consigne: String = ""
+    var resume: String = ""
+
+    enum CodingKeys: String, CodingKey { case changes, consigne, resume }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        changes = (try? container.decodeIfPresent([String: SettingValue].self, forKey: .changes)) ?? [:]
+        consigne = (try? container.decodeIfPresent(String.self, forKey: .consigne)) ?? ""
+        resume = (try? container.decodeIfPresent(String.self, forKey: .resume)) ?? ""
+    }
+
+    var isEmpty: Bool { changes.isEmpty && consigne.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private static let fence = "```reglage"
+
+    /// The reply without its proposal block, and the proposal, if there is a readable one.
+    static func split(_ text: String) -> (text: String, proposal: AssistantProposal?) {
+        guard let start = text.range(of: fence) else { return (text, nil) }
+        let after = text[start.upperBound...]
+        let end = after.range(of: "```")
+        let json = String(end.map { after[..<$0.lowerBound] } ?? after)
+        let rest = String(text[..<start.lowerBound]) + (end.map { String(after[$0.upperBound...]) } ?? "")
+        let proposal = end == nil ? nil : try? JSONDecoder().decode(AssistantProposal.self, from: Data(json.utf8))
+        return (rest.trimmingCharacters(in: .whitespacesAndNewlines), proposal?.isEmpty == false ? proposal : nil)
+    }
+}
+
+private nonisolated struct AssistantUpdate: Encodable, Sendable {
+    let changes: [String: SettingValue]
+    let instruction: String?
+}
+
 nonisolated struct ProactiveChange: Encodable, Sendable {
     var level: String?
     var dailyLimit: Int?
@@ -392,7 +496,7 @@ nonisolated struct MarcelAPI: Sendable {
 
     /// Starts generating the reply on the server. Returns as soon as the mission exists.
     func startMission(conversationID: UUID, messages: [ChatMessage], model: String?,
-                      deviceContext: String? = nil) async throws -> MissionInfo {
+                      deviceContext: String? = nil, assistant: String? = nil) async throws -> MissionInfo {
         var request = URLRequest(url: baseURL.appending(path: "v1/missions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -404,7 +508,8 @@ nonisolated struct MarcelAPI: Sendable {
                       attachments: $0.attachments.compactMap(\.remoteID))
             },
             model: model,
-            deviceContext: deviceContext
+            deviceContext: deviceContext,
+            assistant: assistant
         ))
         let (data, response) = try await Self.session.data(for: request)
         try Self.check(response, body: data)
@@ -501,6 +606,21 @@ nonisolated struct MarcelAPI: Sendable {
     /// Work missions from yesterday to `days` ahead.
     func planning(days: Int = 14) async throws -> [PlanningMission] {
         try await call("GET", "v1/planning", query: [URLQueryItem(name: "days", value: String(days))])
+    }
+
+    // MARK: Assistants
+
+    func assistants() async throws -> [Assistant] {
+        try await call("GET", "v1/assistants")
+    }
+
+    /// Saves settings and/or an instruction; the server checks them against their bounds.
+    func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil) async throws -> Assistant {
+        try await call("PATCH", "v1/assistants/\(id)", body: AssistantUpdate(changes: changes, instruction: instruction))
+    }
+
+    func deleteInstruction(assistantID: String, id: String) async throws -> Assistant {
+        try await call("DELETE", "v1/assistants/\(assistantID)/instructions/\(id)")
     }
 
     func proactive() async throws -> ProactiveSettings {
@@ -647,11 +767,13 @@ private nonisolated struct ChatRequest: Encodable {
     let model: String?
     /// Read-only information the iPhone shares, when the user allowed it (upcoming events).
     let deviceContext: String?
+    /// The assistant whose conversation this is (Planning, Pointage…), if any.
+    let assistant: String?
 
     enum CodingKeys: String, CodingKey {
         case conversationId = "conversation_id"
         case deviceContext = "device_context"
-        case messages, model
+        case messages, model, assistant
     }
 }
 

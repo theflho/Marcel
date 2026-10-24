@@ -133,7 +133,8 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 
 ## Planning RMA et rappels de pointage
 
-Un robot (`backend/rma`, conteneur `rma`, Playwright) lit chaque jour à 19 h le planning du
+Un robot (`backend/rma`, conteneur `rma`, Playwright) lit chaque jour (19 h par défaut, réglable
+avec l'assistant Planning) le planning du
 portail salarié RMA, **en lecture seule** : connexion, liste des missions (vues « Sem. » et
 « Mois »), lecture des cartes (magasin, type, date, horaires, client). Il ne clique jamais sur une
 mission ni sur le pointage : pointer atteste une présence sur place et reste un geste de
@@ -144,7 +145,7 @@ l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les id
 - `GET /v1/planning?days=14` → missions (heures en secondes depuis 1970) ; les missions à venir
   que le robot ne voit plus sont retirées (annulées), les passées gardées 45 jours.
 - App : Réglages › Sur cet iPhone › **Rappels de pointage** : notifications locales programmées
-  par l'iPhone 5 min avant chaque début et chaque fin (à l'heure exacte, app fermée). Chacune
+  par l'iPhone 5 min (réglable avec l'assistant Pointage) avant chaque début et chaque fin (à l'heure exacte, app fermée). Chacune
   prépare le pointage par SMS que RMA propose (« RMA OK » à l'entrée, « RMA fin » à la sortie, au
   38200) et demande « J'envoie ? » : **Oui** (à chaque fois, une fois sur place) lance le raccourci
   « Pointer RMA » qui envoie le SMS, ou sans raccourci ouvre Messages avec le texte prêt ;
@@ -161,6 +162,29 @@ l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les id
 - Installation sur le VPS : `./deploy/install-rma.sh` (identifiant et mot de passe saisis sur
   le VPS, première lecture d'essai sans rien envoyer : `--debug`, capture dans le volume
   `rma-data`) ; puis `docker compose run --rm rma python planning.py --once`.
+
+## Assistants (une conversation chacun)
+
+Dans la barre latérale, la section **Assistants** épingle une conversation par assistant :
+🗓️ **Planning** (lecture du portail RMA, agenda), ⏱️ **Pointage** (rappels et SMS), ✉️ **Mails**
+(résumés Gmail en lecture seule), 💡 **Veille** (objectifs et idées). En haut de chaque
+conversation, une fiche montre ce qu'il fait, son état (dernière lecture, prochain pointage…), ses
+réglages et les consignes retenues (retirables d'un appui).
+- **On l'améliore en lui parlant** : « rappelle-moi 10 minutes avant », « ignore les missions OP
+  GLACES ». L'assistant répond avec une carte **Appliquer / Annuler** ; rien ne change sans
+  l'appui, et le serveur vérifie chaque valeur (bornes, liste fermée de réglages).
+- **Aucun pouvoir en plus** : une conversation d'assistant va au modèle seul, sans aucun outil (ni
+  web, ni terminal, ni envoi) ; elle n'alimente pas la mémoire (les consignes sont rangées chez
+  l'assistant, visibles). Une nouvelle capacité (lire une autre page du portail…) s'ajoute dans le
+  code.
+- Effets : Planning → heure du robot (`GET /v1/planning/config`, relue toutes les 10 min) et
+  missions ignorées (retirées du planning, des rappels et de l'agenda) ; Pointage → délai, rappels
+  de début/fin et textes des SMS, appliqués par l'iPhone ; Mails → période, non lus seulement,
+  expéditeurs ignorés, style ; Veille → les réglages de proactivité, et ses consignes vont au filtre
+  des idées.
+- API : `GET /v1/assistants`, `PATCH /v1/assistants/{id}` (`{"changes": {...}, "instruction": "..."}`),
+  `DELETE /v1/assistants/{id}/instructions/{note_id}` ; `POST /v1/missions` accepte `"assistant"`.
+- Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
 
 ## Sécurité : injection de consignes (prompt injection)
 

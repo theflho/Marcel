@@ -209,7 +209,7 @@ struct ChatView: View {
                 VStack(spacing: -6) {
                     MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
                     VStack(spacing: 0) {
-                        Text("Marcel")
+                        Text(store.assistant(for: store.conversation).map { "\($0.emoji) \($0.name)" } ?? "Marcel")
                             .font(.subheadline.weight(.semibold))
                         if store.isStreaming {
                             TypingStatus()
@@ -235,7 +235,9 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if store.conversation.messages.isEmpty {
+                    if let assistant = store.assistant(for: store.conversation) {
+                        AssistantCard(assistant: assistant)
+                    } else if store.conversation.messages.isEmpty {
                         EmptyChatView()
                     }
                     ForEach(store.conversation.messages) { message in

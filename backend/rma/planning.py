@@ -5,7 +5,8 @@ and the month, reads the cards (store, kind, date, hours, client) and sends them
 It never opens a mission and never touches the time clock: clocking in stays the user's own act,
 on site, from their phone.
 
-    python planning.py              runs every day at RMA_HOUR (and once at start)
+    python planning.py              runs every day at the hour set in the app (Planning assistant,
+                                    RMA_HOUR when Marcel can't be reached), and once at start
     python planning.py --once       one reading, then stops
     python planning.py --debug      one reading, prints what the page shows (no credentials)
                                     and saves a screenshot to /data
@@ -251,17 +252,38 @@ async def once(debug: bool = False) -> int:
     return 0
 
 
+async def wanted_hour() -> int:
+    """The reading hour set in the app (Planning assistant), else RMA_HOUR."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{MARCEL_URL}/v1/planning/config", headers={"X-Planning-Key": PLANNING_KEY})
+            resp.raise_for_status()
+            return int(resp.json()["hour"])
+    except Exception:
+        return HOUR
+
+
+async def run() -> None:
+    try:
+        await once()
+    except Exception as error:  # the next run tries again
+        print(f"Lecture du planning impossible : {type(error).__name__}: {error}")
+
+
 async def forever() -> None:
+    """Once at start, then every day at the hour set in the app (checked every 10 minutes, so a
+    new hour applies the same day)."""
+    await run()
+    hour = await wanted_hour()
+    now = time.localtime()
+    read_on = now.tm_yday if now.tm_hour >= hour else None
     while True:
-        try:
-            await once()
-        except Exception as error:  # the next run tries again
-            print(f"Lecture du planning impossible : {type(error).__name__}: {error}")
+        await asyncio.sleep(600)
+        hour = await wanted_hour()
         now = time.localtime()
-        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, HOUR, 0, 0, 0, 0, -1))
-        if target <= time.time():
-            target += 86_400
-        await asyncio.sleep(target - time.time())
+        if now.tm_hour >= hour and read_on != now.tm_yday:
+            read_on = now.tm_yday
+            await run()
 
 
 if __name__ == "__main__":

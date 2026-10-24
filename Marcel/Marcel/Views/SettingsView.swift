@@ -409,7 +409,7 @@ private struct DeviceSection: View {
                         }
                     }
                 }
-            Toggle("Rappels de pointage (5 min avant)", isOn: $workReminders)
+            Toggle("Rappels de pointage", isOn: $workReminders)
                 .onChange(of: workReminders) { _, wanted in
                     Task {
                         let on = await WorkReminders.setEnabled(wanted)
@@ -481,7 +481,7 @@ private struct DeviceSection: View {
             Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
                  + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
                  + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier. "
-                 + "Les rappels de pointage suivent ton planning RMA : 5 min avant, Marcel prépare « RMA OK » ou « RMA fin » pour le 38200 et te demande s'il envoie ; rien ne part sans ton « Oui », à donner une fois sur place. "
+                 + "Les rappels de pointage suivent ton planning RMA : quelques minutes avant (5 par défaut, réglable avec l’assistant Pointage), Marcel prépare « RMA OK » ou « RMA fin » pour le 38200 et te demande s'il envoie ; rien ne part sans ton « Oui », à donner une fois sur place. "
                  + "Les missions vont dans un calendrier à part, « Missions RMA » : Marcel n'écrit nulle part ailleurs, saute une mission que tu as déjà notée, et suit les déplacements et annulations.")
         }
     }

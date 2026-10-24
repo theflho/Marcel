@@ -4,6 +4,8 @@ Marcel knows it (it goes with every mission, the next 7 days) and the app schedu
 reminder 5 minutes before each start and end. Read only: nothing here ever clocks in.
 """
 
+from __future__ import annotations
+
 import hashlib
 import sqlite3
 import time
@@ -60,15 +62,25 @@ class PlanningStore:
         self._db.commit()
         return len(rows)
 
-    def list(self, since: float, until: float) -> list[dict]:
+    def list(self, since: float, until: float, ignore: list[str] = ()) -> list[dict]:
+        """Missions in the window, except those whose store, kind or client holds an ignored word
+        (the Planning assistant's setting, lowercase)."""
         rows = self._db.execute(f"SELECT {', '.join(COLUMNS)} FROM planning WHERE end_at >= ? AND start_at <= ? "
                                 "ORDER BY start_at", (since, until))
-        return [dict(zip(COLUMNS, row)) for row in rows]
+        missions = [dict(zip(COLUMNS, row)) for row in rows]
+        return [m for m in missions
+                if not any(w in f"{m['store']} {m['kind']} {m['client']}".lower() for w in ignore)]
 
-    def context(self, days: int = 7) -> str:
+    def last_read(self) -> tuple[float | None, int]:
+        """When the robot last handed over the planning, and how many missions are still to come."""
+        (last,) = self._db.execute("SELECT MAX(updated_at) FROM planning").fetchone()
+        (coming,) = self._db.execute("SELECT COUNT(*) FROM planning WHERE start_at >= ?", (time.time(),)).fetchone()
+        return last, coming
+
+    def context(self, days: int = 7, ignore: list[str] = ()) -> str:
         """The coming missions, for the note sent with every mission."""
         now = time.time()
-        missions = self.list(now - 3600, now + days * 86_400)
+        missions = self.list(now - 3600, now + days * 86_400, ignore)
         if not missions:
             return ""
         lines = [f"Planning de travail de l'utilisateur (missions RMA, {days} prochains jours) :"]

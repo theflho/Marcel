@@ -26,7 +26,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .gmail import MAIL_WORDS, Gmail, GmailExpired, GmailRefused
+from . import assistants as bots
+from .gmail import DEFAULT_QUERY, MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
@@ -135,6 +136,7 @@ missions = MissionStore(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
 ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
+assistants = bots.AssistantStore(DATA_DIR / "marcel.db")
 # Key the rma robot uses to hand over the planning it read (it has no access to anything else).
 PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 # Gmail, read only (connected once with python -m app.gmail_auth).
@@ -183,6 +185,8 @@ class ChatRequest(BaseModel):
     # What the iPhone shares by itself when the user allowed it (upcoming calendar events…),
     # read-only information sent with this mission only.
     device_context: str | None = Field(default=None, max_length=8000)
+    # Set in an assistant's own conversation (Planning, Pointage…), where the user tunes it.
+    assistant: Literal["planning", "pointage", "mails", "veille"] | None = None
 
 
 def sse(payload: dict) -> str:
@@ -329,9 +333,11 @@ async def start_mission(request: ChatRequest) -> dict:
     note, facts = memory.context(title)
     # The calendar can hold invitations written by others: read as data.
     device = untrusted("AGENDA DE L'IPHONE", request.device_context) if request.device_context else ""
-    mail, extra = await mail_context(title)
+    mail, extra = await mail_context(title, force=request.assistant == "mails")
+    if request.assistant:
+        return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning.context(), device, mail]))
+                                      planning_note(), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -352,6 +358,35 @@ async def start_mission(request: ChatRequest) -> dict:
         inner = lambda: hermes_stream(request, model, note)  # noqa: E731
     return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra),
                           model=model, title=title).public()
+
+
+def start_assistant_mission(request: ChatRequest, model: str, title: str, note: str, facts, device: str,
+                            mail: str, extra: list[dict]) -> dict:
+    """A message in an assistant's conversation. It is there to tune the assistant: it needs no
+    tool, so it goes to the model alone (or the restricted Hermes), whatever is asked."""
+    assistant = bots.BY_ID[request.assistant]
+    parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id)),
+             app_context(bool(request.device_context)), note]
+    if assistant.id in ("planning", "pointage"):
+        parts.append(planning_note())
+    elif assistant.id == "veille":
+        parts.append(goals.context())
+    elif assistant.id == "mails":
+        parts += [device, mail]
+    note = "\n\n".join(filter(None, parts))
+    if MOCK:
+        inner = lambda: mock_stream(request, facts)  # noqa: E731
+    elif MEMORY_LLM_URL != HERMES_URL:
+        inner = lambda: hermes_stream(request, MEMORY_LLM_MODEL, note, MEMORY_LLM_URL, MEMORY_LLM_KEY)  # noqa: E731
+    else:
+        inner = lambda: hermes_stream(request, CHECK_HERMES_MODEL or model, note,  # noqa: E731
+                                      CHECK_HERMES_URL, CHECK_HERMES_KEY)
+    extra.append({"id": "shield", "name": assistant.name,
+                  "detail": "Conversation de réglage : modèle seul, sans aucun outil ; rien ne change sans « Appliquer »",
+                  "status": "done"})
+    # What the user tells an assistant becomes its instructions (shown, removable), not memories.
+    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra, learn=False),
+                          model=model, title=f"{assistant.name} : {title}").public()
 
 
 # The user's time zone, for "today", "tomorrow at 9"… (the server runs in UTC).
@@ -398,12 +433,23 @@ def app_context(agenda_shared: bool) -> str:
     return APP_PROMPT.format(state="\n".join(state))
 
 
-async def mail_context(question: str) -> tuple[str, list[dict]]:
-    """Recent e-mails when the message is about e-mail, with the action card that says so."""
-    if not gmail.connected or not MAIL_WORDS.search(question):
+def mail_query() -> str:
+    """Gmail's search for the Mails assistant's period ("newer_than:7d …"), unread only if asked."""
+    values = assistants.values("mails")
+    query = DEFAULT_QUERY.replace("newer_than:7d", f"newer_than:{values['days']}d")
+    return query + (" is:unread" if values["unread_only"] else "")
+
+
+async def mail_context(question: str, force: bool = False) -> tuple[str, list[dict]]:
+    """Recent e-mails when the message is about e-mail (always in the Mails assistant's
+    conversation), with the action card that says so."""
+    if not gmail.connected or not (force or MAIL_WORDS.search(question)):
         return "", []
+    values = assistants.values("mails")
     try:
-        mails = await gmail.recent()
+        mails = await gmail.recent(query=mail_query())
+        ignore = bots.words(values["ignore"])
+        mails = [m for m in mails if not any(w in f"{m['from']} {m['subject']}".lower() for w in ignore)]
     except GmailRefused as error:
         log.warning("Gmail refused: %s", error)
         return "", [{"id": "mail", "name": "E-mail", "detail": f"Google refuse la lecture : {error}"[:300],
@@ -416,11 +462,17 @@ async def mail_context(question: str) -> tuple[str, list[dict]]:
         log.exception("could not read Gmail")
         return "", [{"id": "mail", "name": "E-mail", "detail": "Gmail n'a pas pu être lu.", "status": "cancelled"}]
     unread = sum(1 for m in mails if m["unread"])
-    detail = f"{len(mails)} e-mail(s) des 7 derniers jours, dont {unread} non lu(s), lus sans rien modifier"
-    return untrusted("E-MAILS", gmail.context(mails)), [{"id": "mail", "name": "E-mail", "detail": detail, "status": "done"}]
+    detail = f"{len(mails)} e-mail(s) des {values['days']} derniers jours, dont {unread} non lu(s), lus sans rien modifier"
+    style = ("Résume les e-mails en détail, un paragraphe par e-mail important." if values["style"] == "detaille"
+             else "Résume les e-mails en quelques lignes, l'essentiel d'abord.")
+    # The user's own instructions stay outside the block of outside content.
+    note = "\n\n".join(filter(None, [style, assistants.instructions_note(
+        "mails", "Consignes de l'utilisateur pour ses e-mails :"), untrusted("E-MAILS", gmail.context(mails))]))
+    return note, [{"id": "mail", "name": "E-mail", "detail": detail, "status": "done"}]
 
 
-async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()) -> AsyncIterator[str | dict]:
+async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = (),
+                      learn: bool = True) -> AsyncIterator[str | dict]:
     """Shows which memories (and e-mails) were sent, then, once the reply is complete, learns
     from the exchange."""
     for action in extra:
@@ -444,7 +496,8 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
     # A reply built on outside content (e-mails, attached files) could repeat what a stranger
     # wrote: only the user's own message is learnt from, so it can't plant lasting "facts".
     outside = any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
-    spawn(remember(request, "" if outside else "".join(reply)))
+    if learn:
+        spawn(remember(request, "" if outside else "".join(reply)))
 
 
 @app.get("/v1/missions", dependencies=[Depends(require_token)])
@@ -1041,6 +1094,8 @@ def filter_input(goal, report: str) -> str:
     return (f"Objectif : {goal.title}" + (f" ({goal.detail})" if goal.detail else "")
             + "\n\nCe qu'on savait déjà :\n" + ("\n".join(f"- {n}" for n in notes) or "(rien)")
             + "\n\nIdées déjà refusées par l'utilisateur :\n" + ("\n".join(f"- {t}" for t in refused) or "(aucune)")
+            + "\n\nConsignes de l'utilisateur pour la veille :\n"
+            + ("\n".join(f"- {n['text']}" for n in assistants.instructions("veille")) or "(aucune)")
             + f"\n\nCompte rendu de la vérification :\n{report[:6000]}")
 
 
@@ -1247,4 +1302,111 @@ async def put_planning(body: PlanningUpdate, x_planning_key: str = Header(defaul
 async def get_planning(days: int = Query(default=14, ge=1, le=60)) -> list[dict]:
     """Missions from yesterday to `days` ahead (times in seconds since 1970)."""
     now = time.time()
-    return planning.list(now - 86_400, now + days * 86_400)
+    return planning.list(now - 86_400, now + days * 86_400, bots.words(assistants.value("planning", "ignore")))
+
+
+@app.get("/v1/planning/config")
+async def planning_config(x_planning_key: str = Header(default="")) -> dict:
+    """For the rma robot: when to read (the Planning assistant's setting)."""
+    if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
+        raise HTTPException(401, "Invalid key")
+    return {"hour": assistants.value("planning", "hour")}
+
+
+def planning_note() -> str:
+    """The coming missions and the user's instructions about work, for the note of a mission."""
+    return "\n\n".join(filter(None, [
+        planning.context(ignore=bots.words(assistants.value("planning", "ignore"))),
+        assistants.instructions_note("planning", "Consignes de l'utilisateur pour son planning :"),
+        assistants.instructions_note("pointage", "Consignes de l'utilisateur pour le pointage :")]))
+
+
+# MARK: Assistants
+
+
+class AssistantUpdate(BaseModel):
+    changes: dict = Field(default_factory=dict)
+    instruction: str | None = Field(default=None, max_length=1000)
+
+
+def assistant_values(assistant_id: str) -> dict:
+    if assistant_id in bots.EXTERNAL:
+        return {k: v for k, v in ideas.settings().items() if bots.BY_ID[assistant_id].setting(k)}
+    return assistants.values(assistant_id)
+
+
+def local_time(moment: float) -> str:
+    when = datetime.fromtimestamp(moment, USER_TZ)
+    days = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")
+    return f"{days[when.weekday()]} {when:%d/%m à %H:%M}"
+
+
+def assistant_status(assistant_id: str) -> str:
+    """One line on what the assistant did last or does next."""
+    if assistant_id == "planning":
+        last, coming = planning.last_read()
+        if last is None:
+            return "Pas encore de planning lu : le robot RMA n'a encore rien transmis."
+        return f"{coming} mission(s) à venir · planning lu {local_time(last)}"
+    if assistant_id == "pointage":
+        now = time.time()
+        upcoming = planning.list(now, now + 60 * 86_400, bots.words(assistants.value("planning", "ignore")))
+        if not upcoming:
+            return "Aucune mission à venir : pas de rappel prévu."
+        nxt = upcoming[0]
+        return f"Prochain pointage : {local_time(nxt['start_at'])} · {nxt['store']}"
+    if assistant_id == "mails":
+        return "Gmail connecté, en lecture seule." if gmail.connected else "Gmail n'est pas connecté sur le serveur."
+    active = len(goals.list(ACTIVE))
+    return f"{active} objectif(s) suivi(s) · {ideas.checks_today()} vérification(s) aujourd'hui"
+
+
+def assistant_public(assistant: bots.Assistant) -> dict:
+    values = assistant_values(assistant.id)
+    return {"id": assistant.id, "name": assistant.name, "emoji": assistant.emoji, "summary": assistant.summary,
+            "welcome": assistant.welcome, "status": assistant_status(assistant.id),
+            "settings": [s.public(values[s.key]) for s in assistant.settings],
+            "instructions": assistants.instructions(assistant.id)}
+
+
+def find_assistant(assistant_id: str) -> bots.Assistant:
+    if not (assistant := bots.BY_ID.get(assistant_id)):
+        raise HTTPException(404, "Assistant introuvable")
+    return assistant
+
+
+@app.get("/v1/assistants", dependencies=[Depends(require_token)])
+async def list_assistants() -> list[dict]:
+    return [assistant_public(a) for a in bots.ASSISTANTS]
+
+
+@app.patch("/v1/assistants/{assistant_id}", dependencies=[Depends(require_token)])
+async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
+    """The user applied a proposal (or changed a setting by hand): checked, then saved."""
+    assistant = find_assistant(assistant_id)
+    try:
+        changes = bots.clean_changes(assistant, body.changes)
+        instruction = (body.instruction or "").strip()
+        if instruction:
+            # Checked before anything is saved, so a refused proposal changes nothing.
+            if len(" ".join(instruction.split())) > bots.MAX_INSTRUCTION_CHARS:
+                raise ValueError(f"Consigne trop longue ({bots.MAX_INSTRUCTION_CHARS} caractères au plus).")
+            if len(assistants.instructions(assistant.id)) >= bots.MAX_INSTRUCTIONS:
+                raise ValueError(f"{bots.MAX_INSTRUCTIONS} consignes au plus : retire-en une d'abord.")
+        if assistant.id in bots.EXTERNAL:
+            ideas.update_settings(**changes)
+        else:
+            assistants.save(assistant.id, changes)
+        if instruction:
+            assistants.add_instruction(assistant.id, instruction)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return assistant_public(assistant)
+
+
+@app.delete("/v1/assistants/{assistant_id}/instructions/{note_id}", dependencies=[Depends(require_token)])
+async def delete_instruction(assistant_id: str, note_id: str) -> dict:
+    assistant = find_assistant(assistant_id)
+    if not assistants.delete_instruction(assistant.id, note_id):
+        raise HTTPException(404, "Consigne introuvable")
+    return assistant_public(assistant)

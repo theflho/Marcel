@@ -5,6 +5,7 @@ struct MessageBubble: View {
     let message: ChatMessage
 
     private var isUser: Bool { message.role == .user }
+    private var isAssistantChat: Bool { store.conversation.assistantID != nil }
 
     var body: some View {
         HStack {
@@ -21,6 +22,13 @@ struct MessageBubble: View {
                     }
                     if !message.content.isEmpty {
                         Text(message.content)
+                    }
+                } else if isAssistantChat {
+                    // An assistant's proposal comes as a block at the end: shown as a card instead.
+                    let parts = AssistantProposal.split(message.content)
+                    MarkdownView(text: parts.text)
+                    if let proposal = parts.proposal, message.status == .complete {
+                        ProposalCard(message: message, proposal: proposal)
                     }
                 } else {
                     // No text selection: it would swallow the long press that opens the menu below.

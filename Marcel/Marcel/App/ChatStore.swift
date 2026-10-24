@@ -66,6 +66,8 @@ final class ChatStore {
     private(set) var goalProposals: [Goal] = []
     /// Ideas Marcel found on its own that the user hasn't looked at yet (badge in the header).
     private(set) var unseenIdeas = 0
+    /// Marcel's assistants (Planning, Pointage, Mails, Veille), each with its own conversation.
+    private(set) var assistants: [Assistant] = []
     private var modelChoice: [String: String] {
         didSet { UserDefaults.standard.set(modelChoice, forKey: Self.modelChoiceKey) }
     }
@@ -126,7 +128,7 @@ final class ChatStore {
     /// Conversations worth listing: the open one plus any that have messages.
     var listedConversations: [Conversation] {
         conversations
-            .filter { !$0.messages.isEmpty }
+            .filter { !$0.messages.isEmpty && $0.assistantID == nil }
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
@@ -265,6 +267,7 @@ final class ChatStore {
                 return
             }
             if models.isEmpty, let loaded = try? await api.models() { models = loaded }
+            if assistants.isEmpty { await refreshAssistants() }
             resumeMissions()
             await refreshGoalProposals()
         case 401, 403: serverStatus = .unauthorized
@@ -276,6 +279,7 @@ final class ChatStore {
         guard profile.id != settings.activeID else { return }
         settings.activeID = profile.id
         models = []
+        assistants = []
         goalProposals = []
         unseenIdeas = 0
         tokenUsage = nil
@@ -387,6 +391,108 @@ final class ChatStore {
         guard let missions = try? await api.planning(days: 60) else { return }
         await WorkReminders.schedule(missions)
         MissionCalendar.sync(missions)
+    }
+
+    // MARK: - Assistants
+
+    func assistant(for conversation: Conversation) -> Assistant? {
+        conversation.assistantID.flatMap { id in assistants.first { $0.id == id } }
+    }
+
+    /// The assistant's own conversation, started with its welcome the first time.
+    func conversation(forAssistant id: String) -> Conversation? {
+        conversations.first { $0.assistantID == id }
+    }
+
+    func openAssistant(_ assistant: Assistant) {
+        if let existing = conversation(forAssistant: assistant.id) {
+            select(existing.id)
+        } else {
+            let fresh = Conversation(title: assistant.name,
+                                     messages: [ChatMessage(role: .assistant, content: assistant.welcome, serverID: settings.activeID)],
+                                     assistantID: assistant.id)
+            dropCurrentIfEmpty()
+            conversations.append(fresh)
+            currentID = fresh.id
+            lastError = nil
+            goalProposals = []
+            persist(fresh.id)
+        }
+        Task { await refreshAssistants() }
+    }
+
+    /// Fetches the assistants, then applies Pointage's settings to the reminders on this iPhone.
+    func refreshAssistants() async {
+        guard !emergencyActive, let api = settings.api, let loaded = try? await api.assistants() else { return }
+        assistants = loaded
+        applyLocalSettings()
+    }
+
+    /// Pointage's settings are carried out by the iPhone: reminders are scheduled again when they change.
+    private func applyLocalSettings() {
+        guard let pointage = assistants.first(where: { $0.id == "pointage" }) else { return }
+        if WorkReminders.apply(pointage) { Task { await syncPlanning(force: true) } }
+    }
+
+    private func replace(_ assistant: Assistant) {
+        if let index = assistants.firstIndex(where: { $0.id == assistant.id }) {
+            assistants[index] = assistant
+        } else {
+            assistants.append(assistant)
+        }
+        applyLocalSettings()
+    }
+
+    /// The user tapped "Appliquer" under a proposal: the server checks and saves it.
+    func applyProposal(_ messageID: UUID) async {
+        guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
+              let assistantID = conversation.assistantID, let reply = message(messageID, in: conversation.id),
+              let proposal = AssistantProposal.split(reply.content).proposal else { return }
+        guard !emergencyActive, let api = settings.api else {
+            report(MarcelAPIError.notConfigured.localizedDescription, action: action(for: MarcelAPIError.notConfigured))
+            return
+        }
+        let instruction = proposal.consigne.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            let updated = try await api.updateAssistant(id: assistantID, changes: proposal.changes,
+                                                        instruction: instruction.isEmpty ? nil : instruction)
+            replace(updated)
+            updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
+            persist(conversation.id, touch: false)
+            if assistantID == "planning" { await syncPlanning(force: true) }
+        } catch {
+            report("Réglage non appliqué : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    func cancelProposal(_ messageID: UUID) {
+        guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "cancelled" }
+        persist(conversation.id, touch: false)
+    }
+
+    func deleteInstruction(_ instruction: Assistant.Instruction, of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            replace(try await api.deleteInstruction(assistantID: assistant.id, id: instruction.id))
+        } catch {
+            report("Consigne non retirée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    /// Starts the assistant's conversation over (its settings and instructions stay).
+    func resetAssistantConversation(_ assistant: Assistant) {
+        guard let existing = conversation(forAssistant: assistant.id), !isStreaming(existing.id) else { return }
+        conversations.removeAll { $0.id == existing.id }
+        cache.delete(existing.id)
+        AttachmentStore.delete(existing.messages.flatMap(\.attachments))
+        let fresh = Conversation(title: assistant.name,
+                                 messages: [ChatMessage(role: .assistant, content: assistant.welcome, serverID: settings.activeID)],
+                                 assistantID: assistant.id)
+        conversations.append(fresh)
+        currentID = fresh.id
+        lastError = nil
+        persist(fresh.id)
     }
 
     // MARK: - Ideas
@@ -554,8 +660,9 @@ final class ChatStore {
             do {
                 try await self.uploadAttachments(of: userMessageID, in: id, using: api)
                 let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
+                let assistantID = self.conversations.first { $0.id == id }?.assistantID
                 let mission = try await api.startMission(conversationID: id, messages: history, model: model,
-                                                         deviceContext: Agenda.upcoming())
+                                                         deviceContext: Agenda.upcoming(), assistant: assistantID)
                 self.updateMessage(reply.id, in: id) { $0.missionID = mission.id }
                 self.persist(id)
             } catch {
@@ -722,6 +829,9 @@ final class ChatStore {
     private func finish(_ replyID: UUID, in conversationID: UUID, _ status: ChatMessage.Status, error: String? = nil,
                         action: ErrorAction? = nil) {
         updateMessage(replyID, in: conversationID) { $0.status = status }
+        if conversations.first(where: { $0.id == conversationID })?.assistantID != nil {
+            Task { await refreshAssistants() }
+        }
         guard let error, conversationID == currentID else { return }
         if error.hasPrefix("Budget de tokens") {
             report(error, action: .openSettings(.proactive, label: "Voir la consommation"))

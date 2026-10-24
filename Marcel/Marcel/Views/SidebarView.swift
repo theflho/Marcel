@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Side drawer: search, projects and recent conversations.
+/// Side drawer: search, assistants, projects and recent conversations.
 struct SidebarView: View {
     @Environment(ChatStore.self) private var store
     var onClose: () -> Void
@@ -27,6 +27,7 @@ struct SidebarView: View {
             header
             List {
                 if query.isEmpty {
+                    assistantsSection
                     projectsSection
                     ForEach(DateBucket.group(store.listedConversations.filter { $0.projectID == nil }), id: \.bucket) { group in
                         Section(group.bucket.title) {
@@ -95,6 +96,54 @@ struct SidebarView: View {
         .padding(.horizontal)
         .padding(.top, 8)
         .padding(.bottom, 4)
+    }
+
+    /// One pinned conversation per assistant, where the user tunes it by talking to it.
+    @ViewBuilder
+    private var assistantsSection: some View {
+        if !store.assistants.isEmpty {
+            Section("Assistants") {
+                ForEach(store.assistants) { assistant in
+                    let conversation = store.conversation(forAssistant: assistant.id)
+                    let isCurrent = conversation?.id == store.currentID
+                    Button {
+                        store.openAssistant(assistant)
+                        onClose()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Text(assistant.emoji)
+                                .font(.system(size: 20))
+                                .frame(width: 36, height: 36)
+                                .background(Theme.surface, in: .circle)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(assistant.name)
+                                    .font(.body.weight(isCurrent ? .semibold : .regular))
+                                Text(assistant.status)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            if let conversation, store.isStreaming(conversation.id) {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                        .contentShape(.rect)
+                    }
+                    .tint(.primary)
+                    .listRowBackground(isCurrent ? Theme.assistantBubble : Color.clear)
+                    .listRowSeparator(.hidden)
+                    .contextMenu {
+                        if conversation != nil {
+                            Button("Recommencer la conversation", systemImage: "arrow.counterclockwise") {
+                                store.resetAssistantConversation(assistant)
+                                onClose()
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private var projectsSection: some View {
