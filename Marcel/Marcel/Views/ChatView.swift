@@ -9,12 +9,14 @@ struct ChatView: View {
     @State private var showSidebar = false
     @State private var showSplash = true
     @GestureState private var drawerDrag: CGFloat = 0
+    /// How far the menu has been pulled out from the left edge, while the finger is down.
+    @GestureState private var edgeDrag: CGFloat = 0
     @FocusState private var composerFocused: Bool
 
     var body: some View {
         GeometryReader { geometry in
             let width = min(geometry.size.width * 0.86, 360)
-            let offset = showSidebar ? min(0, drawerDrag) : -width
+            let offset = showSidebar ? min(0, drawerDrag) : -width + min(width, max(0, edgeDrag))
             ZStack(alignment: .leading) {
                 chat
                     // Swiping right opens the menu, like in Messages or ChatGPT.
@@ -28,8 +30,26 @@ struct ChatView: View {
                                 withAnimation(.snappy(duration: 0.3)) { showSidebar = true }
                             }
                     )
+                // The left edge: the menu follows the finger and opens past a third of its width
+                // (the message list doesn't get to take this swipe).
+                Color.clear
+                    .frame(width: 24)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(.rect)
+                    .gesture(
+                        DragGesture(minimumDistance: 8)
+                            .updating($edgeDrag) { value, state, _ in state = value.translation.width }
+                            .onEnded { value in
+                                guard value.translation.width > width / 3
+                                        || value.predictedEndTranslation.width > width / 2 else { return }
+                                composerFocused = false
+                                withAnimation(.snappy(duration: 0.3)) { showSidebar = true }
+                            }
+                    )
+                    .allowsHitTesting(!showSidebar)
+                    .accessibilityHidden(true)
                 Color.black
-                    .opacity(showSidebar ? 0.25 * (1 + offset / width) : 0)
+                    .opacity(0.25 * (1 + offset / width))
                     .ignoresSafeArea()
                     .allowsHitTesting(showSidebar)
                     .onTapGesture { closeSidebar() }
