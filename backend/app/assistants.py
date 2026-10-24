@@ -219,15 +219,35 @@ Réglages actuels :
 Consignes que l'utilisateur t'a demandé de retenir :
 {instructions}
 
+Actions que tu peux proposer (clé « actions » du bloc) :
+{actions}
+
 Quand l'utilisateur veut changer un réglage ou te donner une consigne durable, ne prétends pas l'avoir
 fait : propose-le, en terminant ta réponse par ce bloc (et rien après) :
 ```reglage
-{{"changes": {{"cle": valeur}}, "consigne": "", "resume": "ce qui change, en quelques mots"}}
+{{"changes": {{"cle": valeur}}, "actions": [], "consigne": "", "resume": "ce qui change, en quelques mots"}}
 ```
-« changes » ne contient que des clés de la liste ci-dessus, avec des valeurs dans leurs bornes ; « consigne »
-est une phrase à retenir (sinon ""). L'app affiche alors « Appliquer / Annuler » : rien ne change sans
-son appui. Un seul bloc par réponse, et seulement quand il demande un changement. Si sa demande sort
-de ce que tu sais faire, dis-le simplement."""
+« changes » ne contient que des clés de la liste ci-dessus, avec des valeurs dans leurs bornes ; « actions »
+seulement des actions de la liste ci-dessus ; « consigne » est une phrase à retenir (sinon ""). L'app
+affiche alors « Appliquer / Annuler » : rien ne change sans son appui. Un seul bloc par réponse, et
+seulement quand il demande un changement ou une action. Quand quelque chose ne marche pas, appuie-toi
+sur l'état du robot ci-dessous (s'il est fourni) pour expliquer ce qui se passe, et propose ce que tu
+peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier."""
+
+# What an assistant can have done right away, on the user's "Appliquer".
+ACTIONS = {
+    "planning": {"relire": "Relire le portail RMA maintenant (planning et offres, dans la minute)"},
+    "recrutements": {"relire": "Relire le portail RMA maintenant (planning et offres, dans la minute)"},
+}
+
+OVERVIEW_PROMPT = """Les assistants de l'app, que tu peux aussi régler pour l'utilisateur (il valide) :
+{lines}
+Pour changer le réglage d'un assistant ou lancer une de ses actions, termine ta réponse par ce bloc,
+et rien après :
+```reglage
+{{"assistant": "id", "changes": {{"cle": valeur}}, "actions": [], "consigne": "", "resume": "en quelques mots"}}
+```
+L'app affiche « Appliquer / Annuler » ; le serveur vérifie les bornes. Un seul bloc par réponse."""
 
 
 class AssistantStore:
@@ -241,6 +261,7 @@ class AssistantStore:
                 value TEXT NOT NULL,
                 PRIMARY KEY (assistant, name)
             );
+            CREATE TABLE IF NOT EXISTS robot_state (name TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS custom_assistants (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -255,6 +276,16 @@ class AssistantStore:
                 created_at REAL NOT NULL
             );"""
         )
+        self._db.commit()
+
+    # MARK: The rma robot's state (its last runs, a reading asked from the app)
+
+    def state(self, name: str, default=None):
+        row = self._db.execute("SELECT value FROM robot_state WHERE name = ?", (name,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def set_state(self, name: str, value) -> None:
+        self._db.execute("INSERT OR REPLACE INTO robot_state (name, value) VALUES (?, ?)", (name, json.dumps(value)))
         self._db.commit()
 
     # MARK: Assistants made by the user
@@ -363,9 +394,28 @@ def words(raw: str) -> list[str]:
     return [w.strip().lower() for w in raw.split(",") if w.strip()]
 
 
+def actions_note(assistant_id: str) -> str:
+    return "\n".join(f"- {key} : {label}" for key, label in ACTIONS.get(assistant_id, {}).items()) or "(aucune)"
+
+
+def overview(assistants: list[Assistant], values) -> str:
+    """Every assistant with its settings, for Marcel's own conversations."""
+    lines = []
+    for assistant in assistants:
+        current = values(assistant.id)
+        settings = " ; ".join(f"{s.key}={json.dumps(current[s.key], ensure_ascii=False)}"
+                              + (f" ({s.minimum}-{s.maximum})" if s.kind == "int" else "")
+                              + (f" ({'/'.join(v for v, _ in s.choices)})" if s.kind == "choice" else "")
+                              for s in assistant.settings)
+        actions = ", ".join(ACTIONS.get(assistant.id, {}))
+        lines.append(f"- {assistant.id} ({assistant.name}) : {settings or 'aucun réglage'}"
+                     + (f" ; actions : {actions}" if actions else ""))
+    return OVERVIEW_PROMPT.format(lines="\n".join(lines))
+
+
 def prompt(assistant: Assistant, values: dict, instructions: list[dict]) -> str:
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        name=assistant.name, role=role,
+        name=assistant.name, role=role, actions=actions_note(assistant.id),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)")

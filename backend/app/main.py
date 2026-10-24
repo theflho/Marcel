@@ -340,7 +340,8 @@ async def start_mission(request: ChatRequest) -> dict:
             raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning_note(), device, mail]))
+                                      planning_note(), bots.overview(assistants.all(), assistant_values),
+                                      device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -372,8 +373,10 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
              app_context(bool(request.device_context)), note]
     if assistant.id in ("planning", "pointage"):
         parts.append(planning_note())
+        if assistant.id == "planning":
+            parts.append(robot_note())
     elif assistant.id == "recrutements":
-        parts += [planning_note(), offers.context(open_offers()), device]
+        parts += [planning_note(), offers.context(open_offers()), robot_note(), device]
     elif assistant.id == "veille":
         parts.append(goals.context())
     elif assistant.id == "mails":
@@ -1327,7 +1330,41 @@ async def planning_config(x_planning_key: str = Header(default="")) -> dict:
     """For the rma robot: when to read (the Planning assistant's setting)."""
     if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
         raise HTTPException(401, "Invalid key")
-    return {"hour": assistants.value("planning", "hour")}
+    return {"hour": assistants.value("planning", "hour"), "read_now": bool(assistants.state("read_now", False))}
+
+
+class RobotReport(BaseModel):
+    ok: bool
+    missions: int | None = None
+    offers: int | None = None
+    message: str = Field(default="", max_length=500)
+
+
+@app.post("/v1/robot/report")
+async def robot_report(body: RobotReport, x_planning_key: str = Header(default="")) -> dict:
+    """How the rma robot's last reading went, so the assistants (and the user) know."""
+    check_planning_key(x_planning_key)
+    reports = assistants.state("reports", [])[-4:] + [body.model_dump() | {"at": time.time()}]
+    assistants.set_state("reports", reports)
+    assistants.set_state("read_now", False)
+    return {"ok": True}
+
+
+def robot_note() -> str:
+    """The robot's last readings, for the Planning and Recrutements assistants."""
+    reports = assistants.state("reports", [])
+    lines = ["État du robot RMA (lit le portail chaque jour à l'heure du Planning, ou sur demande) :"]
+    if not reports:
+        lines.append("- aucun compte rendu reçu : le robot n'a pas encore tourné depuis sa mise à jour, ou il ne "
+                     "joint pas Marcel (conteneur rma arrêté ?).")
+    for r in reversed(reports):
+        counts = ", ".join(filter(None, [r["missions"] is not None and f"{r['missions']} mission(s)",
+                                         r["offers"] is not None and f"{r['offers']} offre(s)"]))
+        lines.append(f"- {local_time(r['at'])} : {'réussie' if r['ok'] else 'ÉCHEC'}"
+                     + (f" — {counts}" if counts else "") + (f" — {r['message']}" if r["message"] else ""))
+    if assistants.state("read_now", False):
+        lines.append("- une relecture est demandée : le robot la fera dans la minute.")
+    return "\n".join(lines)
 
 
 def planning_note() -> str:
@@ -1499,6 +1536,8 @@ async def get_offers() -> dict:
 class AssistantUpdate(BaseModel):
     changes: dict = Field(default_factory=dict)
     instruction: str | None = Field(default=None, max_length=1000)
+    # Something to do right away, among the assistant's actions ("relire").
+    actions: list[str] = Field(default_factory=list, max_length=3)
 
 
 def assistant_values(assistant_id: str) -> dict:
@@ -1515,6 +1554,9 @@ def local_time(moment: float) -> str:
 
 def assistant_status(assistant_id: str) -> str:
     """One line on what the assistant did last or does next."""
+    reports = assistants.state("reports", [])
+    if assistant_id in ("planning", "recrutements") and reports and not reports[-1]["ok"]:
+        return f"⚠️ Dernière lecture en échec ({local_time(reports[-1]['at'])}) : demande-moi pourquoi."
     if assistant_id == "planning":
         last, coming = planning.last_read()
         if last is None:
@@ -1595,6 +1637,9 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
     assistant = find_assistant(assistant_id)
     try:
         changes = bots.clean_changes(assistant, body.changes)
+        allowed = bots.ACTIONS.get(assistant.id, {})
+        if unknown := [a for a in body.actions if a not in allowed]:
+            raise ValueError(f"Action inconnue pour {assistant.name} : {', '.join(unknown)}.")
         instruction = (body.instruction or "").strip()
         if instruction:
             # Checked before anything is saved, so a refused proposal changes nothing.
@@ -1608,6 +1653,9 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
             assistants.save(assistant.id, changes)
         if instruction:
             assistants.add_instruction(assistant.id, instruction)
+        if "relire" in body.actions:
+            # The robot looks every minute and reads the portal at once.
+            assistants.set_state("read_now", True)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return assistant_public(assistant)

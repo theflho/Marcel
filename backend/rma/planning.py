@@ -6,7 +6,8 @@ It never opens a mission and never touches the time clock: clocking in stays the
 on site, from their phone.
 
     python planning.py              runs every day at the hour set in the app (Planning assistant,
-                                    RMA_HOUR when Marcel can't be reached), and once at start
+                                    RMA_HOUR when Marcel can't be reached), once at start, and
+                                    whenever the app asks ("Relire maintenant")
     python planning.py --once       one reading, then stops
     python planning.py --debug      one reading, prints what the page shows (no credentials)
                                     and saves a screenshot to /data
@@ -425,11 +426,16 @@ async def send(missions: list[dict]) -> None:
         print(f"Marcel a enregistré {resp.json().get('count', len(missions))} mission(s).")
 
 
+# How many missions the last reading found, for the report to Marcel.
+LAST_COUNT: list = [None]
+
+
 async def once(debug: bool = False) -> int:
     if not LOGIN or not PASSWORD or not PLANNING_KEY:
         print("RMA_LOGIN, RMA_PASSWORD et MARCEL_PLANNING_KEY sont nécessaires (rma.env).")
         return 1
     missions = await read(debug)
+    LAST_COUNT[:] = [len(missions)]
     print(f"{len(missions)} mission(s) lue(s) :")
     for mission in sorted(missions, key=lambda m: (m["date"][6:], m["date"][3:5], m["date"][:2], m["start"])):
         print(f"- {mission['date']} {mission['start']}-{mission['end']} · {mission['store']} · {mission['client']}")
@@ -452,33 +458,52 @@ async def once(debug: bool = False) -> int:
     return 0
 
 
-async def wanted_hour() -> int:
-    """The reading hour set in the app (Planning assistant), else RMA_HOUR."""
+async def config() -> dict:
+    """The reading hour set in the app (Planning assistant; RMA_HOUR when Marcel can't be
+    reached) and whether a reading was asked for right now."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(f"{MARCEL_URL}/v1/planning/config", headers={"X-Planning-Key": PLANNING_KEY})
             resp.raise_for_status()
-            return int(resp.json()["hour"])
+            data = resp.json()
+            return {"hour": int(data["hour"]), "read_now": bool(data.get("read_now"))}
     except Exception:
-        return HOUR
+        return {"hour": HOUR, "read_now": False}
+
+
+async def report(ok: bool, message: str = "", missions: int | None = None, offers: int | None = None) -> None:
+    """Tells Marcel how the reading went: the assistants can then explain it to the user."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{MARCEL_URL}/v1/robot/report", headers={"X-Planning-Key": PLANNING_KEY},
+                              json={"ok": ok, "message": message[:500], "missions": missions, "offers": offers})
+    except Exception as error:
+        print(f"Compte rendu non transmis à Marcel : {type(error).__name__}")
 
 
 async def run() -> None:
+    OFFERS_READ[:] = [None]
     try:
-        await once()
+        code = await once()
     except Exception as error:  # the next run tries again
         print(f"Lecture du planning impossible : {type(error).__name__}: {error}")
+        await report(False, f"{type(error).__name__} : {error}")
+        return
+    offers = OFFERS_READ[0]
+    await report(code == 0, "" if code == 0 else "aucune mission lue sur le portail (planning connu gardé)",
+                 LAST_COUNT[0], None if offers is None else len(offers))
 
 
 async def forever() -> None:
-    """Once at start, then every day at the hour set in the app (checked every 10 minutes, so a
-    new hour applies the same day)."""
+    """Once at start, then every day at the hour set in the app, and at once when the app asks
+    (an assistant's "Relire maintenant"). Every minute it also gives in the portal the answers to
+    offers the user confirmed in the app."""
     await run()
-    hour = await wanted_hour()
+    settings = await config()
     now = time.localtime()
-    read_on = now.tm_yday if now.tm_hour >= hour else None
+    read_on = now.tm_yday if now.tm_hour >= settings["hour"] else None
     while True:
-        await asyncio.sleep(600)
+        await asyncio.sleep(60)
         # Answers to offers the user confirmed in the app, then a new reading (planning updated).
         try:
             if requests := await pending_answers():
@@ -486,9 +511,12 @@ async def forever() -> None:
                 await run()
         except Exception as error:
             print(f"Réponses aux offres impossibles : {type(error).__name__}: {error}")
-        hour = await wanted_hour()
+        settings = await config()
         now = time.localtime()
-        if now.tm_hour >= hour and read_on != now.tm_yday:
+        if settings["read_now"]:
+            print("Relecture demandée depuis l'app.")
+            await run()
+        elif now.tm_hour >= settings["hour"] and read_on != now.tm_yday:
             read_on = now.tm_yday
             await run()
 

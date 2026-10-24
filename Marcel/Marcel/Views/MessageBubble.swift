@@ -33,10 +33,15 @@ struct MessageBubble: View {
                 } else {
                     // No text selection: it would swallow the long press that opens the menu below.
                     // An assistant Marcel proposes to create comes as a block: shown as a card.
+                    // So does a change to an assistant's settings he proposes ("Appliquer").
                     let parts = AssistantDraft.split(message.content)
-                    MarkdownView(text: parts.text)
+                    let tuned = AssistantProposal.split(parts.text)
+                    MarkdownView(text: tuned.text)
                     if let draft = parts.draft, message.status == .complete {
                         NewAssistantCard(message: message, draft: draft)
+                    }
+                    if let proposal = tuned.proposal, proposal.assistant != nil, message.status == .complete {
+                        ProposalCard(message: message, proposal: proposal)
                     }
                 }
                 statusLine

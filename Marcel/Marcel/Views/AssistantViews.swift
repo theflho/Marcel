@@ -244,14 +244,26 @@ struct ProposalCard: View {
     let proposal: AssistantProposal
     @State private var applying = false
 
+    /// The one named in the proposal (from Marcel's own conversations), else this conversation's.
     private var assistant: Assistant? {
-        store.conversations.first { $0.messages.contains { $0.id == message.id } }.flatMap(store.assistant(for:))
+        if let id = proposal.assistant { return store.assistants.first { $0.id == id } }
+        return store.conversations.first { $0.messages.contains { $0.id == message.id } }.flatMap(store.assistant(for:))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if proposal.assistant != nil, let assistant {
+                HStack(spacing: 8) {
+                    MarcelAvatar(size: 28, mood: assistant.displayMood)
+                    Text(assistant.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                }
+            }
             Label(proposal.resume.isEmpty ? "Changement proposé" : proposal.resume, systemImage: "slider.horizontal.3")
                 .font(.subheadline.weight(.semibold))
+            ForEach(proposal.actions, id: \.self) { action in
+                Label(AssistantProposal.label(ofAction: action), systemImage: "arrow.clockwise")
+                    .font(.footnote)
+            }
             ForEach(proposal.changes.keys.sorted(), id: \.self) { key in
                 let setting = assistant?.setting(key)
                 let value = proposal.changes[key]!

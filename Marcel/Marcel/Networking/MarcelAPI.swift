@@ -434,20 +434,32 @@ private nonisolated struct DeletedAssistant: Decodable, Sendable {
 
 /// A change an assistant proposed in its conversation, applied only when the user taps "Appliquer".
 nonisolated struct AssistantProposal: Codable, Hashable, Sendable {
+    /// Which assistant, when Marcel proposes it from one of his own conversations.
+    var assistant: String?
     var changes: [String: SettingValue] = [:]
+    /// Things to do right away ("relire": read the portal now).
+    var actions: [String] = []
     var consigne: String = ""
     var resume: String = ""
 
-    enum CodingKeys: String, CodingKey { case changes, consigne, resume }
+    enum CodingKeys: String, CodingKey { case assistant, changes, actions, consigne, resume }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        assistant = try? container.decodeIfPresent(String.self, forKey: .assistant)
         changes = (try? container.decodeIfPresent([String: SettingValue].self, forKey: .changes)) ?? [:]
+        actions = (try? container.decodeIfPresent([String].self, forKey: .actions)) ?? []
         consigne = (try? container.decodeIfPresent(String.self, forKey: .consigne)) ?? ""
         resume = (try? container.decodeIfPresent(String.self, forKey: .resume)) ?? ""
     }
 
-    var isEmpty: Bool { changes.isEmpty && consigne.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var isEmpty: Bool {
+        changes.isEmpty && actions.isEmpty && consigne.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func label(ofAction action: String) -> String {
+        action == "relire" ? "Relire le portail RMA maintenant" : action
+    }
 
     private static let fence = "```reglage"
 
@@ -466,6 +478,7 @@ nonisolated struct AssistantProposal: Codable, Hashable, Sendable {
 private nonisolated struct AssistantUpdate: Encodable, Sendable {
     let changes: [String: SettingValue]
     let instruction: String?
+    let actions: [String]
 }
 
 nonisolated struct ProactiveChange: Encodable, Sendable {
@@ -721,8 +734,10 @@ nonisolated struct MarcelAPI: Sendable {
     }
 
     /// Saves settings and/or an instruction; the server checks them against their bounds.
-    func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil) async throws -> Assistant {
-        try await call("PATCH", "v1/assistants/\(id)", body: AssistantUpdate(changes: changes, instruction: instruction))
+    func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil,
+                         actions: [String] = []) async throws -> Assistant {
+        try await call("PATCH", "v1/assistants/\(id)",
+                       body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions))
     }
 
     func createAssistant(_ draft: AssistantDraft) async throws -> Assistant {

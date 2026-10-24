@@ -185,6 +185,12 @@ réglages et les consignes retenues (retirables d'un appui).
 - API : `GET /v1/assistants`, `PATCH /v1/assistants/{id}` (`{"changes": {...}, "instruction": "..."}`),
   `DELETE /v1/assistants/{id}/instructions/{note_id}` ; `POST /v1/missions` accepte `"assistant"`.
 - Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
+- **Les IA ont la main sur les assistants (avec ta validation)** : Marcel (Hermes) connaît tous les
+  assistants et leurs réglages ; dans une conversation normale, il peut proposer un réglage pour
+  l'un d'eux (bloc `reglage` avec `"assistant": "id"`), affiché avec Appliquer / Annuler. Planning
+  et Recrutements voient l'**état du robot** (5 derniers comptes rendus : réussite, missions,
+  offres, erreur, via `POST /v1/robot/report`) et peuvent proposer l'action **« Relire le portail
+  maintenant »** (`"actions": ["relire"]`) : le robot, qui regarde chaque minute, relit aussitôt.
 - Chaque assistant est représenté par Marcel dans une situation (Planning au café, Pointage au
   travail, Recrutements en voiture, Mails en lecture, Veille dans l'arbre) ; ses conversations sont
   épinglées en haut de la liste, comme les autres.

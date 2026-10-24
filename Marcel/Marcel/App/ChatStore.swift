@@ -469,8 +469,10 @@ final class ChatStore {
     /// The user tapped "Appliquer" under a proposal: the server checks and saves it.
     func applyProposal(_ messageID: UUID) async {
         guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
-              let assistantID = conversation.assistantID, let reply = message(messageID, in: conversation.id),
-              let proposal = AssistantProposal.split(reply.content).proposal else { return }
+              let reply = message(messageID, in: conversation.id),
+              let proposal = AssistantProposal.split(AssistantDraft.split(reply.content).text).proposal,
+              // Marcel names the assistant; in an assistant's own conversation, it's that one.
+              let assistantID = proposal.assistant ?? conversation.assistantID else { return }
         guard !emergencyActive, let api = settings.api else {
             report(MarcelAPIError.notConfigured.localizedDescription, action: action(for: MarcelAPIError.notConfigured))
             return
@@ -478,7 +480,8 @@ final class ChatStore {
         let instruction = proposal.consigne.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             let updated = try await api.updateAssistant(id: assistantID, changes: proposal.changes,
-                                                        instruction: instruction.isEmpty ? nil : instruction)
+                                                        instruction: instruction.isEmpty ? nil : instruction,
+                                                        actions: proposal.actions)
             replace(updated)
             updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
             persist(conversation.id, touch: false)
