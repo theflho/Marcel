@@ -326,6 +326,27 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
 }
 
+/// A recruitment offer from the RMA portal, waiting for the user's answer (`/v1/offers`).
+nonisolated struct Offer: Decodable, Hashable, Sendable, Identifiable {
+    static let portalURL = URL(string: "https://ecollaborateurs.rmasa.com/#/accueil/missrecrut")!
+
+    let id: String
+    let store: String
+    let day: Date
+    let kind: String
+    let client: String
+    let agency: String
+    /// What it clashes with ("déjà en mission ce jour-là : …"), or "".
+    let conflict: String
+    let past: Bool
+}
+
+nonisolated struct OfferList: Decodable, Sendable {
+    /// The user wants a notification for each new offer (Recrutements assistant).
+    let notify: Bool
+    let offers: [Offer]
+}
+
 /// A change an assistant proposed in its conversation, applied only when the user taps "Appliquer".
 nonisolated struct AssistantProposal: Codable, Hashable, Sendable {
     var changes: [String: SettingValue] = [:]
@@ -617,6 +638,10 @@ nonisolated struct MarcelAPI: Sendable {
     /// Saves settings and/or an instruction; the server checks them against their bounds.
     func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil) async throws -> Assistant {
         try await call("PATCH", "v1/assistants/\(id)", body: AssistantUpdate(changes: changes, instruction: instruction))
+    }
+
+    func offers() async throws -> OfferList {
+        try await call("GET", "v1/offers")
     }
 
     func deleteInstruction(assistantID: String, id: String) async throws -> Assistant {

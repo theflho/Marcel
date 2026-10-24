@@ -186,6 +186,14 @@ réglages et les consignes retenues (retirables d'un appui).
   `DELETE /v1/assistants/{id}/instructions/{note_id}` ; `POST /v1/missions` accepte `"assistant"`.
 - Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
 
+**🟣 Recrutements** : le robot RMA lit aussi, après le planning, la page « Recrutements › Attente
+de réponse » (`#/accueil/missrecrut`), **sans rien cliquer** (ni ouvrir, ni accepter, ni refuser).
+Les offres arrivent par `PUT /v1/offers` (même clé que le planning) ; `GET /v1/offers` les rend avec
+leurs conflits (déjà en mission ce jour-là, date passée). En haut de la conversation : la liste
+(✅ libre, ⚠️ conflit) et « Répondre dans le portail » ; on lui demande conseil (« lesquelles je
+prends ? ») et on lui donne ses consignes (« pas plus de 3 missions par semaine »). Notification
+pour chaque nouvelle offre (réglable), avec les notifications de Marcel activées.
+
 ## Sécurité : injection de consignes (prompt injection)
 
 Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des consignes écrites

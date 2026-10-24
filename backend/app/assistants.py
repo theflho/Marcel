@@ -124,6 +124,23 @@ ASSISTANTS: tuple[Assistant, ...] = (
         "minutes avant », « plus de rappel de fin ».",
     ),
     Assistant(
+        "recrutements", "Recrutements", "🧑‍💼",
+        "Suit les offres de missions RMA qui attendent ta réponse.",
+        "Le robot RMA lit chaque jour la page « Recrutements › Attente de réponse » du portail, en "
+        "lecture seule : il n'ouvre aucune offre, n'accepte et ne refuse rien. Tu vois les offres en "
+        "attente (magasin, date, opération, client), si elles tombent un jour déjà pris par une mission "
+        "ou si elles sont passées. Tu conseilles l'utilisateur (lesquelles prendre, conflits, charge de la "
+        "semaine) en tenant compte de ses consignes ; c'est lui qui répond dans le portail. Tu peux régler "
+        "les notifications de nouvelles offres et les offres à ignorer.",
+        (Setting("notify", "Prévenir des nouvelles offres", "bool", True),
+         Setting("ignore", "Offres à ignorer", "text", "", max_chars=200,
+                 help="mots séparés par des virgules (magasin, opération ou client)")),
+        "Je suis l'assistant **Recrutements**. Je suis les offres de missions RMA qui attendent ta réponse "
+        "et je te signale les conflits avec ton planning. C'est toi qui acceptes ou refuses dans le portail.\n\n"
+        "Demande-moi « lesquelles je peux prendre ? », ou donne-moi tes consignes : « pas plus de 3 missions "
+        "par semaine », « ignore les offres Lindt ».",
+    ),
+    Assistant(
         "mails", "Mails", "✉️",
         "Résume tes e-mails, en lecture seule.",
         "Tu lis les e-mails récents de l'utilisateur (Gmail, en lecture seule) quand il t'en parle : tu ne "

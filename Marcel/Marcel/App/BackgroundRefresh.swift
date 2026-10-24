@@ -61,6 +61,17 @@ enum BackgroundRefresh {
             notified.insert("mission-\(missionID)")
         }
 
+        // New recruitment offers, if the user asked to hear of them (Recrutements assistant).
+        if let list = try? await api.offers(), list.notify {
+            for offer in list.offers.filter({ !$0.past && !notified.contains("offer-\($0.id)") }).prefix(5) {
+                let day = offer.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                let clash = offer.conflict.isEmpty ? "" : " ⚠️ \(offer.conflict)"
+                await post(id: "offer-\(offer.id)", title: "Nouvelle offre RMA · \(day)",
+                           body: "\(offer.store) · \(offer.kind) · \(offer.client)\(clash)")
+                notified.insert("offer-\(offer.id)")
+            }
+        }
+
         // The planning may have changed (a mission added or moved): reminders follow it.
         if WorkReminders.isEnabled || MissionCalendar.isEnabled, let missions = try? await api.planning(days: 60) {
             await WorkReminders.schedule(missions)

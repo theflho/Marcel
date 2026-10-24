@@ -31,6 +31,7 @@ from .gmail import DEFAULT_QUERY, MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .goals import ACTIVE, GoalStore
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
 from .missions import DONE, MissionError, MissionStore, valid_id
+from .offers import OfferStore
 from .planning import PlanningStore
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
@@ -186,7 +187,7 @@ class ChatRequest(BaseModel):
     # read-only information sent with this mission only.
     device_context: str | None = Field(default=None, max_length=8000)
     # Set in an assistant's own conversation (Planning, Pointage…), where the user tunes it.
-    assistant: Literal["planning", "pointage", "mails", "veille"] | None = None
+    assistant: Literal["planning", "pointage", "recrutements", "mails", "veille"] | None = None
 
 
 def sse(payload: dict) -> str:
@@ -369,6 +370,8 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
              app_context(bool(request.device_context)), note]
     if assistant.id in ("planning", "pointage"):
         parts.append(planning_note())
+    elif assistant.id == "recrutements":
+        parts += [planning_note(), offers.context(open_offers()), device]
     elif assistant.id == "veille":
         parts.append(goals.context())
     elif assistant.id == "mails":
@@ -414,6 +417,7 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
 
 
 planning = PlanningStore(DATA_DIR / "marcel.db", USER_TZ)
+offers = OfferStore(DATA_DIR / "marcel.db", USER_TZ)
 
 
 def app_context(agenda_shared: bool) -> str:
@@ -1321,6 +1325,49 @@ def planning_note() -> str:
         assistants.instructions_note("pointage", "Consignes de l'utilisateur pour le pointage :")]))
 
 
+# MARK: Recruitment offers
+
+
+class Offer(BaseModel):
+    store: str = Field(max_length=200)
+    date: str = Field(max_length=40)  # "19 oct. 2026", as the portal shows it
+    kind: str = Field(default="", max_length=200)
+    client: str = Field(default="", max_length=200)
+    agency: str = Field(default="", max_length=60)
+
+
+class OffersUpdate(BaseModel):
+    offers: list[Offer] = Field(max_length=300)
+
+
+@app.put("/v1/offers")
+async def put_offers(body: OffersUpdate, x_planning_key: str = Header(default="")) -> dict:
+    """The rma robot's reading of the offers waiting for an answer (same key as the planning)."""
+    if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
+        raise HTTPException(401, "Invalid key")
+    return {"count": offers.replace([o.model_dump() for o in body.offers])}
+
+
+def open_offers() -> list[dict]:
+    """Waiting offers, with what they clash with: a work mission the same day, or a day gone by."""
+    now = time.time()
+    today = datetime.fromtimestamp(now, USER_TZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    result = []
+    for offer in offers.open(bots.words(assistants.value("recrutements", "ignore"))):
+        busy = planning.list(offer["day"], offer["day"] + 86_399)
+        offer["conflict"] = ("déjà en mission ce jour-là : " + ", ".join(
+            f"{m['store']} {datetime.fromtimestamp(m['start_at'], USER_TZ):%H:%M}" for m in busy)) if busy else ""
+        offer["past"] = offer["day"] < today
+        result.append(offer)
+    return result
+
+
+@app.get("/v1/offers", dependencies=[Depends(require_token)])
+async def get_offers() -> dict:
+    """Waiting offers (days in seconds since 1970) and whether the user wants to hear of new ones."""
+    return {"notify": assistants.value("recrutements", "notify"), "offers": open_offers()}
+
+
 # MARK: Assistants
 
 
@@ -1355,6 +1402,13 @@ def assistant_status(assistant_id: str) -> str:
             return "Aucune mission à venir : pas de rappel prévu."
         nxt = upcoming[0]
         return f"Prochain pointage : {local_time(nxt['start_at'])} · {nxt['store']}"
+    if assistant_id == "recrutements":
+        if offers.last_read() is None:
+            return "Pas encore d'offres lues : le robot RMA n'a encore rien transmis."
+        waiting = open_offers()
+        clashes = sum(1 for o in waiting if o["conflict"])
+        return (f"{len(waiting)} offre(s) en attente" + (f" · {clashes} en conflit" if clashes else "")
+                + f" · lues {local_time(offers.last_read())}")
     if assistant_id == "mails":
         return "Gmail connecté, en lecture seule." if gmail.connected else "Gmail n'est pas connecté sur le serveur."
     active = len(goals.list(ACTIVE))

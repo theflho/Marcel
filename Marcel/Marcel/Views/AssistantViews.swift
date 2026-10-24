@@ -11,6 +11,7 @@ struct AssistantIcon: View {
         case "pointage": "clock.badge.checkmark.fill"
         case "mails": "envelope.fill"
         case "veille": "lightbulb.max.fill"
+        case "recrutements": "person.crop.circle.badge.plus"
         default: "sparkles"
         }
     }
@@ -21,6 +22,7 @@ struct AssistantIcon: View {
         case "pointage": .green
         case "mails": .blue
         case "veille": .yellow
+        case "recrutements": .purple
         default: .purple
         }
     }
@@ -68,6 +70,10 @@ struct AssistantCard: View {
             .tint(.primary)
             .accessibilityHint(expanded ? "Masque les réglages" : "Affiche les réglages")
 
+            if assistant.id == "recrutements" {
+                OffersList(offers: store.offers)
+            }
+
             if expanded {
                 Divider()
                 ForEach(assistant.settings) { setting in
@@ -104,6 +110,45 @@ struct AssistantCard: View {
         .padding(14)
         .background(Theme.surface, in: .rect(cornerRadius: 18))
         .padding(.horizontal)
+    }
+}
+
+/// The offers waiting for an answer: read only, the answer is given in the portal.
+private struct OffersList: View {
+    let offers: [Offer]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            if offers.isEmpty {
+                Text("Aucune offre en attente.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(offers) { offer in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: offer.past ? "clock.badge.xmark" : offer.conflict.isEmpty
+                          ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(offer.past ? Color.secondary : offer.conflict.isEmpty ? Color.green : Color.orange)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(offer.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))) · \(offer.store)")
+                            .font(.footnote.weight(.semibold))
+                        Text([offer.kind, offer.client].filter { !$0.isEmpty }.joined(separator: " · "))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if offer.past {
+                            Text("Date passée").font(.caption).foregroundStyle(.secondary)
+                        } else if !offer.conflict.isEmpty {
+                            Text(String(offer.conflict.prefix(1)).uppercased() + String(offer.conflict.dropFirst()))
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Link(destination: Offer.portalURL) {
+                Label("Répondre dans le portail", systemImage: "arrow.up.right.square")
+                    .font(.footnote.weight(.semibold))
+            }
+        }
     }
 }
 

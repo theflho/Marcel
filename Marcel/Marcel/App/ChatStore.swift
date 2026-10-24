@@ -68,6 +68,8 @@ final class ChatStore {
     private(set) var unseenIdeas = 0
     /// Marcel's assistants (Planning, Pointage, Mails, Veille), each with its own conversation.
     private(set) var assistants: [Assistant] = []
+    /// Recruitment offers waiting for an answer, shown in the Recrutements assistant's conversation.
+    private(set) var offers: [Offer] = []
     private var modelChoice: [String: String] {
         didSet { UserDefaults.standard.set(modelChoice, forKey: Self.modelChoiceKey) }
     }
@@ -426,6 +428,7 @@ final class ChatStore {
         guard !emergencyActive, let api = settings.api, let loaded = try? await api.assistants() else { return }
         assistants = loaded
         applyLocalSettings()
+        if let list = try? await api.offers() { offers = list.offers }
     }
 
     /// Pointage's settings are carried out by the iPhone: reminders are scheduled again when they change.

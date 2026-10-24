@@ -27,6 +27,7 @@ from playwright.async_api import async_playwright
 PORTAL = "https://ecollaborateurs.rmasa.com/"
 HOME = PORTAL + "#/accueil"
 MISSIONS = PORTAL + "#/accueil/missions"
+OFFERS = PORTAL + "#/accueil/missrecrut"
 LOGIN = os.environ.get("RMA_LOGIN", "")
 PASSWORD = os.environ.get("RMA_PASSWORD", "")
 MARCEL_URL = os.environ.get("MARCEL_URL", "http://marcel-api:8000").rstrip("/")
@@ -56,6 +57,46 @@ def parse(text: str) -> list[dict]:
             "date": date, "start": start, "end": end, "client": client.strip(),
         })
     return missions
+
+
+# An offer card: the store, then "Le 19 oct. 2026", then the operation, the client and the agency.
+OFFER_DAY = re.compile(r"^Le (\d{1,2} \S+ \d{4})$")
+
+
+def parse_offers(text: str) -> list[dict]:
+    """Offers from the visible text of "Recrutements › Attente de réponse"."""
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line and len(line) > 1]
+    days = [i for i, line in enumerate(lines) if OFFER_DAY.match(line)]
+    offers = []
+    for n, index in enumerate(days):
+        # The fields run until the next card's store (the line before its date).
+        end = days[n + 1] - 1 if n + 1 < len(days) else min(len(lines), index + 4)
+        fields = [part.strip() for line in lines[index + 1:end] for part in re.split(r"\t|\s{2,}", line) if part.strip()]
+        fields += [""] * 3
+        offers.append({"store": lines[index - 1] if index else "", "date": OFFER_DAY.match(lines[index]).group(1),
+                       "kind": fields[0], "client": fields[1], "agency": fields[2]})
+    return offers
+
+
+async def read_offers(page) -> list[dict] | None:
+    """The offers waiting for an answer (first tab, shown by default). Nothing is clicked.
+    None when the page didn't show up, so the known offers aren't wiped."""
+    await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
+    try:
+        await page.get_by_text(re.compile(r"Attente de r[ée]ponse")).first.wait_for(timeout=30_000)
+    except PlaywrightTimeout:
+        print("Page des recrutements introuvable.")
+        return None
+    try:
+        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=20_000)
+    except PlaywrightTimeout:
+        pass  # no offer waiting, or slow: the text read below tells
+    # Cards may load as the list scrolls.
+    for _ in range(5):
+        await page.mouse.wheel(0, 4000)
+        await page.wait_for_timeout(800)
+    return parse_offers(await page.locator("body").inner_text())
 
 
 ACCEPT = re.compile(r"accept|j.accepte|valider|^ok$|continuer|j.ai lu|compris|confirmer", re.IGNORECASE)
@@ -206,6 +247,11 @@ async def read(debug: bool = False) -> list[dict]:
                 text = await page.locator("body").inner_text()
                 for mission in parse(text):
                     missions[(mission["date"], mission["start"], mission["store"])] = mission
+            try:
+                OFFERS_READ[:] = [await read_offers(page)]
+            except Exception as error:  # the planning still goes through
+                print(f"Lecture des recrutements impossible : {type(error).__name__}: {error}")
+                OFFERS_READ[:] = [None]
             if debug:
                 DATA.mkdir(parents=True, exist_ok=True)
                 await page.screenshot(path=str(DATA / "rma-debug.png"), full_page=True)
@@ -226,6 +272,18 @@ async def read(debug: bool = False) -> list[dict]:
             await browser.close()
 
 
+# What read() found on the recruitment page (None: not read), handed to once().
+OFFERS_READ: list = [None]
+
+
+async def send_offers(offers: list[dict]) -> None:
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.put(f"{MARCEL_URL}/v1/offers", json={"offers": offers},
+                                headers={"X-Planning-Key": PLANNING_KEY})
+        resp.raise_for_status()
+        print(f"Marcel a enregistré {resp.json().get('count', len(offers))} offre(s) en attente.")
+
+
 async def send(missions: list[dict]) -> None:
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.put(f"{MARCEL_URL}/v1/planning", json={"missions": missions},
@@ -242,6 +300,11 @@ async def once(debug: bool = False) -> int:
     print(f"{len(missions)} mission(s) lue(s) :")
     for mission in sorted(missions, key=lambda m: (m["date"][6:], m["date"][3:5], m["date"][:2], m["start"])):
         print(f"- {mission['date']} {mission['start']}-{mission['end']} · {mission['store']} · {mission['client']}")
+    offers = OFFERS_READ[0]
+    if offers is not None:
+        print(f"{len(offers)} offre(s) de recrutement en attente :")
+        for offer in offers:
+            print(f"- {offer['date']} · {offer['store']} · {offer['kind']} · {offer['client']}")
     if debug and "--send" not in sys.argv:
         print("(--debug : rien n'est envoyé à Marcel ; ajoute --send pour envoyer)")
         return 0
@@ -249,6 +312,8 @@ async def once(debug: bool = False) -> int:
         print("Aucune mission lue : rien n'est envoyé, pour ne pas effacer le planning connu.")
         return 1
     await send(missions)
+    if offers is not None:
+        await send_offers(offers)
     return 0
 
 
