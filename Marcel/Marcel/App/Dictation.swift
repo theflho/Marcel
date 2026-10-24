@@ -89,10 +89,15 @@ final class Dictation {
     }
 
     private static func authorize() async -> Bool {
-        let speech = await withCheckedContinuation { continuation in
+        guard await speechAuthorized() else { return false }
+        return await AVAudioApplication.requestRecordPermission()
+    }
+
+    /// iOS answers on a background thread: the callback must not belong to the main actor
+    /// (Swift 6 would stop the app there).
+    private nonisolated static func speechAuthorized() async -> Bool {
+        await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0 == .authorized) }
         }
-        guard speech else { return false }
-        return await AVAudioApplication.requestRecordPermission()
     }
 }

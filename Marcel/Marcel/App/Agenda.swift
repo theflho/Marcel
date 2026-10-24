@@ -16,9 +16,9 @@ enum Agenda {
     /// Asks iOS for access (reading events needs "full access"; Marcel never writes).
     static func requestAccess() async -> Bool {
         if isAuthorized { return true }
-        return await withCheckedContinuation { continuation in
-            store.requestFullAccessToEvents { granted, _ in continuation.resume(returning: granted) }
-        }
+        // The async form: iOS answers on a background thread, which a main-actor callback
+        // can't take (Swift 6 stops the app).
+        return (try? await store.requestFullAccessToEvents()) ?? false
     }
 
     /// The user's own events overlapping a time slot (the missions calendar left out), as
