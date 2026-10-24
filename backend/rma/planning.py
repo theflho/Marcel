@@ -61,7 +61,15 @@ def parse(text: str) -> list[dict]:
 
 
 # An offer card: the store, then "Le 19 oct. 2026", then the operation, the client and the agency.
-OFFER_DAY = re.compile(r"^Le (\d{1,2} \S+ \d{4})$")
+# The portal may write the date with non-breaking spaces ("Le\u00a019\u00a0oct.\u00a02026"): any space goes.
+OFFER_DAY = re.compile(r"^Le\s+(\d{1,2})\s+(\S+?)\s+(\d{4})$")
+# The recruitment page's text at the last reading, shown by --debug.
+OFFERS_TEXT: list[str] = [""]
+
+
+def offer_date(line: str) -> str:
+    """ "Le 19 oct. 2026" (whatever the spaces) → "19 oct. 2026"."""
+    return " ".join(OFFER_DAY.match(line).groups())
 
 
 def parse_offers(text: str) -> list[dict]:
@@ -75,7 +83,7 @@ def parse_offers(text: str) -> list[dict]:
         end = days[n + 1] - 1 if n + 1 < len(days) else min(len(lines), index + 4)
         fields = [part.strip() for line in lines[index + 1:end] for part in re.split(r"\t|\s{2,}", line) if part.strip()]
         fields += [""] * 3
-        offers.append({"store": lines[index - 1] if index else "", "date": OFFER_DAY.match(lines[index]).group(1),
+        offers.append({"store": lines[index - 1] if index else "", "date": offer_date(lines[index]),
                        "kind": fields[0], "client": fields[1], "agency": fields[2]})
     return offers
 
@@ -94,7 +102,9 @@ async def read_offers(page) -> list[dict] | None:
     except PlaywrightTimeout:
         pass  # no offer waiting, or slow: the text read below tells
     await scroll_list(page)
-    offers = parse_offers(await page.locator("body").inner_text())
+    text = await page.locator("body").inner_text()
+    OFFERS_TEXT[:] = [text]
+    offers = parse_offers(text)
     # Each offer's own page holds its hours, the portal's conflict warning and its address.
     # Reading it presses no button.
     for index, offer in enumerate(offers):
@@ -391,6 +401,8 @@ async def read(debug: bool = False) -> list[dict]:
                 await page.screenshot(path=str(DATA / "rma-debug.png"), full_page=True)
                 print("--- Texte visible de la page (sans les identifiants) ---")
                 print(text[:4000])
+                print("--- Texte de la page des recrutements ---")
+                print(OFFERS_TEXT[0][:3000] or "(page non lue)")
                 print("--- Capture : /data/rma-debug.png ---")
                 print("--- Échanges du portail avec son serveur ---")
                 print("\n".join(exchanges[-60:]) or "(aucun)")
