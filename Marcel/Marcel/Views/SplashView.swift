@@ -167,22 +167,22 @@ private enum Splash {
 
     static let letters: [Letter] = [
         Letter(character: "m", color: Color(hex: 0x2F8BFF),
-               depth: [0x2672E0, 0x2268D3, 0x1F60C6, 0x1C58B8, 0x1A50AA, 0x17489C].map(Color.init(hex:)),
+               depth: [0x2672E0, 0x2268D3, 0x1F60C6, 0x1C58B8, 0x1A50AA, 0x17489C].map { Color(hex: $0) },
                glow: Color(red: 20 / 255, green: 40 / 255, blue: 90 / 255, opacity: 0.45)),
         Letter(character: "a", color: Color(hex: 0xFFB52E),
-               depth: [0xF2A421, 0xE89A18, 0xDE9012, 0xD4860D, 0xC97C09, 0xBE7206].map(Color.init(hex:)),
+               depth: [0xF2A421, 0xE89A18, 0xDE9012, 0xD4860D, 0xC97C09, 0xBE7206].map { Color(hex: $0) },
                glow: Color(red: 110 / 255, green: 60 / 255, blue: 0, opacity: 0.4)),
         Letter(character: "r", color: Color(hex: 0x9BD83A),
-               depth: [0x8CC830, 0x83BD2B, 0x7AB226, 0x71A722, 0x689C1E, 0x5F911A].map(Color.init(hex:)),
+               depth: [0x8CC830, 0x83BD2B, 0x7AB226, 0x71A722, 0x689C1E, 0x5F911A].map { Color(hex: $0) },
                glow: Color(red: 40 / 255, green: 70 / 255, blue: 10 / 255, opacity: 0.4)),
         Letter(character: "c", color: Color(hex: 0xFF7A2F),
-               depth: [0xF06A26, 0xE66122, 0xDC591E, 0xD2511A, 0xC74916, 0xBC4213].map(Color.init(hex:)),
+               depth: [0xF06A26, 0xE66122, 0xDC591E, 0xD2511A, 0xC74916, 0xBC4213].map { Color(hex: $0) },
                glow: Color(red: 110 / 255, green: 35 / 255, blue: 0, opacity: 0.4)),
         Letter(character: "e", color: Color(hex: 0xFF5FC8),
-               depth: [0xF04FB8, 0xE647AE, 0xDC40A4, 0xD2399A, 0xC73290, 0xBC2C86].map(Color.init(hex:)),
+               depth: [0xF04FB8, 0xE647AE, 0xDC40A4, 0xD2399A, 0xC73290, 0xBC2C86].map { Color(hex: $0) },
                glow: Color(red: 100 / 255, green: 10 / 255, blue: 70 / 255, opacity: 0.4)),
         Letter(character: "l", color: Color(hex: 0x8C4DFF),
-               depth: [0x7D40F0, 0x7439E5, 0x6B33DA, 0x632DCF, 0x5B28C3, 0x5323B7].map(Color.init(hex:)),
+               depth: [0x7D40F0, 0x7439E5, 0x6B33DA, 0x632DCF, 0x5B28C3, 0x5323B7].map { Color(hex: $0) },
                glow: Color(red: 50 / 255, green: 15 / 255, blue: 110 / 255, opacity: 0.45)),
     ]
 
