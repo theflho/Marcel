@@ -399,6 +399,24 @@ final class ChatStore {
 
     // MARK: - Assistants
 
+    /// Illustrations the user picked for assistants, kept here too so the choice shows at once
+    /// (and even with a server not updated yet).
+    private var assistantMoods: [String: String] = UserDefaults.standard.dictionary(forKey: "assistantMoods") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(assistantMoods, forKey: "assistantMoods") }
+    }
+
+    func mood(for assistant: Assistant) -> MarcelMood {
+        assistantMoods[assistant.id].flatMap(MarcelMood.init(rawValue:)) ?? assistant.displayMood
+    }
+
+    func setMood(_ mood: MarcelMood, for assistant: Assistant) async {
+        assistantMoods[assistant.id] = mood.rawValue
+        guard !emergencyActive, let api = settings.api else { return }
+        if let updated = try? await api.updateAssistant(id: assistant.id, changes: [:], mood: mood.rawValue) {
+            replace(updated)
+        }
+    }
+
     func assistant(for conversation: Conversation) -> Assistant? {
         conversation.assistantID.flatMap { id in assistants.first { $0.id == id } }
     }

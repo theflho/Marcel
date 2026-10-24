@@ -254,7 +254,7 @@ struct ProposalCard: View {
         VStack(alignment: .leading, spacing: 8) {
             if proposal.assistant != nil, let assistant {
                 HStack(spacing: 8) {
-                    MarcelAvatar(size: 28, mood: assistant.displayMood)
+                    MarcelAvatar(size: 28, mood: store.mood(for: assistant))
                     Text(assistant.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
             }
@@ -359,5 +359,27 @@ struct NewAssistantCard: View {
         }
         .padding(12)
         .background(Theme.background, in: .rect(cornerRadius: 14))
+    }
+}
+
+/// Menu items to choose the illustration of Marcel that stands for an assistant.
+struct AssistantMoodPicker: View {
+    @Environment(ChatStore.self) private var store
+    let assistant: Assistant
+
+    var body: some View {
+        Picker("Mascotte", selection: Binding(
+            get: { store.mood(for: assistant) },
+            set: { mood in Task { await store.setMood(mood, for: assistant) } }
+        )) {
+            ForEach(MarcelMood.allCases) { mood in
+                Label {
+                    Text(mood.label)
+                } icon: {
+                    Image(mood.imageName)
+                }
+                .tag(mood)
+            }
+        }
     }
 }

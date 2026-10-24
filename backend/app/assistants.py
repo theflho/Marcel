@@ -278,6 +278,20 @@ class AssistantStore:
         )
         self._db.commit()
 
+    # MARK: The illustration the user chose for an assistant
+
+    def mood(self, assistant: Assistant) -> str:
+        row = self._db.execute("SELECT value FROM assistant_settings WHERE assistant = ? AND name = '_mood'",
+                               (assistant.id,)).fetchone()
+        return json.loads(row[0]) if row else assistant.mood
+
+    def set_mood(self, assistant_id: str, mood: str) -> None:
+        if mood not in MOODS:
+            raise ValueError(f"Illustration inconnue : {mood}.")
+        self._db.execute("INSERT OR REPLACE INTO assistant_settings (assistant, name, value) VALUES (?, '_mood', ?)",
+                         (assistant_id, json.dumps(mood)))
+        self._db.commit()
+
     # MARK: The rma robot's state (its last runs, a reading asked from the app)
 
     def state(self, name: str, default=None):

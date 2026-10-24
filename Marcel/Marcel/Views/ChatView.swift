@@ -242,10 +242,15 @@ struct ChatView: View {
             .padding(.top, 4)
 
             Menu {
-                MoodPicker(conversation: store.conversation)
+                // An assistant's conversation shows its mascot: picking one changes the assistant's.
+                if let assistant = store.assistant(for: store.conversation) {
+                    AssistantMoodPicker(assistant: assistant)
+                } else {
+                    MoodPicker(conversation: store.conversation)
+                }
             } label: {
                 VStack(spacing: -6) {
-                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation)?.displayMood
+                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation).map(store.mood(for:))
                                  ?? store.conversation.displayMood, isThinking: store.isStreaming)
                     VStack(spacing: 0) {
                         Text(store.assistant(for: store.conversation)?.name ?? "Marcel")

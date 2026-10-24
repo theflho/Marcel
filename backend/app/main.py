@@ -1538,6 +1538,8 @@ class AssistantUpdate(BaseModel):
     instruction: str | None = Field(default=None, max_length=1000)
     # Something to do right away, among the assistant's actions ("relire").
     actions: list[str] = Field(default_factory=list, max_length=3)
+    # The illustration of Marcel the user picked for it ("pool", "sport"…).
+    mood: str | None = Field(default=None, max_length=20)
 
 
 def assistant_values(assistant_id: str) -> dict:
@@ -1589,7 +1591,7 @@ def assistant_public(assistant: bots.Assistant) -> dict:
     values = assistant_values(assistant.id)
     summary = values["role"] if assistant.custom else assistant.summary
     return {"id": assistant.id, "name": assistant.name, "emoji": assistant.emoji, "summary": summary,
-            "mood": assistant.mood, "custom": assistant.custom,
+            "mood": assistants.mood(assistant), "custom": assistant.custom,
             "welcome": assistant.welcome, "status": assistant_status(assistant.id),
             "settings": [s.public(values[s.key]) for s in assistant.settings],
             "instructions": assistants.instructions(assistant.id)}
@@ -1653,6 +1655,8 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
             assistants.save(assistant.id, changes)
         if instruction:
             assistants.add_instruction(assistant.id, instruction)
+        if body.mood:
+            assistants.set_mood(assistant.id, body.mood)
         if "relire" in body.actions:
             # The robot looks every minute and reads the portal at once.
             assistants.set_state("read_now", True)

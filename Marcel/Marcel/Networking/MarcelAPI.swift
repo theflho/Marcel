@@ -479,6 +479,7 @@ private nonisolated struct AssistantUpdate: Encodable, Sendable {
     let changes: [String: SettingValue]
     let instruction: String?
     let actions: [String]
+    let mood: String?
 }
 
 nonisolated struct ProactiveChange: Encodable, Sendable {
@@ -735,9 +736,9 @@ nonisolated struct MarcelAPI: Sendable {
 
     /// Saves settings and/or an instruction; the server checks them against their bounds.
     func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil,
-                         actions: [String] = []) async throws -> Assistant {
+                         actions: [String] = [], mood: String? = nil) async throws -> Assistant {
         try await call("PATCH", "v1/assistants/\(id)",
-                       body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions))
+                       body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions, mood: mood))
     }
 
     func createAssistant(_ draft: AssistantDraft) async throws -> Assistant {

@@ -112,7 +112,7 @@ struct SidebarView: View {
                         onClose()
                     } label: {
                         HStack(spacing: 10) {
-                            MarcelAvatar(size: 36, mood: assistant.displayMood)
+                            MarcelAvatar(size: 36, mood: store.mood(for: assistant))
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 4) {
                                     Text(assistant.name)
@@ -141,6 +141,9 @@ struct SidebarView: View {
                                 store.resetAssistantConversation(assistant)
                                 onClose()
                             }
+                        }
+                        Menu("Mascotte", systemImage: "photo") {
+                            AssistantMoodPicker(assistant: assistant)
                         }
                         if assistant.isCustom {
                             Button("Supprimer l'assistant", systemImage: "trash", role: .destructive) {
