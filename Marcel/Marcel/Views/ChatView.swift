@@ -250,7 +250,7 @@ struct ChatView: View {
                 }
             } label: {
                 VStack(spacing: -6) {
-                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation).map(store.mood(for:))
+                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation).map { store.mood(for: $0) }
                                  ?? store.conversation.displayMood, isThinking: store.isStreaming)
                     VStack(spacing: 0) {
                         Text(store.assistant(for: store.conversation)?.name ?? "Marcel")

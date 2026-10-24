@@ -247,7 +247,7 @@ struct ProposalCard: View {
     /// The one named in the proposal (from Marcel's own conversations), else this conversation's.
     private var assistant: Assistant? {
         if let id = proposal.assistant { return store.assistants.first { $0.id == id } }
-        return store.conversations.first { $0.messages.contains { $0.id == message.id } }.flatMap(store.assistant(for:))
+        return store.conversations.first { $0.messages.contains { $0.id == message.id } }.flatMap { store.assistant(for: $0) }
     }
 
     var body: some View {
