@@ -282,9 +282,11 @@ struct ProposalCard: View {
             if !consigne.isEmpty {
                 Text("Consigne à retenir : « \(consigne) »").font(.footnote)
             }
-            switch message.proposalDecision {
+            // Marcel applied it himself once his reply was complete: no button left to press.
+            switch message.autoApplied("reglage") ? Optional("applied") : message.proposalDecision {
             case "applied"?:
-                Label("Appliqué", systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
+                Label(message.autoApplied("reglage") ? "Fait par Marcel" : "Appliqué",
+                      systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
             case "cancelled"?:
                 Label("Annulé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
             default:
@@ -332,7 +334,7 @@ struct NewAssistantCard: View {
             Text("Il aura sa conversation à lui, sans aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            switch message.proposalDecision {
+            switch message.autoApplied("assistant") ? Optional("applied") : message.proposalDecision {
             case "applied"?:
                 Label("Assistant créé", systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
             case "cancelled"?:

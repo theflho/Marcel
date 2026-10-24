@@ -190,7 +190,14 @@ réglages et les consignes retenues (retirables d'un appui).
 - API : `GET /v1/assistants`, `PATCH /v1/assistants/{id}` (`{"changes": {...}, "instruction": "..."}`),
   `DELETE /v1/assistants/{id}/instructions/{note_id}` ; `POST /v1/missions` accepte `"assistant"`.
 - Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
-- **Les IA ont la main sur les assistants (avec ta validation)** : Marcel (Hermes) connaît tous les
+- **Marcel agit seul sur les réglages** : quand tu le lui demandes, Marcel (et chaque assistant dans
+  sa conversation) termine sa réponse par un bloc `reglage`, `assistant` ou `objectif` que le
+  serveur applique dès la réponse finie (bornes vérifiées) : réglages, consignes, mascotte, action
+  « relire », nouvel assistant, objectif suivi. La carte d'action dit « fait » ou pourquoi non.
+  Jamais : supprimer, épingler, toucher au VPS. Exception de sécurité : si la réponse s'appuie
+  sur un e-mail ou une pièce jointe, rien n'est appliqué tout seul (un texte étranger pourrait
+  l'avoir demandé) et la carte Appliquer / Annuler revient.
+- **Les IA ont la main sur les assistants** : Marcel (Hermes) connaît tous les
   assistants et leurs réglages ; dans une conversation normale, il peut proposer un réglage pour
   l'un d'eux (bloc `reglage` avec `"assistant": "id"`), affiché avec Appliquer / Annuler. Planning
   et Recrutements voient l'**état du robot** (5 derniers comptes rendus : réussite, missions,

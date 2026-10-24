@@ -906,7 +906,9 @@ final class ChatStore {
     private func finish(_ replyID: UUID, in conversationID: UUID, _ status: ChatMessage.Status, error: String? = nil,
                         action: ErrorAction? = nil) {
         updateMessage(replyID, in: conversationID) { $0.status = status }
-        if conversations.first(where: { $0.id == conversationID })?.assistantID != nil {
+        let carriedOut = message(replyID, in: conversationID)?.actions.contains { $0.id.hasPrefix("auto-") } ?? false
+        if carriedOut || conversations.first(where: { $0.id == conversationID })?.assistantID != nil {
+            // Marcel may have changed a setting, made an assistant or a goal: shown at once.
             Task { await refreshAssistants() }
         }
         guard let error, conversationID == currentID else { return }

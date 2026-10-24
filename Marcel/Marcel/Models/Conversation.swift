@@ -59,6 +59,13 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+extension ChatMessage {
+    /// The server carried out this reply's block of that kind ("reglage", "assistant", "objectif").
+    func autoApplied(_ kind: String) -> Bool {
+        actions.contains { $0.id.hasPrefix("auto-\(kind)-") && $0.status == "done" }
+    }
+}
+
 nonisolated struct Conversation: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var title: String

@@ -25,7 +25,7 @@ struct MessageBubble: View {
                     }
                 } else if isAssistantChat {
                     // An assistant's proposal comes as a block at the end: shown as a card instead.
-                    let parts = AssistantProposal.split(message.content)
+                    let parts = AssistantProposal.split(AutoBlocks.strip(message.content))
                     MarkdownView(text: parts.text)
                     if let proposal = parts.proposal, message.status == .complete {
                         ProposalCard(message: message, proposal: proposal)
@@ -34,7 +34,7 @@ struct MessageBubble: View {
                     // No text selection: it would swallow the long press that opens the menu below.
                     // An assistant Marcel proposes to create comes as a block: shown as a card.
                     // So does a change to an assistant's settings he proposes ("Appliquer").
-                    let parts = AssistantDraft.split(message.content)
+                    let parts = AssistantDraft.split(AutoBlocks.strip(message.content))
                     let tuned = AssistantProposal.split(parts.text)
                     MarkdownView(text: tuned.text)
                     if let draft = parts.draft, message.status == .complete {

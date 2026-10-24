@@ -25,7 +25,7 @@ final class Speaker {
     }
 
     func speak(_ message: ChatMessage) {
-        let text = Self.plainText(AssistantDraft.split(AssistantProposal.split(message.content).text).text)
+        let text = Self.plainText(AssistantDraft.split(AssistantProposal.split(AutoBlocks.strip(message.content)).text).text)
         guard !text.isEmpty else { return }
         stop()
         let session = AVAudioSession.sharedInstance()

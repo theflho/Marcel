@@ -340,7 +340,7 @@ async def start_mission(request: ChatRequest) -> dict:
             raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning_note(), assistants_note(title), device, mail]))
+                                      planning_note(), assistants_note(request), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -369,8 +369,10 @@ BOT_WORDS = re.compile(r"\b(assistants?|bots?|r[ée]gl|param[èe]tr|rappels?|poi
                        r"veille|robot|relis|relire|portail|notif|mascotte|crée|cr[ée]er)", re.IGNORECASE)
 
 
-def assistants_note(question: str) -> str:
-    if not BOT_WORDS.search(question):
+def assistants_note(request: ChatRequest) -> str:
+    """The assistants' list when the conversation's recent messages are about them."""
+    recent = " ".join(m.content for m in request.messages[-6:] if m.role == "user")
+    if not BOT_WORDS.search(recent):
         return ""
     return bots.overview(assistants.all(), assistant_values)
 
@@ -422,22 +424,27 @@ tutoyant, de façon courte et lisible sur un téléphone ; le Markdown s'affiche
 tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'inventer :
 - Mémoire : tu retiens tout seul ce qui dure (préférences, projets) après chaque échange ; l'utilisateur
   la voit et la corrige dans Réglages › Mémoire de Marcel.
-- Objectifs : pour suivre quelque chose dans le temps (un achat, un prix, un projet),
-  l'app propose sous ta réponse « Marcel peut suivre ça pour toi » ; on peut aussi l'ajouter
-  dans Réglages › Objectifs suivis, au rythme chaque heure, jour ou semaine. Tu vérifies alors
-  seul et, si ça vaut la peine, une idée arrive sous l'ampoule en haut de l'écran.
+- Objectifs : pour suivre quelque chose dans le temps (un achat, un prix, un projet), tu peux le
+  créer toi-même quand l'utilisateur le demande ou l'accepte, en terminant ta réponse par :
+  ```objectif
+  {{"titre": "Suivre le prix du Mac mini M4", "detail": "", "rythme": "daily"}}
+  ```
+  (rythme : hourly, daily, weekly ou manual). Il est créé dès ta réponse finie (Réglages ›
+  Objectifs suivis) ; tu le vérifies alors seul et, si ça vaut la peine, une idée arrive sous
+  l'ampoule en haut de l'écran.
 - Actions : tu prépares (brouillon, panier, réservation) mais rien ne part sans lui. Pour une
   action réelle, donne le contenu exact (destinataire, texte, montant) et attends son accord
   explicite dans la conversation ; sur une idée, l'app propose le bouton « Valider ».
 - Assistants : à côté de toi, des assistants ont chacun leur conversation (Planning, Pointage,
   Recrutements, Mails, Veille) et l'utilisateur peut en créer. S'il te demande de créer un assistant (un
-  « bot »), propose-le en terminant ta réponse par ce bloc, et rien après :
+  « bot »), crée-le en terminant ta réponse par ce bloc, et rien après :
   ```assistant
   {{"nom": "Nom court", "mission": "ce qu'il fait, en une ou deux phrases", "illustration": "coffee"}}
   ```
   illustration parmi : tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool, sport,
-  cooking, hammock. L'app affiche « Créer l'assistant » : rien n'est créé sans son appui. Un assistant
-  créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.
+  cooking, hammock. Il est créé dès ta réponse finie : dis-le au passé (« c'est fait »). Un
+  assistant créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare. Tu ne
+  supprimes, n'épingles et ne touches au serveur (VPS) jamais : ça, c'est l'utilisateur.
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
 {state}"""
@@ -502,6 +509,50 @@ async def mail_context(question: str, force: bool = False) -> tuple[str, list[di
     return note, [{"id": "mail", "name": "E-mail", "detail": detail, "status": "done"}]
 
 
+# Blocks Marcel (or an assistant) ends a reply with, carried out by the server once it's complete.
+AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif)[ \t]*\n?(.*?)```", re.DOTALL)
+
+
+def apply_blocks(request: ChatRequest, text: str) -> list[dict]:
+    """Applies what the reply asks for: a setting, an action ("relire"), an instruction or a
+    mascot for an assistant; a new assistant; a followed goal. Each becomes an action card,
+    done or refused with the reason. Never deletes, pins or touches the server."""
+    cards = []
+    for index, (kind, body) in enumerate(AUTO_BLOCK.findall(text)):
+        name = {"reglage": "Réglage", "assistant": "Nouvel assistant", "objectif": "Objectif suivi"}[kind]
+        card = {"id": f"auto-{kind}-{index}", "name": name}
+        try:
+            data = json.loads(body)
+            if not isinstance(data, dict):
+                raise ValueError("bloc illisible")
+            if kind == "reglage":
+                assistant = assistants.find(str(data.get("assistant") or request.assistant or ""))
+                if not assistant:
+                    raise ValueError("assistant inconnu")
+                apply_update(assistant, data.get("changes") or {}, str(data.get("consigne") or ""),
+                             [str(a) for a in data.get("actions") or []], data.get("mascotte"))
+                done = str(data.get("resume") or "") or "réglage changé"
+                card["detail"] = f"{assistant.name} : {done}"
+            elif kind == "assistant":
+                created = assistants.create(str(data.get("nom", "")), str(data.get("mission", "")),
+                                            str(data.get("illustration") or "tree"))
+                card["detail"] = f"{created.name} créé : il a sa conversation dans le menu"
+            else:
+                title = " ".join(str(data.get("titre", "")).split())
+                if len(title) < 3:
+                    raise ValueError("titre manquant")
+                cadence = str(data.get("rythme") or "weekly")
+                goal = goals.add(title, str(data.get("detail") or "")[:500],
+                                 cadence if cadence in ("hourly", "daily", "weekly", "manual") else "weekly",
+                                 conversation_id=request.conversation_id)
+                card["detail"] = f"« {goal.title} » suivi ({goal.cadence})"
+            card["status"] = "done"
+        except (ValueError, TypeError, AttributeError) as error:
+            card |= {"detail": f"Non appliqué : {error}"[:300], "status": "cancelled"}
+        cards.append(card)
+    return cards
+
+
 async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = (),
                       learn: bool = True) -> AsyncIterator[str | dict]:
     """Shows which memories (and e-mails) were sent, then, once the reply is complete, learns
@@ -527,6 +578,15 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
     # A reply built on outside content (e-mails, attached files) could repeat what a stranger
     # wrote: only the user's own message is learnt from, so it can't plant lasting "facts".
     outside = any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
+    text = "".join(reply)
+    if AUTO_BLOCK.search(text):
+        if outside:
+            # A stranger's e-mail or file could have asked for it: the user decides.
+            yield {"id": "auto-outside", "name": "Réglage", "status": "cancelled",
+                   "detail": "Pas appliqué tout seul : la réponse s'appuie sur un e-mail ou un fichier. Valide-le toi-même."}
+        else:
+            for card in apply_blocks(request, text):
+                yield card
     if learn:
         spawn(remember(request, "" if outside else "".join(reply)))
 
@@ -1649,31 +1709,42 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
     """The user applied a proposal (or changed a setting by hand): checked, then saved."""
     assistant = find_assistant(assistant_id)
     try:
-        changes = bots.clean_changes(assistant, body.changes)
-        allowed = bots.ACTIONS.get(assistant.id, {})
-        if unknown := [a for a in body.actions if a not in allowed]:
-            raise ValueError(f"Action inconnue pour {assistant.name} : {', '.join(unknown)}.")
-        instruction = (body.instruction or "").strip()
-        if instruction:
-            # Checked before anything is saved, so a refused proposal changes nothing.
-            if len(" ".join(instruction.split())) > bots.MAX_INSTRUCTION_CHARS:
-                raise ValueError(f"Consigne trop longue ({bots.MAX_INSTRUCTION_CHARS} caractères au plus).")
-            if len(assistants.instructions(assistant.id)) >= bots.MAX_INSTRUCTIONS:
-                raise ValueError(f"{bots.MAX_INSTRUCTIONS} consignes au plus : retire-en une d'abord.")
-        if assistant.id in bots.EXTERNAL:
-            ideas.update_settings(**changes)
-        else:
-            assistants.save(assistant.id, changes)
-        if instruction:
-            assistants.add_instruction(assistant.id, instruction)
-        if body.mood:
-            assistants.set_mood(assistant.id, body.mood)
-        if "relire" in body.actions:
-            # The robot looks every minute and reads the portal at once.
-            assistants.set_state("read_now", True)
+        apply_update(assistant, body.changes, body.instruction or "", body.actions, body.mood)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return assistant_public(assistant)
+
+
+def apply_update(assistant: bots.Assistant, raw_changes: dict, instruction: str, actions: list[str],
+                 mood: str | None) -> None:
+    """Checks then saves an assistant's settings, instruction, actions and mascot (from the app,
+    or from a reply of Marcel's). ValueError, and nothing saved, when something isn't allowed."""
+    if not isinstance(raw_changes, dict):
+        raise ValueError("réglages illisibles")
+    changes = bots.clean_changes(assistant, raw_changes)
+    allowed = bots.ACTIONS.get(assistant.id, {})
+    if unknown := [a for a in actions if a not in allowed]:
+        raise ValueError(f"Action inconnue pour {assistant.name} : {', '.join(unknown)}.")
+    instruction = instruction.strip()
+    if instruction:
+        # Checked before anything is saved, so a refused change saves nothing.
+        if len(" ".join(instruction.split())) > bots.MAX_INSTRUCTION_CHARS:
+            raise ValueError(f"Consigne trop longue ({bots.MAX_INSTRUCTION_CHARS} caractères au plus).")
+        if len(assistants.instructions(assistant.id)) >= bots.MAX_INSTRUCTIONS:
+            raise ValueError(f"{bots.MAX_INSTRUCTIONS} consignes au plus : retire-en une d'abord.")
+    if mood and mood not in bots.MOODS:
+        raise ValueError(f"Mascotte inconnue : {mood}.")
+    if assistant.id in bots.EXTERNAL:
+        ideas.update_settings(**changes)
+    else:
+        assistants.save(assistant.id, changes)
+    if instruction:
+        assistants.add_instruction(assistant.id, instruction)
+    if mood:
+        assistants.set_mood(assistant.id, mood)
+    if "relire" in actions:
+        # The robot looks every minute and reads the portal at once.
+        assistants.set_state("read_now", True)
 
 
 @app.delete("/v1/assistants/{assistant_id}/instructions/{note_id}", dependencies=[Depends(require_token)])

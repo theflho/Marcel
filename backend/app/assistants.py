@@ -222,15 +222,18 @@ Consignes que l'utilisateur t'a demandé de retenir :
 Actions que tu peux proposer (clé « actions » du bloc) :
 {actions}
 
-Quand l'utilisateur veut changer un réglage ou te donner une consigne durable, ne prétends pas l'avoir
-fait : propose-le, en terminant ta réponse par ce bloc (et rien après) :
+Quand l'utilisateur veut changer un réglage, lancer une action ou te donner une consigne durable, fais-le
+toi-même en terminant ta réponse par ce bloc (et rien après) :
 ```reglage
-{{"changes": {{"cle": valeur}}, "actions": [], "consigne": "", "resume": "ce qui change, en quelques mots"}}
+{{"changes": {{"cle": valeur}}, "actions": [], "consigne": "", "mascotte": "", "resume": "ce qui change, en quelques mots"}}
 ```
 « changes » ne contient que des clés de la liste ci-dessus, avec des valeurs dans leurs bornes ; « actions »
-seulement des actions de la liste ci-dessus ; « consigne » est une phrase à retenir (sinon ""). L'app
-affiche alors « Appliquer / Annuler » : rien ne change sans son appui. Un seul bloc par réponse, et
-seulement quand il demande un changement ou une action. Quand quelque chose ne marche pas, appuie-toi
+seulement des actions de la liste ci-dessus ; « consigne » est une phrase à retenir (sinon "") ;
+« mascotte » change ton illustration (tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool,
+sport, cooking, hammock ; sinon ""). Le serveur l'applique dès ta réponse finie et l'app l'affiche :
+annonce-le au passé (« c'est fait »), sans demander d'appuyer sur quoi que ce soit. Un seul bloc par
+réponse, et seulement quand il faut changer ou lancer quelque chose. Tu ne supprimes, n'épingles et
+ne touches au serveur (VPS) jamais. Quand quelque chose ne marche pas, appuie-toi
 sur l'état du robot ci-dessous (s'il est fourni) pour expliquer ce qui se passe, et propose ce que tu
 peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier."""
 
@@ -240,14 +243,15 @@ ACTIONS = {
     "recrutements": {"relire": "Relire le portail RMA maintenant (planning et offres, dans la minute)"},
 }
 
-OVERVIEW_PROMPT = """Les assistants de l'app, que tu peux aussi régler pour l'utilisateur (il valide) :
+OVERVIEW_PROMPT = """Les assistants de l'app, que tu règles toi-même quand l'utilisateur le demande :
 {lines}
-Pour changer le réglage d'un assistant ou lancer une de ses actions, termine ta réponse par ce bloc,
-et rien après :
+Pour changer le réglage d'un assistant, lancer une de ses actions, lui donner une consigne ou une
+mascotte, termine ta réponse par ce bloc, et rien après :
 ```reglage
-{{"assistant": "id", "changes": {{"cle": valeur}}, "actions": [], "consigne": "", "resume": "en quelques mots"}}
+{{"assistant": "id", "changes": {{"cle": valeur}}, "actions": [], "consigne": "", "mascotte": "", "resume": "en quelques mots"}}
 ```
-L'app affiche « Appliquer / Annuler » ; le serveur vérifie les bornes. Un seul bloc par réponse."""
+Le serveur vérifie les bornes et l'applique dès ta réponse finie : annonce-le au passé. Un seul bloc
+par réponse. Tu ne supprimes, n'épingles et ne touches au serveur (VPS) jamais."""
 
 
 class AssistantStore:

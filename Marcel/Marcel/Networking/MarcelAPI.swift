@@ -399,6 +399,14 @@ nonisolated struct OfferList: Decodable, Sendable {
     let offers: [Offer]
 }
 
+/// Blocks the server carries out and the action cards already report: hidden from the text.
+nonisolated enum AutoBlocks {
+    static func strip(_ text: String) -> String {
+        text.replacingOccurrences(of: "```objectif[\\s\\S]*?```", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 /// An assistant Marcel proposed to create in a conversation ("Créer l'assistant").
 nonisolated struct AssistantDraft: Codable, Hashable, Sendable {
     let nom: String
