@@ -111,10 +111,7 @@ struct SidebarView: View {
                         onClose()
                     } label: {
                         HStack(spacing: 10) {
-                            Text(assistant.emoji)
-                                .font(.system(size: 20))
-                                .frame(width: 36, height: 36)
-                                .background(Theme.surface, in: .circle)
+                            AssistantIcon(id: assistant.id)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(assistant.name)
                                     .font(.body.weight(isCurrent ? .semibold : .regular))

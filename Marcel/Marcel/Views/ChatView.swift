@@ -207,9 +207,14 @@ struct ChatView: View {
                 MoodPicker(conversation: store.conversation)
             } label: {
                 VStack(spacing: -6) {
-                    MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
+                    if let assistant = store.assistant(for: store.conversation) {
+                        AssistantIcon(id: assistant.id, size: 54)
+                            .padding(.bottom, 10)
+                    } else {
+                        MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
+                    }
                     VStack(spacing: 0) {
-                        Text(store.assistant(for: store.conversation).map { "\($0.emoji) \($0.name)" } ?? "Marcel")
+                        Text(store.assistant(for: store.conversation)?.name ?? "Marcel")
                             .font(.subheadline.weight(.semibold))
                         if store.isStreaming {
                             TypingStatus()

@@ -1,5 +1,40 @@
 import SwiftUI
 
+/// Each assistant's own icon and colour, so they're told apart at a glance (Marcel keeps his avatar).
+struct AssistantIcon: View {
+    let id: String
+    var size: CGFloat = 36
+
+    private var symbol: String {
+        switch id {
+        case "planning": "calendar"
+        case "pointage": "clock.badge.checkmark.fill"
+        case "mails": "envelope.fill"
+        case "veille": "lightbulb.max.fill"
+        default: "sparkles"
+        }
+    }
+
+    private var color: Color {
+        switch id {
+        case "planning": .orange
+        case "pointage": .green
+        case "mails": .blue
+        case "veille": .yellow
+        default: .purple
+        }
+    }
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.45, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(color.gradient, in: .circle)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Top of an assistant's conversation: what it does, its settings and the instructions it keeps.
 struct AssistantCard: View {
     @Environment(ChatStore.self) private var store
@@ -12,7 +47,7 @@ struct AssistantCard: View {
                 withAnimation(.snappy) { expanded.toggle() }
             } label: {
                 HStack(alignment: .top, spacing: 10) {
-                    Text(assistant.emoji).font(.title2)
+                    AssistantIcon(id: assistant.id, size: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(assistant.summary)
                             .font(.subheadline.weight(.semibold))
