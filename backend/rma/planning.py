@@ -107,6 +107,10 @@ def parse(text: str) -> list[dict]:
 # An offer card: the store, then "Le 19 oct. 2026", then the operation, the client and the agency.
 # The portal may write the date with non-breaking spaces ("Le\u00a019\u00a0oct.\u00a02026"): any space goes.
 OFFER_DAY = re.compile(r"^Le\s+(\d{1,2})\s+(\S+?)\s+(\d{4})$")
+# Set by --debug: say more when something fails.
+DEBUG: list = [False]
+# The offers as the portal's own server sent them to the page (/apiv/recrutes/…), when caught.
+RECRUTES: list = [None]
 # The recruitment page's text at the last reading, shown by --debug.
 OFFERS_TEXT: list[str] = [""]
 
@@ -130,6 +134,25 @@ def parse_offers(text: str) -> list[dict]:
         offers.append({"store": lines[index - 1] if index else "", "date": offer_date(lines[index]),
                        "kind": fields[0], "client": fields[1], "agency": fields[2]})
     return offers
+
+
+def describe(data) -> str:
+    """The shape of a JSON answer: its keys and, for the first item, short sample values."""
+    if data is None:
+        return "(non reçue)"
+    if isinstance(data, dict):
+        inner = next((v for v in data.values() if isinstance(v, list) and v), None)
+        head = "objet, clés : " + ", ".join(list(data)[:40])
+        return head + ("\n" + describe(inner) if inner is not None else "")
+    if isinstance(data, list):
+        if not data:
+            return "liste vide"
+        first = data[0]
+        if isinstance(first, dict):
+            sample = "\n".join(f"  {k} = {str(v)[:60]!r}" for k, v in list(first.items())[:60])
+            return f"liste de {len(data)} élément(s) ; le premier :\n{sample}"
+        return f"liste de {len(data)} élément(s), ex. {str(first)[:80]!r}"
+    return f"{type(data).__name__} : {str(data)[:80]!r}"
 
 
 async def offers_text(page, seconds: int = 20) -> str:
@@ -172,9 +195,13 @@ async def read_offers(page) -> list[dict] | None:
             print("Détail des offres : abandonné après 2 échecs (la liste reste envoyée).")
             break
         same = sum(1 for other in offers[:index] if other["store"] == offer["store"])
+        step = "carte introuvable"
         try:
-            await page.get_by_text(offer["store"], exact=True).nth(same).click(timeout=15_000)
+            # Only the visible cards: the other tabs ("Acceptés", "Autre") may hold the same store.
+            await page.get_by_text(offer["store"], exact=True).locator("visible=true").nth(same).click(timeout=15_000)
+            step = "la page de l'offre ne s'ouvre pas"
             await page.wait_for_url(re.compile(r"recrutedet"), timeout=20_000)
+            step = "boutons de l'offre introuvables"
             await page.get_by_text(re.compile(r"Accepter la mission|Refuser")).first.wait_for(timeout=20_000)
             offer.update(parse_offer_page(await page.locator("body").inner_text()))
             offer["link"] = page.url.split("#", 1)[1][:300]
@@ -185,7 +212,12 @@ async def read_offers(page) -> list[dict] | None:
             failures = 0
         except Exception as error:  # the list is still worth having
             failures += 1
-            print(f"Offre {offer['store']} du {offer['date']} : détail illisible ({type(error).__name__}).")
+            print(f"Offre {offer['store']} du {offer['date']} : détail illisible — {step} ({type(error).__name__}).")
+            if failures == 1 and DEBUG[0]:
+                DATA.mkdir(parents=True, exist_ok=True)
+                await page.screenshot(path=str(DATA / "rma-offre.png"), full_page=True)
+                print(f"  adresse : #{page.url.split('#', 1)[-1][:120]} ; capture : /data/rma-offre.png")
+                print("  texte : " + " | ".join((await page.locator("body").inner_text()).split("\n")[:25]))
         await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
         await offers_text(page)
         await scroll_list(page)
@@ -422,6 +454,17 @@ async def read(debug: bool = False) -> list[dict]:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         page = await browser.new_page(locale="fr-FR", timezone_id="Europe/Paris")
+        DEBUG[:] = [debug]
+        RECRUTES[:] = [None]
+
+        # The offers list the page itself downloads: kept to learn its shape (and, later, to
+        # reach each offer without clicking). Read only, nothing is sent.
+        async def keep_offers(response):
+            try:
+                RECRUTES[:] = [await response.json()]
+            except Exception:
+                pass
+        page.on("response", lambda r: asyncio.ensure_future(keep_offers(r)) if "/apiv/recrutes/" in r.url else None)
         exchanges: list[str] = []
         if debug:
             # What the portal asks its server (path and status only: no tokens, no content).
@@ -467,6 +510,11 @@ async def read(debug: bool = False) -> list[dict]:
                 await page.screenshot(path=str(DATA / "rma-debug.png"), full_page=True)
                 print("--- Texte visible de la page (sans les identifiants) ---")
                 print(text[:4000])
+                print("--- Offres reçues par la page (/apiv/recrutes), forme ---")
+                print(describe(RECRUTES[0]))
+                if RECRUTES[0] is not None:
+                    (DATA / "recrutes.json").write_text(json.dumps(RECRUTES[0], ensure_ascii=False, indent=1))
+                    print("(complet dans /data/recrutes.json)")
                 print("--- Texte de la page des recrutements ---")
                 print(OFFERS_TEXT[0][:3000] or "(page non lue)")
                 print("--- Capture : /data/rma-debug.png ---")
