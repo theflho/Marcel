@@ -187,10 +187,17 @@ réglages et les consignes retenues (retirables d'un appui).
 - Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
 
 **🟣 Recrutements** : le robot RMA lit aussi, après le planning, la page « Recrutements › Attente
-de réponse » (`#/accueil/missrecrut`), **sans rien cliquer** (ni ouvrir, ni accepter, ni refuser).
-Les offres arrivent par `PUT /v1/offers` (même clé que le planning) ; `GET /v1/offers` les rend avec
-leurs conflits (déjà en mission ce jour-là, date passée). En haut de la conversation : la liste
-(✅ libre, ⚠️ conflit) et « Répondre dans le portail » ; on lui demande conseil (« lesquelles je
+de réponse » (`#/accueil/missrecrut`) puis la page de chaque offre (horaires, bandeau rouge de
+conflit du portail, état du bouton « Accepter la mission »), sans y répondre. Les offres arrivent
+par `PUT /v1/offers` (même clé que le planning) ; `GET /v1/offers` les rend avec leurs conflits
+(planning aux mêmes heures, date passée). En haut de la conversation, une carte par offre :
+horaires, conflit du portail (rouge), du planning et de l'agenda iPhone (orange), charge de la
+semaine, et **Accepter la mission / Refuser**. Le bouton demande « Oui » ; la réponse attend
+(`POST /v1/offers/{id}/answer`, annulable) et le robot la donne dans le portail à son passage
+suivant (toutes les 10 min) : il vérifie que c'est la même offre, appuie sur le seul bouton,
+valide la confirmation du portail s'il en demande une, renonce si le portail veut autre chose
+(un motif…) et vérifie que l'offre a quitté la liste ; résultat sur la carte et en notification.
+Le serveur refuse une réponse quand le portail bloque (conflit) ou pendant l'arrêt d'urgence ; on lui demande conseil (« lesquelles je
 prends ? ») et on lui donne ses consignes (« pas plus de 3 missions par semaine »). Notification
 pour chaque nouvelle offre (réglable), avec les notifications de Marcel activées.
 

@@ -336,9 +336,42 @@ nonisolated struct Offer: Decodable, Hashable, Sendable, Identifiable {
     let kind: String
     let client: String
     let agency: String
-    /// What it clashes with ("déjà en mission ce jour-là : …"), or "".
+    /// "open" while it waits for an answer, "gone" once it left the portal's list.
+    let status: String
+    let startAt: Date?
+    let endAt: Date?
+    /// What it clashes with in the planning ("déjà en mission à ces heures : …"), or "".
     let conflict: String
+    /// The portal's own red warning ("Attention vous avez une autre mission…"), or "".
+    let portalConflict: String
+    /// False when the portal blocks the answer (a conflict) or its page wasn't read.
+    let canAnswer: Bool
     let past: Bool
+    /// "accept" or "refuse", once the user confirmed one.
+    let answer: String
+    /// "pending" (the robot answers within 10 min), "done", "failed", or "".
+    let answerStatus: String
+    let answerMessage: String
+
+    var isWaiting: Bool { status == "open" && answerStatus != "pending" && answerStatus != "done" }
+
+    enum CodingKeys: String, CodingKey {
+        case id, store, day, kind, client, agency, status, conflict, past, answer
+        case startAt = "start_at"
+        case endAt = "end_at"
+        case portalConflict = "portal_conflict"
+        case canAnswer = "can_answer"
+        case answerStatus = "answer_status"
+        case answerMessage = "answer_message"
+    }
+}
+
+nonisolated struct OfferEnvelope: Decodable, Sendable {
+    let offer: Offer?
+}
+
+private nonisolated struct OfferAnswerBody: Encodable, Sendable {
+    let answer: String
 }
 
 nonisolated struct OfferList: Decodable, Sendable {
@@ -642,6 +675,16 @@ nonisolated struct MarcelAPI: Sendable {
 
     func offers() async throws -> OfferList {
         try await call("GET", "v1/offers")
+    }
+
+    /// Asks the robot to accept or refuse the offer in the portal (after the user's "Oui").
+    func answerOffer(id: String, accept: Bool) async throws {
+        let _: OfferEnvelope = try await call("POST", "v1/offers/\(id)/answer",
+                                              body: OfferAnswerBody(answer: accept ? "accept" : "refuse"))
+    }
+
+    func cancelOfferAnswer(id: String) async throws {
+        let _: OfferEnvelope = try await call("DELETE", "v1/offers/\(id)/answer")
     }
 
     func deleteInstruction(assistantID: String, id: String) async throws -> Assistant {

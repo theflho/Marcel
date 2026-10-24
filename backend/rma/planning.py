@@ -92,10 +92,106 @@ async def read_offers(page) -> list[dict] | None:
         await page.get_by_text(OFFER_DAY).first.wait_for(timeout=20_000)
     except PlaywrightTimeout:
         pass  # no offer waiting, or slow: the text read below tells
-    # Cards may load as the list scrolls.
+    await scroll_list(page)
+    offers = parse_offers(await page.locator("body").inner_text())
+    # Each offer's own page holds its hours, the portal's conflict warning and its address.
+    # Reading it presses no button.
+    for index, offer in enumerate(offers):
+        try:
+            await page.get_by_text(OFFER_DAY).nth(index).click()
+            await page.wait_for_url(re.compile(r"recrutedet"), timeout=20_000)
+            await page.get_by_text(re.compile(r"Accepter la mission|Refuser")).first.wait_for(timeout=20_000)
+            offer.update(parse_offer_page(await page.locator("body").inner_text()))
+            offer["link"] = page.url.split("#", 1)[1][:300]
+            button = answer_button(page, True)
+            offer["can_answer"] = bool(await button.count()) and await button.is_enabled()
+        except Exception as error:  # the list is still worth having
+            print(f"Offre {offer['store']} du {offer['date']} : détail illisible ({type(error).__name__}).")
+        await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
+        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=20_000)
+        await scroll_list(page)
+    return offers
+
+
+async def scroll_list(page) -> None:
+    """Cards may load as the list scrolls."""
     for _ in range(5):
         await page.mouse.wheel(0, 4000)
         await page.wait_for_timeout(800)
+
+
+HOURS = re.compile(r"de (\d{1,2}:\d{2}) à (\d{1,2}:\d{2})")
+
+
+def parse_offer_page(text: str) -> dict:
+    """An offer's page: "Mar. 3 Nov. de 05:00 à 08:30", and the red "Attention vous avez une autre
+    mission déjà prévue à cette période : …" when it clashes."""
+    found = {}
+    if match := HOURS.search(text):
+        found["start"], found["end"] = match.groups()
+    if (start := text.find("Attention")) >= 0:
+        warning = text[start:].split("\nRefuser")[0].split("\nAccepter")[0]
+        found["portal_conflict"] = " ".join(warning.split())[:400]
+    return found
+
+
+def answer_button(page, accept: bool):
+    name = re.compile(r"^\s*Accepter la mission\s*$" if accept else r"^\s*Refuser\s*$", re.IGNORECASE)
+    return page.get_by_role("button", name=name).first
+
+
+# A confirmation the portal may ask for after the button: only these are pressed.
+CONFIRM = re.compile(r"^\s*(oui|ok|confirmer|valider|accepter|refuser|je confirme)", re.IGNORECASE)
+CANCEL = re.compile(r"annuler|non|fermer|retour", re.IGNORECASE)
+
+
+async def answer_offer(page, request: dict) -> tuple[bool, str]:
+    """Gives the user's answer to one offer, after their "Oui" in the app (one per offer).
+    Checks it is the same offer, presses its one button, confirms the portal's own confirmation if
+    it asks; backs off, and says why, if the portal wants anything else (a reason…)."""
+    accept = request["answer"] == "accept"
+    await page.goto(PORTAL + "#" + request["link"], wait_until="networkidle", timeout=60_000)
+    try:
+        await page.get_by_text(re.compile(r"Accepter la mission|Refuser")).first.wait_for(timeout=30_000)
+    except PlaywrightTimeout:
+        return False, "L'offre n'est plus dans le portail (déjà répondue ou retirée)."
+    text = await page.locator("body").inner_text()
+    if request["store"].lower() not in text.lower():
+        return False, "Le portail montre une autre offre à cette adresse : rien n'a été fait."
+    button = answer_button(page, accept)
+    if not await button.count() or not await button.is_enabled():
+        return False, "Le portail bloque la réponse (conflit avec une autre mission) : rien n'a été fait."
+    await button.click()
+    await page.wait_for_timeout(2_000)
+    dialog = page.locator("mat-dialog-container, [role=dialog], [role=alertdialog]").last
+    if await dialog.count() and await dialog.is_visible():
+        if await dialog.locator("textarea, select, mat-select, input[type=text], input[type=radio]").count():
+            cancel = dialog.get_by_role("button", name=CANCEL).first
+            if await cancel.count():
+                await cancel.click()
+            return False, "Le portail demande des précisions (motif…) : réponds dans le portail. Rien n'a été envoyé."
+        buttons = dialog.locator("button")
+        names = [" ".join((await buttons.nth(i).inner_text()).split()) for i in range(await buttons.count())]
+        choice = next((i for i, name in enumerate(names) if CONFIRM.search(name)), None)
+        if choice is None:
+            return False, f"Confirmation du portail non reconnue ({', '.join(names)}) : réponds dans le portail."
+        await buttons.nth(choice).click()
+        await page.wait_for_timeout(2_000)
+    # Proof: the offer left the list of those waiting for an answer.
+    remaining = await read_waiting_list(page)
+    if any(o["store"] == request["store"] and o["date"] == request["date"] for o in remaining):
+        return False, "Le portail n'a pas confirmé la réponse : vérifie dans le portail."
+    return True, "Mission acceptée dans le portail." if accept else "Offre refusée dans le portail."
+
+
+async def read_waiting_list(page) -> list[dict]:
+    await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
+    await page.get_by_text(re.compile(r"Attente de r[ée]ponse")).first.wait_for(timeout=30_000)
+    try:
+        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=15_000)
+    except PlaywrightTimeout:
+        pass
+    await scroll_list(page)
     return parse_offers(await page.locator("body").inner_text())
 
 
@@ -208,6 +304,43 @@ async def wait_for_missions(page, seconds: int = 30) -> bool:
         return False
 
 
+async def signed_in(page) -> None:
+    """Opens the portal and signs in when it asks."""
+    await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
+    password = page.locator("input[type=password]")
+    if await password.count():
+        await sign_in(page, password)
+        await page.goto(HOME, wait_until="networkidle", timeout=60_000)
+        await page.wait_for_timeout(5_000)
+
+
+async def pending_answers() -> list[dict]:
+    """Answers the user confirmed in the app ("Oui"), waiting to be given in the portal."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{MARCEL_URL}/v1/offers/answers", headers={"X-Planning-Key": PLANNING_KEY})
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def give_answers(requests: list[dict]) -> None:
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch()
+        page = await browser.new_page(locale="fr-FR", timezone_id="Europe/Paris")
+        try:
+            await signed_in(page)
+            for request in requests:
+                try:
+                    ok, message = await answer_offer(page, request)
+                except Exception as error:
+                    ok, message = False, f"Réponse impossible ({type(error).__name__}) : réponds dans le portail."
+                print(f"Offre {request['store']} du {request['date']} : {message}")
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(f"{MARCEL_URL}/v1/offers/{request['id']}/answered",
+                                      json={"ok": ok, "message": message}, headers={"X-Planning-Key": PLANNING_KEY})
+        finally:
+            await browser.close()
+
+
 async def read(debug: bool = False) -> list[dict]:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
@@ -304,7 +437,9 @@ async def once(debug: bool = False) -> int:
     if offers is not None:
         print(f"{len(offers)} offre(s) de recrutement en attente :")
         for offer in offers:
-            print(f"- {offer['date']} · {offer['store']} · {offer['kind']} · {offer['client']}")
+            hours = f" {offer['start']}-{offer['end']}" if offer.get("start") else ""
+            clash = " · ⚠️ conflit" if offer.get("portal_conflict") else ""
+            print(f"- {offer['date']}{hours} · {offer['store']} · {offer['kind']} · {offer['client']}{clash}")
     if debug and "--send" not in sys.argv:
         print("(--debug : rien n'est envoyé à Marcel ; ajoute --send pour envoyer)")
         return 0
@@ -344,6 +479,13 @@ async def forever() -> None:
     read_on = now.tm_yday if now.tm_hour >= hour else None
     while True:
         await asyncio.sleep(600)
+        # Answers to offers the user confirmed in the app, then a new reading (planning updated).
+        try:
+            if requests := await pending_answers():
+                await give_answers(requests)
+                await run()
+        except Exception as error:
+            print(f"Réponses aux offres impossibles : {type(error).__name__}: {error}")
         hour = await wanted_hour()
         now = time.localtime()
         if now.tm_hour >= hour and read_on != now.tm_yday:

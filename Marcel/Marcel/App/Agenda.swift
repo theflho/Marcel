@@ -21,6 +21,17 @@ enum Agenda {
         }
     }
 
+    /// The user's own events overlapping a time slot (the missions calendar left out), as
+    /// "14:00 Dentiste"; empty without calendar access. Read on the iPhone only.
+    static func clashes(from start: Date, to end: Date) -> [String] {
+        guard isAuthorized else { return [] }
+        let missions = UserDefaults.standard.string(forKey: MissionCalendar.calendarKey)
+        return store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: nil))
+            .filter { $0.calendar.calendarIdentifier != missions && !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+            .map { "\($0.startDate.formatted(date: .omitted, time: .shortened)) \($0.title ?? "Sans titre")" }
+    }
+
     /// The coming days as short lines, or nil when sharing is off or not allowed.
     static func upcoming(now: Date = .now) -> String? {
         guard UserDefaults.standard.bool(forKey: shareKey), isAuthorized,

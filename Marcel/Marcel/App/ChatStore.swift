@@ -70,6 +70,8 @@ final class ChatStore {
     private(set) var assistants: [Assistant] = []
     /// Recruitment offers waiting for an answer, shown in the Recrutements assistant's conversation.
     private(set) var offers: [Offer] = []
+    /// The work planning, to show each offer's week and clashes.
+    private(set) var planningMissions: [PlanningMission] = []
     private var modelChoice: [String: String] {
         didSet { UserDefaults.standard.set(modelChoice, forKey: Self.modelChoiceKey) }
     }
@@ -429,6 +431,24 @@ final class ChatStore {
         assistants = loaded
         applyLocalSettings()
         if let list = try? await api.offers() { offers = list.offers }
+        if let missions = try? await api.planning(days: 60) { planningMissions = missions }
+    }
+
+    /// The user confirmed ("Oui") accepting or refusing an offer: the robot answers in the portal.
+    func answer(_ offer: Offer, accept: Bool) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            try await api.answerOffer(id: offer.id, accept: accept)
+        } catch {
+            report("Réponse non envoyée : \(error.localizedDescription)", action: action(for: error))
+        }
+        await refreshAssistants()
+    }
+
+    func cancelAnswer(_ offer: Offer) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        try? await api.cancelOfferAnswer(id: offer.id)
+        await refreshAssistants()
     }
 
     /// Pointage's settings are carried out by the iPhone: reminders are scheduled again when they change.

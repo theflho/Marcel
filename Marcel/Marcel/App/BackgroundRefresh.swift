@@ -63,12 +63,24 @@ enum BackgroundRefresh {
 
         // New recruitment offers, if the user asked to hear of them (Recrutements assistant).
         if let list = try? await api.offers(), list.notify {
-            for offer in list.offers.filter({ !$0.past && !notified.contains("offer-\($0.id)") }).prefix(5) {
+            for offer in list.offers.filter({ $0.isWaiting && !$0.past && !notified.contains("offer-\($0.id)") }).prefix(5) {
                 let day = offer.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
                 let clash = offer.conflict.isEmpty ? "" : " ⚠️ \(offer.conflict)"
                 await post(id: "offer-\(offer.id)", title: "Nouvelle offre RMA · \(day)",
                            body: "\(offer.store) · \(offer.kind) · \(offer.client)\(clash)")
                 notified.insert("offer-\(offer.id)")
+            }
+        }
+
+        // How the answers the user confirmed went in the portal.
+        if let list = try? await api.offers() {
+            for offer in list.offers where ["done", "failed"].contains(offer.answerStatus)
+                && !notified.contains("answer-\(offer.id)") {
+                let title = offer.answerStatus == "done"
+                    ? (offer.answer == "accept" ? "Mission acceptée ✅" : "Offre refusée")
+                    : "Réponse non envoyée ⚠️"
+                await post(id: "answer-\(offer.id)", title: title, body: "\(offer.store) · \(offer.answerMessage)")
+                notified.insert("answer-\(offer.id)")
             }
         }
 

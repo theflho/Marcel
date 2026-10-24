@@ -1334,6 +1334,12 @@ class Offer(BaseModel):
     kind: str = Field(default="", max_length=200)
     client: str = Field(default="", max_length=200)
     agency: str = Field(default="", max_length=60)
+    # From the offer's own page, when the robot could read it.
+    start: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    end: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    portal_conflict: str = Field(default="", max_length=600)
+    can_answer: bool = False
+    link: str = Field(default="", max_length=300, pattern=r"^/accueil/recrutedet[;=A-Za-z0-9_.-]*$|^$")
 
 
 class OffersUpdate(BaseModel):
@@ -1349,17 +1355,88 @@ async def put_offers(body: OffersUpdate, x_planning_key: str = Header(default=""
 
 
 def open_offers() -> list[dict]:
-    """Waiting offers, with what they clash with: a work mission the same day, or a day gone by."""
+    """Offers to show, with what they clash with in the planning (the same hours when known, else
+    the same day) and whether their day is gone by."""
     now = time.time()
     today = datetime.fromtimestamp(now, USER_TZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     result = []
-    for offer in offers.open(bots.words(assistants.value("recrutements", "ignore"))):
-        busy = planning.list(offer["day"], offer["day"] + 86_399)
-        offer["conflict"] = ("déjà en mission ce jour-là : " + ", ".join(
-            f"{m['store']} {datetime.fromtimestamp(m['start_at'], USER_TZ):%H:%M}" for m in busy)) if busy else ""
+    for offer in offers.visible(bots.words(assistants.value("recrutements", "ignore"))):
+        timed = bool(offer["start_at"] and offer["end_at"])
+        since, until = (offer["start_at"], offer["end_at"]) if timed else (offer["day"], offer["day"] + 86_399)
+        busy = [m for m in planning.list(since, until) if not timed or (m["start_at"] < until and m["end_at"] > since)]
+        offer["conflict"] = (("déjà en mission à ces heures : " if timed else "déjà en mission ce jour-là : ")
+                             + ", ".join(f"{m['store']} {datetime.fromtimestamp(m['start_at'], USER_TZ):%H:%M}-"
+                                         f"{datetime.fromtimestamp(m['end_at'], USER_TZ):%H:%M}" for m in busy)
+                             ) if busy else ""
         offer["past"] = offer["day"] < today
         result.append(offer)
     return result
+
+
+class OfferAnswer(BaseModel):
+    answer: Literal["accept", "refuse"]
+
+
+class OfferAnswered(BaseModel):
+    ok: bool
+    message: str = Field(default="", max_length=300)
+
+
+def check_planning_key(key: str) -> None:
+    if not PLANNING_KEY or not secrets.compare_digest(key, PLANNING_KEY):
+        raise HTTPException(401, "Invalid key")
+
+
+def find_offer(offer_id: str) -> dict:
+    if not re.fullmatch(r"[0-9a-f]{16}", offer_id) or not (offer := offers.get(offer_id)):
+        raise HTTPException(404, "Offre introuvable")
+    return offer
+
+
+@app.post("/v1/offers/{offer_id}/answer", dependencies=[Depends(require_token)])
+async def answer_offer(offer_id: str, body: OfferAnswer) -> dict:
+    """The user confirmed ("Oui") accepting or refusing this offer: the robot gives the answer in
+    the portal on its next round, within 10 minutes. Refused when the portal itself blocks it."""
+    offer = find_offer(offer_id)
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif : aucune réponse ne part.")
+    if offer["status"] != "open":
+        raise HTTPException(409, "Cette offre n'attend plus de réponse.")
+    if not offer["link"]:
+        raise HTTPException(409, "Le robot n'a pas encore lu la page de cette offre : réponds dans le portail.")
+    if not offer["can_answer"]:
+        raise HTTPException(409, "Le portail bloque la réponse tant que le conflit existe.")
+    if offer["answer_status"] == "pending":
+        raise HTTPException(409, "Une réponse à cette offre est déjà en cours d'envoi.")
+    offers.ask(offer_id, body.answer)
+    return {"offer": next((o for o in open_offers() if o["id"] == offer_id), offers.get(offer_id))}
+
+
+@app.delete("/v1/offers/{offer_id}/answer", dependencies=[Depends(require_token)])
+async def cancel_offer_answer(offer_id: str) -> dict:
+    """Takes back an answer the robot hasn't given yet."""
+    find_offer(offer_id)
+    offers.cancel(offer_id)
+    return {"offer": offers.get(offer_id)}
+
+
+@app.get("/v1/offers/answers")
+async def offer_answers(x_planning_key: str = Header(default="")) -> list[dict]:
+    """For the rma robot: the answers the user confirmed, to give in the portal."""
+    check_planning_key(x_planning_key)
+    if missions.emergency:
+        return []
+    return [{"id": o["id"], "answer": o["answer"], "link": o["link"], "store": o["store"], "date": o["date_text"]}
+            for o in offers.pending()]
+
+
+@app.post("/v1/offers/{offer_id}/answered")
+async def offer_answered(offer_id: str, body: OfferAnswered, x_planning_key: str = Header(default="")) -> dict:
+    """The robot's report: given in the portal, or not (and why)."""
+    check_planning_key(x_planning_key)
+    find_offer(offer_id)
+    offers.settle(offer_id, body.ok, body.message)
+    return {"ok": True}
 
 
 @app.get("/v1/offers", dependencies=[Depends(require_token)])
@@ -1405,8 +1482,8 @@ def assistant_status(assistant_id: str) -> str:
     if assistant_id == "recrutements":
         if offers.last_read() is None:
             return "Pas encore d'offres lues : le robot RMA n'a encore rien transmis."
-        waiting = open_offers()
-        clashes = sum(1 for o in waiting if o["conflict"])
+        waiting = [o for o in open_offers() if o["status"] == "open"]
+        clashes = sum(1 for o in waiting if o["conflict"] or o["portal_conflict"])
         return (f"{len(waiting)} offre(s) en attente" + (f" · {clashes} en conflit" if clashes else "")
                 + f" · lues {local_time(offers.last_read())}")
     if assistant_id == "mails":
