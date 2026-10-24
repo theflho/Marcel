@@ -16,6 +16,13 @@
 	<array>
 		<string>com.theobrosselin.marcel.refresh</string>
 	</array>
+	<!-- The screen iOS shows before the app's first frame: the splash's beige (#F6EFE3, the
+	     same in dark mode), so the launch animation follows without a black flash. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
