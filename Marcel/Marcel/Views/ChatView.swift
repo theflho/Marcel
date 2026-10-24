@@ -7,6 +7,7 @@ struct ChatView: View {
     @State private var showMissions = false
     @State private var showIdeas = false
     @State private var showSidebar = false
+    @State private var showSplash = true
     @GestureState private var drawerDrag: CGFloat = 0
     @FocusState private var composerFocused: Bool
 
@@ -16,6 +17,17 @@ struct ChatView: View {
             let offset = showSidebar ? min(0, drawerDrag) : -width
             ZStack(alignment: .leading) {
                 chat
+                    // Swiping right opens the menu, like in Messages or ChatGPT.
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 24)
+                            .onEnded { value in
+                                let dx = value.translation.width, dy = value.translation.height
+                                guard !showSidebar, dx > 70, abs(dy) < dx * 0.6,
+                                      value.startLocation.x < geometry.size.width * 0.6 else { return }
+                                composerFocused = false
+                                withAnimation(.snappy(duration: 0.3)) { showSidebar = true }
+                            }
+                    )
                 Color.black
                     .opacity(showSidebar ? 0.25 * (1 + offset / width) : 0)
                     .ignoresSafeArea()
@@ -46,6 +58,12 @@ struct ChatView: View {
                     },
                 isEnabled: showSidebar
             )
+        }
+        .overlay {
+            if showSplash {
+                SplashView { withAnimation(.easeOut(duration: 0.35)) { showSplash = false } }
+                    .transition(.opacity)
+            }
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -207,12 +225,8 @@ struct ChatView: View {
                 MoodPicker(conversation: store.conversation)
             } label: {
                 VStack(spacing: -6) {
-                    if let assistant = store.assistant(for: store.conversation) {
-                        AssistantIcon(id: assistant.id, size: 54)
-                            .padding(.bottom, 10)
-                    } else {
-                        MarcelAvatar(size: 60, mood: store.conversation.displayMood, isThinking: store.isStreaming)
-                    }
+                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation)?.displayMood
+                                 ?? store.conversation.displayMood, isThinking: store.isStreaming)
                     VStack(spacing: 0) {
                         Text(store.assistant(for: store.conversation)?.name ?? "Marcel")
                             .font(.subheadline.weight(.semibold))
@@ -294,6 +308,35 @@ private struct EmptyChatView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 40)
         .padding(.top, 60)
+    }
+}
+
+/// At launch: Marcel drops in from his tree, then the conversation shows.
+private struct SplashView: View {
+    var onFinish: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            VStack(spacing: 14) {
+                MarcelAvatar(size: 132, isThinking: appeared && !reduceMotion)
+                    .scaleEffect(appeared || reduceMotion ? 1 : 0.4)
+                    .offset(y: appeared || reduceMotion ? 0 : -160)
+                    .rotationEffect(.degrees(appeared || reduceMotion ? 0 : -18))
+                Text("Marcel")
+                    .font(.largeTitle.weight(.bold))
+                    .opacity(appeared ? 1 : 0)
+                    .offset(y: appeared ? 0 : 12)
+            }
+        }
+        .accessibilityHidden(true)
+        .task {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.55)) { appeared = true }
+            try? await Task.sleep(for: .milliseconds(1300))
+            onFinish()
+        }
     }
 }
 

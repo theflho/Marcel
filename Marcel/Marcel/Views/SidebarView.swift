@@ -98,24 +98,30 @@ struct SidebarView: View {
         .padding(.bottom, 4)
     }
 
-    /// One pinned conversation per assistant, where the user tunes it by talking to it.
+    /// One pinned conversation per assistant, at the top of the list and drawn like any other
+    /// conversation: Marcel, in the situation that stands for the assistant.
     @ViewBuilder
     private var assistantsSection: some View {
         if !store.assistants.isEmpty {
-            Section("Assistants") {
+            Section {
                 ForEach(store.assistants) { assistant in
                     let conversation = store.conversation(forAssistant: assistant.id)
-                    let isCurrent = conversation?.id == store.currentID
+                    let isCurrent = conversation != nil && conversation?.id == store.currentID
                     Button {
                         store.openAssistant(assistant)
                         onClose()
                     } label: {
                         HStack(spacing: 10) {
-                            AssistantIcon(id: assistant.id)
+                            MarcelAvatar(size: 36, mood: assistant.displayMood)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(assistant.name)
-                                    .font(.body.weight(isCurrent ? .semibold : .regular))
-                                Text(assistant.status)
+                                HStack(spacing: 4) {
+                                    Text(assistant.name)
+                                        .font(.body.weight(isCurrent ? .semibold : .regular))
+                                    Image(systemName: "pin.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Text(preview(of: assistant, conversation))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
@@ -129,7 +135,6 @@ struct SidebarView: View {
                     }
                     .tint(.primary)
                     .listRowBackground(isCurrent ? Theme.assistantBubble : Color.clear)
-                    .listRowSeparator(.hidden)
                     .contextMenu {
                         if conversation != nil {
                             Button("Recommencer la conversation", systemImage: "arrow.counterclockwise") {
@@ -137,10 +142,22 @@ struct SidebarView: View {
                                 onClose()
                             }
                         }
+                        if assistant.isCustom {
+                            Button("Supprimer l'assistant", systemImage: "trash", role: .destructive) {
+                                Task { await store.deleteAssistant(assistant) }
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Its last message once the conversation exists, else what it does.
+    private func preview(of assistant: Assistant, _ conversation: Conversation?) -> String {
+        guard let last = conversation?.messages.last(where: { !$0.content.isEmpty }),
+              conversation?.messages.count ?? 0 > 1 else { return assistant.status }
+        return Self.preview(AssistantProposal.split(last.content).text)
     }
 
     private var projectsSection: some View {

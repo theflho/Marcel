@@ -503,6 +503,33 @@ final class ChatStore {
         }
     }
 
+    /// The user tapped "Créer l'assistant" under Marcel's proposal: created, then opened.
+    func createAssistant(_ draft: AssistantDraft, from messageID: UUID) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        let conversationID = currentID
+        do {
+            let created = try await api.createAssistant(draft)
+            replace(created)
+            updateMessage(messageID, in: conversationID) { $0.proposalDecision = "applied" }
+            persist(conversationID, touch: false)
+            openAssistant(created)
+        } catch {
+            report("Assistant non créé : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    /// Deletes an assistant the user made, with its conversation.
+    func deleteAssistant(_ assistant: Assistant) async {
+        guard assistant.isCustom, !emergencyActive, let api = settings.api else { return }
+        do {
+            try await api.deleteAssistant(id: assistant.id)
+            assistants.removeAll { $0.id == assistant.id }
+            if let conversation = conversation(forAssistant: assistant.id) { delete(conversation.id) }
+        } catch {
+            report("Assistant non supprimé : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
     /// Starts the assistant's conversation over (its settings and instructions stay).
     func resetAssistantConversation(_ assistant: Assistant) {
         guard let existing = conversation(forAssistant: assistant.id), !isStreaming(existing.id) else { return }

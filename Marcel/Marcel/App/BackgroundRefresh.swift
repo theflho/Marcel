@@ -65,7 +65,8 @@ enum BackgroundRefresh {
         if let list = try? await api.offers(), list.notify {
             for offer in list.offers.filter({ $0.isWaiting && !$0.past && !notified.contains("offer-\($0.id)") }).prefix(5) {
                 let day = offer.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-                let clash = offer.conflict.isEmpty ? "" : " ⚠️ \(offer.conflict)"
+                let clash = (offer.dayNote.map { $0.isEmpty ? "" : " · \($0)" } ?? "")
+                    + (offer.conflict.isEmpty && offer.portalConflict.isEmpty ? "" : " ⚠️ conflit")
                 await post(id: "offer-\(offer.id)", title: "Nouvelle offre RMA · \(day)",
                            body: "\(offer.store) · \(offer.kind) · \(offer.client)\(clash)")
                 notified.insert("offer-\(offer.id)")

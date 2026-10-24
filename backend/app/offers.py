@@ -165,7 +165,7 @@ class OfferStore:
             if o["start_at"] and o["end_at"]:
                 hours = (f" {datetime.fromtimestamp(o['start_at'], self.tz):%H:%M}-"
                          f"{datetime.fromtimestamp(o['end_at'], self.tz):%H:%M}")
-            notes = [n for n in (o.get("portal_conflict"), o.get("conflict")) if n]
+            notes = [n for n in (o.get("day_note"), o.get("portal_conflict"), o.get("conflict")) if n]
             if o.get("past"):
                 notes.append("date passée")
             if o["answer_status"] == PENDING:

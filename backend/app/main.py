@@ -16,7 +16,7 @@ import secrets
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
 from typing import Literal
@@ -187,7 +187,7 @@ class ChatRequest(BaseModel):
     # read-only information sent with this mission only.
     device_context: str | None = Field(default=None, max_length=8000)
     # Set in an assistant's own conversation (Planning, Pointage…), where the user tunes it.
-    assistant: Literal["planning", "pointage", "recrutements", "mails", "veille"] | None = None
+    assistant: str | None = Field(default=None, pattern=r"^[a-z]+(-[0-9a-f]{8})?$")
 
 
 def sse(payload: dict) -> str:
@@ -336,6 +336,8 @@ async def start_mission(request: ChatRequest) -> dict:
     device = untrusted("AGENDA DE L'IPHONE", request.device_context) if request.device_context else ""
     mail, extra = await mail_context(title, force=request.assistant == "mails")
     if request.assistant:
+        if not assistants.find(request.assistant):
+            raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
                                       planning_note(), device, mail]))
@@ -365,7 +367,7 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
                             mail: str, extra: list[dict]) -> dict:
     """A message in an assistant's conversation. It is there to tune the assistant: it needs no
     tool, so it goes to the model alone (or the restricted Hermes), whatever is asked."""
-    assistant = bots.BY_ID[request.assistant]
+    assistant = assistants.find(request.assistant)
     parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id)),
              app_context(bool(request.device_context)), note]
     if assistant.id in ("planning", "pointage"):
@@ -376,6 +378,8 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
         parts.append(goals.context())
     elif assistant.id == "mails":
         parts += [device, mail]
+    elif assistant.custom:
+        parts += [planning_note(), device]
     note = "\n\n".join(filter(None, parts))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
@@ -411,6 +415,15 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
 - Actions : tu prépares (brouillon, panier, réservation) mais rien ne part sans lui. Pour une
   action réelle, donne le contenu exact (destinataire, texte, montant) et attends son accord
   explicite dans la conversation ; sur une idée, l'app propose le bouton « Valider ».
+- Assistants : à côté de toi, des assistants ont chacun leur conversation (Planning, Pointage,
+  Recrutements, Mails, Veille) et l'utilisateur peut en créer. S'il te demande de créer un assistant (un
+  « bot »), propose-le en terminant ta réponse par ce bloc, et rien après :
+  ```assistant
+  {{"nom": "Nom court", "mission": "ce qu'il fait, en une ou deux phrases", "illustration": "coffee"}}
+  ```
+  illustration parmi : tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool, sport,
+  cooking, hammock. L'app affiche « Créer l'assistant » : rien n'est créé sans son appui. Un assistant
+  créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
 {state}"""
@@ -1328,6 +1341,40 @@ def planning_note() -> str:
 # MARK: Recruitment offers
 
 
+def easter(year: int) -> date:
+    """Easter Sunday (anonymous Gregorian algorithm)."""
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = divmod(b, 4)
+    g = (8 * b + 13) // 25
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7  # noqa: E741
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def public_holidays(year: int) -> dict[date, str]:
+    """France's public holidays (metropolitan)."""
+    sunday = easter(year)
+    return {date(year, 1, 1): "Jour de l'an", sunday + timedelta(days=1): "Lundi de Pâques",
+            date(year, 5, 1): "Fête du Travail", date(year, 5, 8): "Victoire 1945",
+            sunday + timedelta(days=39): "Ascension", sunday + timedelta(days=50): "Lundi de Pentecôte",
+            date(year, 7, 14): "Fête nationale", date(year, 8, 15): "Assomption", date(year, 11, 1): "Toussaint",
+            date(year, 11, 11): "Armistice", date(year, 12, 25): "Noël"}
+
+
+def day_note(moment: float) -> str:
+    """ "Samedi", "Dimanche", "Jour férié : Toussaint" (both when a holiday falls on a weekend), or ""."""
+    day = datetime.fromtimestamp(moment, USER_TZ).date()
+    notes = []
+    if day.weekday() >= 5:
+        notes.append("Samedi" if day.weekday() == 5 else "Dimanche")
+    if holiday := public_holidays(day.year).get(day):
+        notes.append(f"Jour férié : {holiday}")
+    return " · ".join(notes)
+
+
 class Offer(BaseModel):
     store: str = Field(max_length=200)
     date: str = Field(max_length=40)  # "19 oct. 2026", as the portal shows it
@@ -1369,6 +1416,7 @@ def open_offers() -> list[dict]:
                                          f"{datetime.fromtimestamp(m['end_at'], USER_TZ):%H:%M}" for m in busy)
                              ) if busy else ""
         offer["past"] = offer["day"] < today
+        offer["day_note"] = day_note(offer["day"])
         result.append(offer)
     return result
 
@@ -1489,26 +1537,56 @@ def assistant_status(assistant_id: str) -> str:
     if assistant_id == "mails":
         return "Gmail connecté, en lecture seule." if gmail.connected else "Gmail n'est pas connecté sur le serveur."
     active = len(goals.list(ACTIVE))
-    return f"{active} objectif(s) suivi(s) · {ideas.checks_today()} vérification(s) aujourd'hui"
+    if assistant_id == "veille":
+        return f"{active} objectif(s) suivi(s) · {ideas.checks_today()} vérification(s) aujourd'hui"
+    notes = len(assistants.instructions(assistant_id))
+    return "Créé par toi" + (f" · {notes} consigne(s)" if notes else "")
 
 
 def assistant_public(assistant: bots.Assistant) -> dict:
     values = assistant_values(assistant.id)
-    return {"id": assistant.id, "name": assistant.name, "emoji": assistant.emoji, "summary": assistant.summary,
+    summary = values["role"] if assistant.custom else assistant.summary
+    return {"id": assistant.id, "name": assistant.name, "emoji": assistant.emoji, "summary": summary,
+            "mood": assistant.mood, "custom": assistant.custom,
             "welcome": assistant.welcome, "status": assistant_status(assistant.id),
             "settings": [s.public(values[s.key]) for s in assistant.settings],
             "instructions": assistants.instructions(assistant.id)}
 
 
 def find_assistant(assistant_id: str) -> bots.Assistant:
-    if not (assistant := bots.BY_ID.get(assistant_id)):
+    if not (assistant := assistants.find(assistant_id)):
         raise HTTPException(404, "Assistant introuvable")
     return assistant
 
 
 @app.get("/v1/assistants", dependencies=[Depends(require_token)])
 async def list_assistants() -> list[dict]:
-    return [assistant_public(a) for a in bots.ASSISTANTS]
+    return [assistant_public(a) for a in assistants.all()]
+
+
+class AssistantCreate(BaseModel):
+    name: str = Field(max_length=200)
+    mission: str = Field(max_length=2000)
+    mood: str = Field(default="tree", max_length=20)
+
+
+@app.post("/v1/assistants", dependencies=[Depends(require_token)])
+async def create_assistant(body: AssistantCreate) -> dict:
+    """An assistant the user made from a conversation ("Créer l'assistant"). It talks to the model
+    alone, without tools, like the others."""
+    try:
+        return assistant_public(assistants.create(body.name, body.mission, body.mood))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.delete("/v1/assistants/{assistant_id}", dependencies=[Depends(require_token)])
+async def delete_assistant(assistant_id: str) -> dict:
+    assistant = find_assistant(assistant_id)
+    if not assistant.custom:
+        raise HTTPException(400, "Les assistants de Marcel ne se suppriment pas.")
+    assistants.delete(assistant_id)
+    return {"deleted": assistant_id}
 
 
 @app.patch("/v1/assistants/{assistant_id}", dependencies=[Depends(require_token)])

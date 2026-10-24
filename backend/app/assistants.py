@@ -14,7 +14,7 @@ import json
 import secrets
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 MAX_INSTRUCTIONS, MAX_INSTRUCTION_CHARS = 15, 300
@@ -83,6 +83,10 @@ class Assistant:
     role: str
     settings: tuple[Setting, ...] = field(default_factory=tuple)
     welcome: str = ""
+    # Which illustration of Marcel stands for it in the app (see MarcelMood in the app).
+    mood: str = "tree"
+    # Made by the user from a conversation; can be deleted.
+    custom: bool = False
 
     def setting(self, key: str) -> Setting | None:
         return next((s for s in self.settings if s.key == key), None)
@@ -177,7 +181,31 @@ ASSISTANTS: tuple[Assistant, ...] = (
         "« les promos ne m'intéressent pas ».",
     ),
 )
+# The built-in assistants' illustrations of Marcel.
+BUILTIN_MOODS = {"planning": "coffee", "pointage": "laptop", "recrutements": "roadtrip", "mails": "reading",
+                 "veille": "tree"}
+ASSISTANTS = tuple(replace(a, mood=BUILTIN_MOODS.get(a.id, "tree")) for a in ASSISTANTS)
 BY_ID = {a.id: a for a in ASSISTANTS}
+MOODS = ("tree", "sleep", "laptop", "coffee", "reading", "music", "roadtrip", "dog", "pool", "sport", "cooking",
+         "hammock")
+MAX_CUSTOM, MAX_NAME_CHARS, MAX_MISSION_CHARS = 10, 40, 600
+CUSTOM_ROLE = (
+    "Tu es un assistant créé par l'utilisateur. Ta mission : {mission}\n"
+    "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "
+    "prépares avec ce que tu sais et ce que l'utilisateur te donne (son planning, son agenda s'il le partage). "
+    "Tu peux changer ta mission (réglage « role ») et retenir ses consignes. Pour une capacité qui demande un "
+    "outil (lire un site, envoyer un message), dis que Théo doit l'ajouter dans le code.")
+
+
+def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> Assistant:
+    return Assistant(
+        assistant_id, name, "", mission[:120], CUSTOM_ROLE,
+        (Setting("role", "Mission", "text", mission, max_chars=MAX_MISSION_CHARS,
+                 help="ce que fait l'assistant"),),
+        f"Je suis **{name}**, ton nouvel assistant. Ma mission : {mission}\n\n"
+        "Parle-moi pour m'améliorer : je te propose chaque changement, il ne s'applique que si tu appuies sur "
+        "« Appliquer ».",
+        mood=mood if mood in MOODS else "tree", custom=True)
 # Settings kept by another store (the proactive settings for Veille).
 EXTERNAL = {"veille"}
 
@@ -213,6 +241,13 @@ class AssistantStore:
                 value TEXT NOT NULL,
                 PRIMARY KEY (assistant, name)
             );
+            CREATE TABLE IF NOT EXISTS custom_assistants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                mood TEXT NOT NULL,
+                mission TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS assistant_instructions (
                 id TEXT PRIMARY KEY,
                 assistant TEXT NOT NULL,
@@ -222,8 +257,49 @@ class AssistantStore:
         )
         self._db.commit()
 
+    # MARK: Assistants made by the user
+
+    def custom(self) -> list[Assistant]:
+        rows = self._db.execute("SELECT id, name, mood, mission FROM custom_assistants ORDER BY created_at")
+        return [custom_assistant(*row) for row in rows]
+
+    def all(self) -> list[Assistant]:
+        return list(ASSISTANTS) + self.custom()
+
+    def find(self, assistant_id: str) -> Assistant | None:
+        if assistant_id in BY_ID:
+            return BY_ID[assistant_id]
+        row = self._db.execute("SELECT id, name, mood, mission FROM custom_assistants WHERE id = ?",
+                               (assistant_id,)).fetchone()
+        return custom_assistant(*row) if row else None
+
+    def create(self, name: str, mission: str, mood: str) -> Assistant:
+        name, mission = " ".join(name.split()), " ".join(mission.split())
+        if not name or not mission:
+            raise ValueError("Il faut un nom et une mission.")
+        if len(name) > MAX_NAME_CHARS:
+            raise ValueError(f"Nom trop long ({MAX_NAME_CHARS} caractères au plus).")
+        if len(mission) > MAX_MISSION_CHARS:
+            raise ValueError(f"Mission trop longue ({MAX_MISSION_CHARS} caractères au plus).")
+        if any(a.name.lower() == name.lower() for a in self.all()):
+            raise ValueError(f"Un assistant s'appelle déjà « {name} ».")
+        if len(self.custom()) >= MAX_CUSTOM:
+            raise ValueError(f"{MAX_CUSTOM} assistants créés au plus : supprimes-en un d'abord.")
+        assistant_id = "perso-" + secrets.token_hex(4)
+        self._db.execute("INSERT INTO custom_assistants (id, name, mood, mission, created_at) VALUES (?, ?, ?, ?, ?)",
+                         (assistant_id, name, mood if mood in MOODS else "tree", mission, time.time()))
+        self._db.commit()
+        return self.find(assistant_id)
+
+    def delete(self, assistant_id: str) -> bool:
+        cursor = self._db.execute("DELETE FROM custom_assistants WHERE id = ?", (assistant_id,))
+        self._db.execute("DELETE FROM assistant_settings WHERE assistant = ?", (assistant_id,))
+        self._db.execute("DELETE FROM assistant_instructions WHERE assistant = ?", (assistant_id,))
+        self._db.commit()
+        return cursor.rowcount > 0
+
     def values(self, assistant_id: str) -> dict:
-        assistant = BY_ID[assistant_id]
+        assistant = self.find(assistant_id)
         stored = {name: json.loads(value) for name, value in self._db.execute(
             "SELECT name, value FROM assistant_settings WHERE assistant = ?", (assistant_id,))}
         return {s.key: stored.get(s.key, s.default) for s in assistant.settings}
@@ -288,7 +364,8 @@ def words(raw: str) -> list[str]:
 
 
 def prompt(assistant: Assistant, values: dict, instructions: list[dict]) -> str:
+    role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        name=assistant.name, role=assistant.role,
+        name=assistant.name, role=role,
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)")

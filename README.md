@@ -185,6 +185,16 @@ réglages et les consignes retenues (retirables d'un appui).
 - API : `GET /v1/assistants`, `PATCH /v1/assistants/{id}` (`{"changes": {...}, "instruction": "..."}`),
   `DELETE /v1/assistants/{id}/instructions/{note_id}` ; `POST /v1/missions` accepte `"assistant"`.
 - Appui long sur un assistant › **Recommencer la conversation** (réglages et consignes gardés).
+- Chaque assistant est représenté par Marcel dans une situation (Planning au café, Pointage au
+  travail, Recrutements en voiture, Mails en lecture, Veille dans l'arbre) ; ses conversations sont
+  épinglées en haut de la liste, comme les autres.
+- **Créer un assistant depuis une conversation** : « crée-moi un bot coach sport ». Marcel propose
+  une carte (nom, mission, illustration) avec **Créer l'assistant** ; il a ensuite sa conversation,
+  sa mission (réglage « role », modifiable en lui parlant) et ses consignes, sans aucun outil.
+  10 au plus ; appui long › Supprimer l'assistant. API : `POST /v1/assistants`,
+  `DELETE /v1/assistants/{id}`.
+- Offres de recrutement un **samedi, dimanche ou jour férié** (fériés de métropole, Pâques calculé) :
+  alerte violette sur la carte et dans la notification.
 
 **🟣 Recrutements** : le robot RMA lit aussi, après le planning, la page « Recrutements › Attente
 de réponse » (`#/accueil/missrecrut`) puis la page de chaque offre (horaires, bandeau rouge de

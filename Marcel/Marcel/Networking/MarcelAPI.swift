@@ -322,8 +322,14 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     let status: String
     let settings: [Setting]
     let instructions: [Instruction]
+    /// Marcel's illustration that stands for it ("coffee", "roadtrip"…).
+    let mood: String?
+    /// Made by the user from a conversation: it can be deleted.
+    let custom: Bool?
 
     func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
+    var displayMood: MarcelMood { mood.flatMap(MarcelMood.init(rawValue:)) ?? .tree }
+    var isCustom: Bool { custom ?? false }
 }
 
 /// A recruitment offer from the RMA portal, waiting for the user's answer (`/v1/offers`).
@@ -347,6 +353,8 @@ nonisolated struct Offer: Decodable, Hashable, Sendable, Identifiable {
     /// False when the portal blocks the answer (a conflict) or its page wasn't read.
     let canAnswer: Bool
     let past: Bool
+    /// "Samedi", "Dimanche", "Jour férié : Toussaint"…, or "".
+    let dayNote: String?
     /// "accept" or "refuse", once the user confirmed one.
     let answer: String
     /// "pending" (the robot answers within 10 min), "done", "failed", or "".
@@ -360,6 +368,7 @@ nonisolated struct Offer: Decodable, Hashable, Sendable, Identifiable {
         case startAt = "start_at"
         case endAt = "end_at"
         case portalConflict = "portal_conflict"
+        case dayNote = "day_note"
         case canAnswer = "can_answer"
         case answerStatus = "answer_status"
         case answerMessage = "answer_message"
@@ -378,6 +387,39 @@ nonisolated struct OfferList: Decodable, Sendable {
     /// The user wants a notification for each new offer (Recrutements assistant).
     let notify: Bool
     let offers: [Offer]
+}
+
+/// An assistant Marcel proposed to create in a conversation ("Créer l'assistant").
+nonisolated struct AssistantDraft: Codable, Hashable, Sendable {
+    let nom: String
+    let mission: String
+    let illustration: String?
+
+    var mood: MarcelMood { illustration.flatMap(MarcelMood.init(rawValue:)) ?? .tree }
+
+    private static let fence = "```assistant"
+
+    /// The reply without the draft's block, and the draft, if there is a readable one.
+    static func split(_ text: String) -> (text: String, draft: AssistantDraft?) {
+        guard let start = text.range(of: fence) else { return (text, nil) }
+        let after = text[start.upperBound...]
+        let end = after.range(of: "```")
+        let rest = String(text[..<start.lowerBound]) + (end.map { String(after[$0.upperBound...]) } ?? "")
+        let json = end.map { String(after[..<$0.lowerBound]) }
+        let draft = json.flatMap { try? JSONDecoder().decode(AssistantDraft.self, from: Data($0.utf8)) }
+        let usable = draft.flatMap { $0.nom.isEmpty || $0.mission.isEmpty ? nil : $0 }
+        return (rest.trimmingCharacters(in: .whitespacesAndNewlines), usable)
+    }
+}
+
+private nonisolated struct AssistantCreate: Encodable, Sendable {
+    let name: String
+    let mission: String
+    let mood: String
+}
+
+private nonisolated struct DeletedAssistant: Decodable, Sendable {
+    let deleted: String
 }
 
 /// A change an assistant proposed in its conversation, applied only when the user taps "Appliquer".
@@ -671,6 +713,15 @@ nonisolated struct MarcelAPI: Sendable {
     /// Saves settings and/or an instruction; the server checks them against their bounds.
     func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil) async throws -> Assistant {
         try await call("PATCH", "v1/assistants/\(id)", body: AssistantUpdate(changes: changes, instruction: instruction))
+    }
+
+    func createAssistant(_ draft: AssistantDraft) async throws -> Assistant {
+        try await call("POST", "v1/assistants",
+                       body: AssistantCreate(name: draft.nom, mission: draft.mission, mood: draft.mood.rawValue))
+    }
+
+    func deleteAssistant(id: String) async throws {
+        let _: DeletedAssistant = try await call("DELETE", "v1/assistants/\(id)")
     }
 
     func offers() async throws -> OfferList {

@@ -32,7 +32,12 @@ struct MessageBubble: View {
                     }
                 } else {
                     // No text selection: it would swallow the long press that opens the menu below.
-                    MarkdownView(text: message.content)
+                    // An assistant Marcel proposes to create comes as a block: shown as a card.
+                    let parts = AssistantDraft.split(message.content)
+                    MarkdownView(text: parts.text)
+                    if let draft = parts.draft, message.status == .complete {
+                        NewAssistantCard(message: message, draft: draft)
+                    }
                 }
                 statusLine
             }

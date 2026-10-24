@@ -1,42 +1,5 @@
 import SwiftUI
 
-/// Each assistant's own icon and colour, so they're told apart at a glance (Marcel keeps his avatar).
-struct AssistantIcon: View {
-    let id: String
-    var size: CGFloat = 36
-
-    private var symbol: String {
-        switch id {
-        case "planning": "calendar"
-        case "pointage": "clock.badge.checkmark.fill"
-        case "mails": "envelope.fill"
-        case "veille": "lightbulb.max.fill"
-        case "recrutements": "person.crop.circle.badge.plus"
-        default: "sparkles"
-        }
-    }
-
-    private var color: Color {
-        switch id {
-        case "planning": .orange
-        case "pointage": .green
-        case "mails": .blue
-        case "veille": .yellow
-        case "recrutements": .purple
-        default: .purple
-        }
-    }
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.45, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(color.gradient, in: .circle)
-            .accessibilityHidden(true)
-    }
-}
-
 /// Top of an assistant's conversation: what it does, its settings and the instructions it keeps.
 struct AssistantCard: View {
     @Environment(ChatStore.self) private var store
@@ -49,7 +12,6 @@ struct AssistantCard: View {
                 withAnimation(.snappy) { expanded.toggle() }
             } label: {
                 HStack(alignment: .top, spacing: 10) {
-                    AssistantIcon(id: assistant.id, size: 32)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(assistant.summary)
                             .font(.subheadline.weight(.semibold))
@@ -107,9 +69,12 @@ struct AssistantCard: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(14)
-        .background(Theme.surface, in: .rect(cornerRadius: 18))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        // Like one of its messages: part of the conversation, not a panel above it.
+        .background(Theme.assistantBubble, in: .rect(cornerRadius: 20))
         .padding(.horizontal)
+        .padding(.trailing, 40)
     }
 }
 
@@ -173,6 +138,9 @@ private struct OfferCard: View {
 
             if offer.past {
                 note("clock.badge.xmark", "Date passée", .secondary)
+            }
+            if let dayNote = offer.dayNote, !dayNote.isEmpty {
+                note("calendar.badge.exclamationmark", dayNote, .purple)
             }
             if !offer.portalConflict.isEmpty {
                 note("exclamationmark.octagon.fill", offer.portalConflict, .red)
@@ -323,6 +291,56 @@ struct ProposalCard: View {
                     Button("Annuler") { store.cancelProposal(message.id) }
                         .buttonStyle(.bordered)
                         .disabled(applying)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Theme.background, in: .rect(cornerRadius: 14))
+    }
+}
+
+/// An assistant Marcel proposes to create: nothing is created until "Créer l'assistant".
+struct NewAssistantCard: View {
+    @Environment(ChatStore.self) private var store
+    let message: ChatMessage
+    let draft: AssistantDraft
+    @State private var creating = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                MarcelAvatar(size: 44, mood: draft.mood)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Nouvel assistant").font(.caption).foregroundStyle(.secondary)
+                    Text(draft.nom).font(.headline)
+                }
+            }
+            Text(draft.mission).font(.footnote)
+            Text("Il aura sa conversation à lui, sans aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            switch message.proposalDecision {
+            case "applied"?:
+                Label("Assistant créé", systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
+            case "cancelled"?:
+                Label("Pas créé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
+            default:
+                HStack {
+                    Button {
+                        creating = true
+                        Task {
+                            await store.createAssistant(draft, from: message.id)
+                            creating = false
+                        }
+                    } label: {
+                        if creating { ProgressView().controlSize(.small) } else { Text("Créer l'assistant") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(creating || store.emergencyActive)
+                    Button("Non merci") { store.cancelProposal(message.id) }
+                        .buttonStyle(.bordered)
+                        .disabled(creating)
                 }
                 .controlSize(.small)
             }
