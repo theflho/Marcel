@@ -311,35 +311,6 @@ private struct EmptyChatView: View {
     }
 }
 
-/// At launch: Marcel drops in from his tree, then the conversation shows.
-private struct SplashView: View {
-    var onFinish: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var appeared = false
-
-    var body: some View {
-        ZStack {
-            Theme.background.ignoresSafeArea()
-            VStack(spacing: 14) {
-                MarcelAvatar(size: 132, isThinking: appeared && !reduceMotion)
-                    .scaleEffect(appeared || reduceMotion ? 1 : 0.4)
-                    .offset(y: appeared || reduceMotion ? 0 : -160)
-                    .rotationEffect(.degrees(appeared || reduceMotion ? 0 : -18))
-                Text("Marcel")
-                    .font(.largeTitle.weight(.bold))
-                    .opacity(appeared ? 1 : 0)
-                    .offset(y: appeared ? 0 : 12)
-            }
-        }
-        .accessibilityHidden(true)
-        .task {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.55)) { appeared = true }
-            try? await Task.sleep(for: .milliseconds(1300))
-            onFinish()
-        }
-    }
-}
-
 /// "écrit…" under Marcel's name while a reply is being written, like a messaging app.
 private struct TypingStatus: View {
     var body: some View {
