@@ -440,13 +440,16 @@ async def show(page, view: str) -> bool:
     return True
 
 
-async def wait_for_missions(page, seconds: int = 30) -> bool:
-    """Waits until a mission's time slot ("26/10/2026 20:00 - 23:00") is on the page."""
-    try:
-        await page.get_by_text(SLOT).first.wait_for(timeout=seconds * 1000)
-        return True
-    except PlaywrightTimeout:
-        return False
+async def missions_text(page, seconds: int = 30) -> str:
+    """The page's text once a mission's time slot is in it (or after `seconds`): checked on the
+    text read, like the list itself, rather than by a search inside the browser."""
+    text = ""
+    for _ in range(seconds):
+        text = await page.locator("body").inner_text()
+        if SLOT.search(text):
+            break
+        await page.wait_for_timeout(1_000)
+    return text
 
 
 async def signed_in(page) -> None:
@@ -525,17 +528,28 @@ async def read(debug: bool = False) -> list[dict]:
                          for i in range(await radios.count())]
                 print(f"Choix de vue trouvés : {names}")
             missions: dict[tuple, dict] = {}
-            for view in VIEWS:
-                # Only the view selector at the top of the list is ever clicked.
-                if not await show(page, view):
-                    print(f"Vue « {view} » introuvable sur la page.")
-                    continue
-                # A new browser first downloads the missions (the portal works offline).
-                if not await wait_for_missions(page, 20):
-                    print(f"Vue « {view} » : aucune mission affichée.")
-                text = await page.locator("body").inner_text()
-                for mission in parse(text):
-                    missions[(mission["date"], mission["start"], mission["store"])] = mission
+            # The portal is sometimes slow to show the missions: a second try, page reloaded.
+            for attempt in range(2):
+                if attempt:
+                    print("Aucune mission affichée : nouvel essai, page rechargée.")
+                    await page.goto(HOME, wait_until="networkidle", timeout=60_000)
+                    await page.wait_for_timeout(8_000)
+                    await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
+                    await page.wait_for_timeout(5_000)
+                for view in VIEWS:
+                    # Only the view selector at the top of the list is ever clicked.
+                    if not await show(page, view):
+                        print(f"Vue « {view} » introuvable sur la page.")
+                        continue
+                    # A new browser first downloads the missions (the portal works offline).
+                    text = await missions_text(page, 30)
+                    found = parse(text)
+                    if not found:
+                        print(f"Vue « {view} » : aucune mission affichée.")
+                    for mission in found:
+                        missions[(mission["date"], mission["start"], mission["store"])] = mission
+                if missions:
+                    break
             try:
                 OFFERS_READ[:] = [await read_offers(page)]
             except Exception as error:  # the planning still goes through
