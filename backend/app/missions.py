@@ -231,6 +231,12 @@ class MissionStore:
         ids = [row[0] for row in self._db.execute(query, params)]
         return [m for i in ids if (m := self.get(i))]
 
+    def finished_since(self, since: float, limit: int = 2000) -> list[Mission]:
+        """Completed replies since then, newest first (for searching past answers)."""
+        rows = self._db.execute(f"SELECT {COLUMNS} FROM missions WHERE status = ? AND created_at >= ? "
+                                "ORDER BY created_at DESC LIMIT ?", (DONE, since, limit))
+        return [Mission(*values, actions=json.loads(actions or "[]")) for *values, actions in rows]
+
     async def follow(self, mission: Mission, offset: int) -> AsyncIterator[dict | None]:
         """Text from `offset` onwards, then live deltas until the mission ends.
 

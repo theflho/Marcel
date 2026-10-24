@@ -77,6 +77,26 @@ class PlanningStore:
         (coming,) = self._db.execute("SELECT COUNT(*) FROM planning WHERE start_at >= ?", (time.time(),)).fetchone()
         return last, coming
 
+    def summary(self, ignore: list[str] = ()) -> str:
+        """Totals over everything kept (past 45 days and all that is coming), so the model can
+        tell "the robot read 45 missions" from "6 this week" instead of guessing."""
+        now = time.time()
+        missions = self.list(now - KEEP_PAST, float("inf"), ignore)
+        past = [m for m in missions if m["end_at"] < now]
+        coming = [m for m in missions if m["end_at"] >= now]
+        week = [m for m in coming if m["start_at"] < now + 7 * 86_400]
+        hours = sum(m["end_at"] - m["start_at"] for m in past) / 3600
+        line = (f"Planning RMA gardé : {len(missions)} missions — {len(past)} passées (45 derniers jours, "
+                f"{hours:.0f} h), {len(coming)} à venir dont {len(week)} dans les 7 jours")
+        if ongoing := next((m for m in coming if m["start_at"] <= now), None):
+            line += f" ; en cours : {ongoing['store']} jusqu'à {datetime.fromtimestamp(ongoing['end_at'], self.tz):%H:%M}"
+        if upcoming := next((m for m in coming if m["start_at"] > now), None):
+            line += (f" ; prochaine le {datetime.fromtimestamp(upcoming['start_at'], self.tz):%d/%m à %H:%M} "
+                     f"({upcoming['store']})")
+        if coming:
+            line += f", dernière connue le {datetime.fromtimestamp(coming[-1]['start_at'], self.tz):%d/%m}"
+        return line + "."
+
     def context(self, days: int = 7, ignore: list[str] = ()) -> str:
         """The coming missions, for the note sent with every mission."""
         now = time.time()

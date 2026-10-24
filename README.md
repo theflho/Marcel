@@ -131,6 +131,27 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
   PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
 
+## Ce que Marcel voit de ses données
+
+Le modèle ne voit que ce qui est joint à chaque message ; Hermes, dans son conteneur, n'a pas
+accès à la base de Marcel. Pour qu'il ne devine pas (« 45 missions » dit un jour, introuvable le
+lendemain) :
+- **Carte de l'architecture** dans les consignes de Marcel (`APP_PROMPT`) : où sont les données,
+  ce qui est joint (un extrait), ne pas chercher dans le terminal, les conversations restent sur
+  l'iPhone, et le mot piège « mission » (mission RMA ≠ réponse de Marcel ; pas de statut
+  « validée » au portail).
+- **Totaux à jour** joints à chaque message, assistants compris (`data_overview`) : planning gardé
+  (passé sur 45 jours, heures, à venir, en cours, prochaine), dernier compte rendu du robot, offres
+  en attente / acceptées / refusées sur 30 jours, objectifs, idées, mémoire.
+- **Outils de lecture MCP** pour le Hermes principal : `POST /mcp` (transport « streamable HTTP »,
+  réponses JSON, sans session), clé propre `MARCEL_MCP_TOKEN` (vide = désactivé ; `423` pendant
+  l'arrêt d'urgence). Outils : `marcel_resume`, `marcel_planning` (`du`, `au`, 120 jours max),
+  `marcel_offres`, `marcel_robot`, `marcel_historique` (cherche dans toutes les réponses passées,
+  sauf celles tirées d'e-mails), `marcel_reponse`, `marcel_memoire`, `marcel_objectifs`. Lecture
+  seule. Brancher : `deploy/hermes-mcp.config.yaml` dans le `config.yaml` du Hermes principal
+  (jamais dans `hermes-checks`), puis redémarrer Hermes. Les conversations protégées (e-mails,
+  assistants) restent sans aucun outil : elles n'ont que la carte et les totaux.
+
 ## Planning RMA et rappels de pointage
 
 Un robot (`backend/rma`, conteneur `rma`, Playwright) lit chaque jour (19 h par défaut, réglable
@@ -141,7 +162,8 @@ mission ni sur le pointage : pointer atteste une présence sur place et reste un
 l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les identifiants RMA
 (`rma.env`) ; il remet le planning à Marcel avec sa propre clé (`PUT /v1/planning`,
 `X-Planning-Key`), qui ne donne accès à rien d'autre.
-- Marcel connaît les missions des 7 prochains jours (« Je bosse où lundi ? »).
+- Marcel connaît les missions des 7 prochains jours (« Je bosse où lundi ? ») et les totaux ;
+  avec les outils MCP, n'importe quelle période gardée (« combien d'heures en octobre ? »).
 - `GET /v1/planning?days=14` → missions (heures en secondes depuis 1970) ; les missions à venir
   que le robot ne voit plus sont retirées (annulées), les passées gardées 45 jours.
 - App : Réglages › Sur cet iPhone › **Rappels de pointage** : notifications locales programmées

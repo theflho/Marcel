@@ -1,0 +1,16 @@
+# Outils de lecture de Marcel pour le Hermes PRINCIPAL (pas hermes-checks) : à ajouter au
+# config.yaml de son HERMES_HOME, puis redémarrer Hermes et vérifier avec `hermes mcp list`
+# (ou `hermes tools`). Les clés viennent de la doc Hermes Agent (MCP) et peuvent changer selon la
+# version installée.
+#
+# Hermes et marcel-api sont sur le réseau Docker assistant_default : l'adresse est interne,
+# rien n'est publié. La clé est MARCEL_MCP_TOKEN du .env de Marcel (pas MARCEL_TOKEN).
+#
+# Les 8 outils (marcel_resume, marcel_planning, marcel_offres, marcel_robot, marcel_historique,
+# marcel_reponse, marcel_memoire, marcel_objectifs) ne font que lire : aucun n'écrit, n'envoie
+# ni ne supprime. Les réponses passées tirées d'e-mails ne sont jamais renvoyées.
+mcp_servers:
+  marcel:
+    url: "http://marcel-api:8000/mcp"
+    headers:
+      Authorization: "Bearer <MARCEL_MCP_TOKEN>"

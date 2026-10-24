@@ -22,14 +22,15 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import assistants as bots
 from .gmail import DEFAULT_QUERY, MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .goals import ACTIVE, GoalStore
-from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries
+from .mcp import MCPServer, ToolError
+from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries, words
 from .missions import DONE, MissionError, MissionStore, valid_id
 from .offers import OfferStore
 from .planning import PlanningStore
@@ -37,6 +38,8 @@ from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPE
                         is_due, parse_hours)
 
 MARCEL_TOKEN = os.environ.get("MARCEL_TOKEN", "")
+# Hermes' own key for the read-only MCP tools (/mcp); unset, the endpoint is off.
+MCP_TOKEN = os.environ.get("MARCEL_MCP_TOKEN", "")
 HERMES_URL = os.environ.get("HERMES_URL", "http://hermes:8642").rstrip("/")
 HERMES_API_KEY = os.environ.get("HERMES_API_KEY", "")
 HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
@@ -447,6 +450,23 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   supprimes, n'épingles et ne touches au serveur (VPS) jamais : ça, c'est l'utilisateur.
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
+
+Où sont les données (ne cherche pas ailleurs, n'invente pas) :
+- Tout ce que l'app sait est dans la base du serveur Marcel : planning RMA et offres (lus chaque jour
+  sur le portail par le robot RMA), comptes rendus du robot, objectifs, idées, mémoire, et tes
+  réponses passées. Ce n'est PAS dans ton terminal, tes fichiers ni ta propre mémoire : y chercher ne
+  donne rien.
+- Ce qui est joint plus bas n'est qu'un extrait : les totaux à jour (« Données de Marcel ») et le
+  détail des 7 prochains jours. Les totaux font foi : pour un nombre (missions, heures, offres),
+  pars d'eux et dis d'où vient le chiffre.
+- Si tu as les outils « marcel » (marcel_planning, marcel_offres, marcel_robot, marcel_historique,
+  marcel_memoire, marcel_objectifs), utilise-les pour le reste : une période précise, une mission
+  passée, une ancienne réponse. Sinon, dis ce que tu vois et ce qui te manque.
+- Les conversations sont gardées sur l'iPhone : tu ne vois que celle-ci. Une autre conversation (un
+  assistant, une ancienne discussion) ne t'est pas jointe ; marcel_historique retrouve tes réponses.
+- Mot piège : pour l'utilisateur, une « mission » est une mission de travail RMA (magasin, horaires).
+  Le robot ne connaît pas de statut « validée » : une mission au planning est une mission prévue ;
+  une offre acceptée devient une mission quand le portail l'ajoute au planning.
 {state}"""
 
 
@@ -468,7 +488,33 @@ def app_context(agenda_shared: bool) -> str:
                  if agenda_shared else "Agenda : non partagé (Réglages › Sur cet iPhone › Partager mon agenda).")
     level = {"off": "désactivées", "quiet": "discrètes (l'important seulement)", "normal": "normales"}
     state.append(f"Vérifications automatiques des objectifs : {level.get(ideas.settings()['level'], 'normales')}.")
-    return APP_PROMPT.format(state="\n".join(state))
+    return APP_PROMPT.format(state="\n".join(state)) + "\n\n" + data_overview()
+
+
+def data_overview() -> str:
+    """Totals of everything the server keeps, sent with every mission (a few lines): the model
+    sees only extracts of the data, so without them it can't reconcile a number it said before."""
+    lines = ["Données de Marcel (totaux à jour) :"]
+    lines.append("- " + planning.summary(bots.words(assistants.value("planning", "ignore"))))
+    reports = assistants.state("reports", [])
+    if reports:
+        r = reports[-1]
+        counts = ", ".join(filter(None, [r["missions"] is not None and f"{r['missions']} missions lues",
+                                         r["offers"] is not None and f"{r['offers']} offres"]))
+        lines.append(f"- Dernière lecture du robot RMA : {local_time(r['at'])}, {'réussie' if r['ok'] else 'ÉCHEC'}"
+                     + (f" ({counts})" if counts else "") + (f" — {r['message']}" if r["message"] else "") + ".")
+    else:
+        lines.append("- Robot RMA : aucun compte rendu reçu.")
+    month = time.time() - 30 * 86_400
+    answered = offers.answered(month)
+    accepted = sum(1 for o in answered if o["answer"] == "accept")
+    waiting = sum(1 for o in offers.all() if o["status"] == "open")
+    lines.append(f"- Offres de recrutement : {waiting} en attente de réponse ; sur 30 jours, {accepted} acceptées "
+                 f"et {len(answered) - accepted} refusées depuis l'app.")
+    stats = memory.stats()
+    lines.append(f"- Objectifs suivis : {len(goals.list(ACTIVE))} ; idées non vues : {ideas.unseen()} ; mémoire : "
+                 f"{stats['core_count']} faits au noyau, {stats['archive_count']} aux archives.")
+    return "\n".join(lines)
 
 
 def mail_query() -> str:
@@ -1753,3 +1799,182 @@ async def delete_instruction(assistant_id: str, note_id: str) -> dict:
     if not assistants.delete_instruction(assistant.id, note_id):
         raise HTTPException(404, "Consigne introuvable")
     return assistant_public(assistant)
+
+
+# MARK: MCP tools for Hermes (read only)
+
+mcp = MCPServer()
+
+
+@app.post("/mcp", include_in_schema=False)
+async def mcp_endpoint(request: Request, authorization: str = Header(default="")) -> Response:
+    """MCP "streamable HTTP" endpoint, JSON answers only (no SSE stream, no session)."""
+    scheme, _, token = authorization.partition(" ")
+    if not MCP_TOKEN:
+        raise HTTPException(404, "Not found")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(token, MCP_TOKEN):
+        raise HTTPException(401, "Invalid token")
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif.")
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "JSON invalide"}},
+                            status_code=400)
+    if isinstance(body, list):
+        answers = [a for m in body if isinstance(m, dict) and (a := mcp.handle(m))]
+        return JSONResponse(answers) if answers else Response(status_code=202)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Message JSON-RPC attendu")
+    answer = mcp.handle(body)
+    return JSONResponse(answer) if answer else Response(status_code=202)
+
+
+@app.get("/mcp", include_in_schema=False)
+async def mcp_stream() -> Response:
+    # No server-initiated messages: the spec lets the server refuse the GET stream.
+    return Response(status_code=405, headers={"Allow": "POST"})
+
+
+def tool_day(text: str | None, default: datetime) -> datetime:
+    if not text:
+        return default
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=USER_TZ)
+    except ValueError:
+        raise ToolError(f"Date invalide « {text} » : format AAAA-MM-JJ attendu.") from None
+
+
+def mission_line(m: dict) -> str:
+    start, end = datetime.fromtimestamp(m["start_at"], USER_TZ), datetime.fromtimestamp(m["end_at"], USER_TZ)
+    day = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")[start.weekday()]
+    return f"- {day} {start:%d/%m/%Y %H:%M}-{end:%H:%M} · {m['store']} · {m['kind']} · {m['client']}"
+
+
+@mcp.tool("marcel_resume", "Totaux à jour de toutes les données de Marcel : planning RMA (passé et à venir), "
+          "dernière lecture du robot, offres, objectifs, idées, mémoire. À appeler d'abord pour un chiffre.")
+def tool_overview(_: dict) -> str:
+    return data_overview()
+
+
+@mcp.tool("marcel_planning",
+          "Missions de travail RMA entre deux dates (incluses) : jour, horaires, magasin, type, client, avec le "
+          "nombre et le total d'heures. Le serveur garde les 45 derniers jours et tout ce qui est à venir. "
+          "Par défaut : aujourd'hui et les 14 jours suivants.",
+          {"du": {"type": "string", "description": "Premier jour, AAAA-MM-JJ"},
+           "au": {"type": "string", "description": "Dernier jour inclus, AAAA-MM-JJ"}})
+def tool_planning(args: dict) -> str:
+    today = datetime.now(USER_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = tool_day(args.get("du"), today)
+    end = tool_day(args.get("au"), start + timedelta(days=14)) + timedelta(days=1)
+    if end <= start or (end - start).days > 120:
+        raise ToolError("Période invalide : « au » doit suivre « du », 120 jours au plus.")
+    found = planning.list(start.timestamp(), end.timestamp() - 1, bots.words(assistants.value("planning", "ignore")))
+    hours = sum(m["end_at"] - m["start_at"] for m in found) / 3600
+    head = f"{len(found)} mission(s) du {start:%d/%m/%Y} au {end - timedelta(days=1):%d/%m/%Y}, {hours:.1f} h au total."
+    if start.timestamp() < time.time() - 45 * 86_400:
+        head += " Attention : avant 45 jours, les missions passées ne sont plus gardées."
+    return "\n".join([head] + [mission_line(m) for m in found])
+
+
+@mcp.tool("marcel_offres",
+          "Offres de recrutement RMA lues par le robot : en attente de réponse, ou déjà répondues depuis l'app "
+          "(acceptées / refusées, 30 derniers jours), avec les conflits avec le planning.",
+          {"statut": {"type": "string", "enum": ["attente", "repondues", "toutes"],
+                      "description": "Par défaut : toutes"}})
+def tool_offers(args: dict) -> str:
+    status = args.get("statut") or "toutes"
+    waiting = open_offers() if status in ("attente", "toutes") else []
+    answered = offers.answered(time.time() - 30 * 86_400) if status in ("repondues", "toutes") else []
+    lines = [offers.context(waiting)] if status != "repondues" else []
+    if status != "attente":
+        lines.append(f"Offres répondues depuis l'app (30 jours) : {len(answered)}")
+        for o in answered:
+            day = datetime.fromtimestamp(o["day"], USER_TZ)
+            result = {"done": "envoyée", "pending": "en cours d'envoi", "failed": "échec"}.get(o["answer_status"], "")
+            lines.append(f"- {day:%d/%m/%Y} · {o['store']} · {o['kind']} · {o['client']} — "
+                         f"{'acceptée' if o['answer'] == 'accept' else 'refusée'} ({result}"
+                         + (f" : {o['answer_message']}" if o["answer_message"] else "") + ")")
+    return "\n".join(lines)
+
+
+@mcp.tool("marcel_robot", "Derniers comptes rendus du robot RMA (heure, réussite, nombre de missions et d'offres "
+          "lues, message d'erreur) : pour savoir si le planning est à jour.")
+def tool_robot(_: dict) -> str:
+    last, coming = planning.last_read()
+    tail = (f"Planning remis pour la dernière fois : {local_time(last)} ({coming} missions à venir gardées)."
+            if last else "Le robot n'a encore remis aucun planning.")
+    return robot_note() + "\n" + tail
+
+
+def safe_replies(since: float) -> list:
+    """Past replies Hermes may read back: not those built on e-mails, whose text was written by
+    strangers and could carry instructions."""
+    return [m for m in missions.finished_since(since)
+            if not any(a.get("id") == "mail" and a.get("status") == "done" for a in m.actions)]
+
+
+@mcp.tool("marcel_historique",
+          "Cherche dans les réponses passées de Marcel et de ses assistants (toutes conversations, y compris "
+          "celles d'avant) : date, question, extrait et identifiant. Les réponses tirées d'e-mails sont exclues.",
+          {"recherche": {"type": "string", "description": "Mots à chercher, ex. « missions validées octobre »"},
+           "jours": {"type": "integer", "description": "Remonter jusqu'à N jours (défaut 90, max 365)"},
+           "limite": {"type": "integer", "description": "Nombre de résultats (défaut 8, max 20)"}},
+          required=("recherche",))
+def tool_history(args: dict) -> str:
+    terms = words(str(args.get("recherche", "")))
+    if not terms:
+        raise ToolError("Donne au moins un mot significatif à chercher.")
+    days = max(1, min(int(args.get("jours") or 90), 365))
+    limit = max(1, min(int(args.get("limite") or 8), 20))
+    scored = []
+    for m in safe_replies(time.time() - days * 86_400):
+        found = terms & words(f"{m.title} {m.text}")
+        if found:
+            scored.append((len(found), m.created_at, m))
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    if not scored:
+        return f"Aucune réponse passée ne contient « {args['recherche']} » sur {days} jours."
+    lines = [f"{len(scored)} réponse(s) trouvée(s), les {min(limit, len(scored))} plus proches :"]
+    for _, _, m in scored[:limit]:
+        excerpt = " ".join(m.text.split())[:350]
+        lines.append(f"- [{m.id}] {local_time(m.created_at)} · question : « {' '.join(m.title.split())[:120]} »\n"
+                     f"  {excerpt}{'…' if len(m.text) > 350 else ''}")
+    lines.append("Texte complet : marcel_reponse avec l'identifiant.")
+    return "\n".join(lines)
+
+
+@mcp.tool("marcel_reponse", "Texte complet d'une réponse passée trouvée avec marcel_historique.",
+          {"id": {"type": "string", "description": "Identifiant entre crochets donné par marcel_historique"}},
+          required=("id",))
+def tool_reply(args: dict) -> str:
+    mission_id = str(args.get("id", "")).strip("[] ")
+    mission = missions.get(mission_id) if valid_id(mission_id) else None
+    if not mission or mission.status != DONE:
+        raise ToolError("Réponse introuvable.")
+    if any(a.get("id") == "mail" and a.get("status") == "done" for a in mission.actions):
+        raise ToolError("Cette réponse s'appuie sur des e-mails : elle n'est pas transmise aux outils.")
+    return f"{local_time(mission.created_at)} · question : « {mission.title} »\n\n{mission.text}"
+
+
+@mcp.tool("marcel_memoire", "Ce que Marcel sait de l'utilisateur : faits liés à une recherche, ou tout le noyau "
+          "sans recherche.", {"recherche": {"type": "string", "description": "Mots à chercher (facultatif)"}})
+def tool_memory(args: dict) -> str:
+    query = str(args.get("recherche") or "").strip()
+    facts = memory.search(query, limit=20) if query else memory.active(CORE)
+    if not facts:
+        return "Aucun souvenir trouvé." if query else "Le noyau de la mémoire est vide."
+    return "\n".join(f"- {f.text} ({'noyau' if f.tier == CORE else 'archives'})" for f in facts)
+
+
+@mcp.tool("marcel_objectifs", "Objectifs suivis (et en pause) avec leur rythme, et les dernières idées proposées "
+          "par Marcel proactif.")
+def tool_goals(_: dict) -> str:
+    followed = [g for g in goals.list() if g.status in ("active", "paused")]
+    lines = [f"Objectifs : {len(followed)}"]
+    lines += [f"- {g.title} ({'en pause' if g.status == 'paused' else g.cadence})"
+              + (f" — {g.detail}" if g.detail else "") for g in followed]
+    recent = ideas.list()[:10]
+    lines.append(f"Dernières idées : {len(recent)}")
+    lines += [f"- {local_time(i.created_at)} · {i.title} ({i.status}) — objectif « {i.goal_title} »" for i in recent]
+    return "\n".join(lines)

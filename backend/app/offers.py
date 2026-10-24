@@ -125,6 +125,14 @@ class OfferStore:
                             (OPEN, time.time() - SHOW_ANSWERED))
         return [o for o in offers if not any(w in f"{o['store']} {o['kind']} {o['client']}".lower() for w in ignore)]
 
+    def answered(self, since: float) -> list[dict]:
+        """Offers the user answered (through the robot) since then, accepted or refused."""
+        return self._rows("answer != '' AND answered_at > ?", (since,))
+
+    def all(self) -> list[dict]:
+        """Every offer kept: waiting, answered, or gone from the portal (30 days)."""
+        return self._rows("1 = 1", ())
+
     def get(self, offer_id: str) -> dict | None:
         found = self._rows("id = ?", (offer_id,))
         return found[0] if found else None
