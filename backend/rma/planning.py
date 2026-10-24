@@ -88,8 +88,20 @@ def parse_offers(text: str) -> list[dict]:
     return offers
 
 
+async def offers_text(page, seconds: int = 20) -> str:
+    """The recruitment page's text once its cards are there (or after `seconds`): read the same
+    way as the list itself, so whatever the portal's spacing, it waits for what it will parse."""
+    text = ""
+    for _ in range(seconds):
+        text = await page.locator("body").inner_text()
+        if any(OFFER_DAY.match(line.strip()) for line in text.splitlines()):
+            break
+        await page.wait_for_timeout(1_000)
+    return text
+
+
 async def read_offers(page) -> list[dict] | None:
-    """The offers waiting for an answer (first tab, shown by default). Nothing is clicked.
+    """The offers waiting for an answer (first tab, shown by default). No button is pressed.
     None when the page didn't show up, so the known offers aren't wiped."""
     await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
     try:
@@ -97,29 +109,34 @@ async def read_offers(page) -> list[dict] | None:
     except PlaywrightTimeout:
         print("Page des recrutements introuvable.")
         return None
-    try:
-        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=20_000)
-    except PlaywrightTimeout:
-        pass  # no offer waiting, or slow: the text read below tells
+    await offers_text(page)
     await scroll_list(page)
     text = await page.locator("body").inner_text()
     OFFERS_TEXT[:] = [text]
     offers = parse_offers(text)
     # Each offer's own page holds its hours, the portal's conflict warning and its address.
-    # Reading it presses no button.
+    # Opening it presses no button. A card is found by its store's name (the n-th one when the
+    # same store comes back on other days).
+    failures = 0
     for index, offer in enumerate(offers):
+        if failures >= 2:
+            print("Détail des offres : abandonné après 2 échecs (la liste reste envoyée).")
+            break
+        same = sum(1 for other in offers[:index] if other["store"] == offer["store"])
         try:
-            await page.get_by_text(OFFER_DAY).nth(index).click()
+            await page.get_by_text(offer["store"], exact=True).nth(same).click(timeout=15_000)
             await page.wait_for_url(re.compile(r"recrutedet"), timeout=20_000)
             await page.get_by_text(re.compile(r"Accepter la mission|Refuser")).first.wait_for(timeout=20_000)
             offer.update(parse_offer_page(await page.locator("body").inner_text()))
             offer["link"] = page.url.split("#", 1)[1][:300]
             button = answer_button(page, True)
             offer["can_answer"] = bool(await button.count()) and await button.is_enabled()
+            failures = 0
         except Exception as error:  # the list is still worth having
+            failures += 1
             print(f"Offre {offer['store']} du {offer['date']} : détail illisible ({type(error).__name__}).")
         await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
-        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=20_000)
+        await offers_text(page)
         await scroll_list(page)
     return offers
 
@@ -198,10 +215,7 @@ async def answer_offer(page, request: dict) -> tuple[bool, str]:
 async def read_waiting_list(page) -> list[dict]:
     await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
     await page.get_by_text(re.compile(r"Attente de r[ée]ponse")).first.wait_for(timeout=30_000)
-    try:
-        await page.get_by_text(OFFER_DAY).first.wait_for(timeout=15_000)
-    except PlaywrightTimeout:
-        pass
+    await offers_text(page, 15)
     await scroll_list(page)
     return parse_offers(await page.locator("body").inner_text())
 
@@ -462,7 +476,9 @@ async def once(debug: bool = False) -> int:
         print("(--debug : rien n'est envoyé à Marcel ; ajoute --send pour envoyer)")
         return 0
     if not missions:
-        print("Aucune mission lue : rien n'est envoyé, pour ne pas effacer le planning connu.")
+        print("Aucune mission lue : le planning n'est pas envoyé, pour ne pas effacer celui connu.")
+        if offers is not None:
+            await send_offers(offers)
         return 1
     await send(missions)
     if offers is not None:
