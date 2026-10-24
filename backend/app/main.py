@@ -340,8 +340,7 @@ async def start_mission(request: ChatRequest) -> dict:
             raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning_note(), bots.overview(assistants.all(), assistant_values),
-                                      device, mail]))
+                                      planning_note(), assistants_note(title), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -362,6 +361,18 @@ async def start_mission(request: ChatRequest) -> dict:
         inner = lambda: hermes_stream(request, model, note)  # noqa: E731
     return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra),
                           model=model, title=title).public()
+
+
+# A message about the assistants or their settings brings their list (about 400 tokens) into the
+# mission; other messages go without it.
+BOT_WORDS = re.compile(r"\b(assistants?|bots?|r[ée]gl|param[èe]tr|rappels?|pointage|planning|recrut|offres?|"
+                       r"veille|robot|relis|relire|portail|notif|mascotte|crée|cr[ée]er)", re.IGNORECASE)
+
+
+def assistants_note(question: str) -> str:
+    if not BOT_WORDS.search(question):
+        return ""
+    return bots.overview(assistants.all(), assistant_values)
 
 
 def start_assistant_mission(request: ChatRequest, model: str, title: str, note: str, facts, device: str,

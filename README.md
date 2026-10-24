@@ -159,6 +159,11 @@ l'utilisateur, depuis son téléphone. Le robot est le seul à connaître les id
   mise à jour, une mission annulée retirée (futur et calendrier « Missions RMA » seulement).
   Synchronisé à l'ouverture de l'app et en arrière-plan. Ce calendrier n'est pas joint à
   « Partager mon agenda » (le planning y est déjà).
+- Le robot ne garde qu'une session à la fois sur le portail (verrou `rma.lock` dans le volume
+  `rma-data`) : un `--once` / `--debug` lancé pendant une lecture automatique s'arrête avec un
+  message, au lieu de deux connexions qui affichent une liste vide. Le détail de chaque offre
+  (horaires, conflit, adresse) est gardé 12 h (`offer-details.json`) : une relecture n'ouvre que
+  les nouvelles offres (tout est relu après une réponse donnée).
 - Installation sur le VPS : `./deploy/install-rma.sh` (identifiant et mot de passe saisis sur
   le VPS, première lecture d'essai sans rien envoyer : `--debug`, capture dans le volume
   `rma-data`) ; puis `docker compose run --rm rma python planning.py --once`.

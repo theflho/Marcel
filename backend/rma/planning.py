@@ -14,6 +14,7 @@ on site, from their phone.
 """
 
 import asyncio
+import fcntl
 import json
 import os
 import re
@@ -35,6 +36,49 @@ MARCEL_URL = os.environ.get("MARCEL_URL", "http://marcel-api:8000").rstrip("/")
 PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 HOUR = int(os.environ.get("RMA_HOUR") or 19)
 DATA = Path(os.environ.get("RMA_DATA_DIR", "/data"))
+# An offer's details (hours, conflict, address) are opened again only after this long.
+DETAILS_TTL = 12 * 3600
+
+
+class PortalBusy(Exception):
+    """Another reading holds the portal (the daemon, or a manual --once / --debug)."""
+
+
+class portal_lock:
+    """One session on the portal at a time, across containers (the lock file is in the shared
+    volume): two sign-ins at once make the portal show an empty list."""
+
+    def __enter__(self):
+        DATA.mkdir(parents=True, exist_ok=True)
+        self.file = open(DATA / "rma.lock", "w")
+        try:
+            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.file.close()
+            raise PortalBusy from None
+        return self
+
+    def __exit__(self, *_):
+        fcntl.flock(self.file, fcntl.LOCK_UN)
+        self.file.close()
+
+
+def load_details() -> dict:
+    try:
+        cache = json.loads((DATA / "offer-details.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in cache.items() if time.time() - v.get("at", 0) < DETAILS_TTL}
+
+
+def save_details(cache: dict) -> None:
+    DATA.mkdir(parents=True, exist_ok=True)
+    (DATA / "offer-details.json").write_text(json.dumps(cache, ensure_ascii=False))
+
+
+def forget_details() -> None:
+    """After an answer, other offers' conflicts may have changed: they're all read again."""
+    (DATA / "offer-details.json").unlink(missing_ok=True)
 # The views the portal offers; the week and the month together cover what's coming.
 VIEWS = ("Sem.", "Mois", "∞")  # see VIEW_VALUES
 # "26/10/2026 20:00 - 23:00 FERRERO FRANCE COMMERCIALE" (the client may be on the next line).
@@ -118,7 +162,12 @@ async def read_offers(page) -> list[dict] | None:
     # Opening it presses no button. A card is found by its store's name (the n-th one when the
     # same store comes back on other days).
     failures = 0
+    cache = load_details()
     for index, offer in enumerate(offers):
+        key = f"{offer['date']}|{offer['store']}|{offer['kind']}"
+        if key in cache:
+            offer.update({k: v for k, v in cache[key].items() if k != "at"})
+            continue
         if failures >= 2:
             print("Détail des offres : abandonné après 2 échecs (la liste reste envoyée).")
             break
@@ -131,6 +180,8 @@ async def read_offers(page) -> list[dict] | None:
             offer["link"] = page.url.split("#", 1)[1][:300]
             button = answer_button(page, True)
             offer["can_answer"] = bool(await button.count()) and await button.is_enabled()
+            cache[key] = {k: offer[k] for k in ("start", "end", "portal_conflict", "link", "can_answer") if k in offer}
+            cache[key]["at"] = time.time()
             failures = 0
         except Exception as error:  # the list is still worth having
             failures += 1
@@ -138,6 +189,7 @@ async def read_offers(page) -> list[dict] | None:
         await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
         await offers_text(page)
         await scroll_list(page)
+    save_details(cache)
     return offers
 
 
@@ -512,7 +564,11 @@ async def report(ok: bool, message: str = "", missions: int | None = None, offer
 async def run() -> None:
     OFFERS_READ[:] = [None]
     try:
-        code = await once()
+        with portal_lock():
+            code = await once()
+    except PortalBusy:
+        print("Une autre lecture du portail est en cours : celle-ci attendra le prochain tour.")
+        return
     except Exception as error:  # the next run tries again
         print(f"Lecture du planning impossible : {type(error).__name__}: {error}")
         await report(False, f"{type(error).__name__} : {error}")
@@ -535,8 +591,12 @@ async def forever() -> None:
         # Answers to offers the user confirmed in the app, then a new reading (planning updated).
         try:
             if requests := await pending_answers():
-                await give_answers(requests)
+                with portal_lock():
+                    await give_answers(requests)
+                forget_details()
                 await run()
+        except PortalBusy:
+            pass  # a manual reading is on: the answers go at the next minute
         except Exception as error:
             print(f"Réponses aux offres impossibles : {type(error).__name__}: {error}")
         settings = await config()
@@ -551,5 +611,10 @@ async def forever() -> None:
 
 if __name__ == "__main__":
     if "--once" in sys.argv or "--debug" in sys.argv:
-        sys.exit(asyncio.run(once(debug="--debug" in sys.argv)))
+        try:
+            with portal_lock():
+                sys.exit(asyncio.run(once(debug="--debug" in sys.argv)))
+        except PortalBusy:
+            print("Le robot automatique lit le portail en ce moment : réessaie dans 2 minutes.")
+            sys.exit(1)
     asyncio.run(forever())

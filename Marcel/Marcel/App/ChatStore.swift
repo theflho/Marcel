@@ -393,6 +393,7 @@ final class ChatStore {
         if !force, let last = lastPlanningSync, Date.now.timeIntervalSince(last) < 600 { return }
         lastPlanningSync = .now
         guard let missions = try? await api.planning(days: 60) else { return }
+        planningMissions = missions
         await WorkReminders.schedule(missions)
         MissionCalendar.sync(missions)
     }
@@ -445,11 +446,16 @@ final class ChatStore {
 
     /// Fetches the assistants, then applies Pointage's settings to the reminders on this iPhone.
     func refreshAssistants() async {
-        guard !emergencyActive, let api = settings.api, let loaded = try? await api.assistants() else { return }
+        guard !emergencyActive, let api = settings.api else { return }
+        // The three at once rather than one after the other.
+        async let loadedAssistants = try? api.assistants()
+        async let loadedOffers = try? api.offers()
+        async let loadedMissions = try? api.planning(days: 60)
+        guard let loaded = await loadedAssistants else { return }
         assistants = loaded
         applyLocalSettings()
-        if let list = try? await api.offers() { offers = list.offers }
-        if let missions = try? await api.planning(days: 60) { planningMissions = missions }
+        if let list = await loadedOffers { offers = list.offers }
+        if let missions = await loadedMissions { planningMissions = missions }
     }
 
     /// The user confirmed ("Oui") accepting or refusing an offer: the robot answers in the portal.
