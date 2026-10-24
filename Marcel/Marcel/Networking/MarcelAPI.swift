@@ -328,7 +328,17 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     let custom: Bool?
 
     func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
-    var displayMood: MarcelMood { mood.flatMap(MarcelMood.init(rawValue:)) ?? .tree }
+    /// The server's choice, else the built-in one (a server not updated yet sends none).
+    var displayMood: MarcelMood {
+        if let chosen = mood.flatMap(MarcelMood.init(rawValue:)) { return chosen }
+        switch id {
+        case "planning": return .coffee
+        case "pointage": return .laptop
+        case "recrutements": return .roadtrip
+        case "mails": return .reading
+        default: return .tree
+        }
+    }
     var isCustom: Bool { custom ?? false }
 }
 
