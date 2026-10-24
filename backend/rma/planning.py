@@ -222,6 +222,7 @@ async def read_offers(page) -> list[dict] | None:
         await offers_text(page)
         await scroll_list(page)
     save_details(cache)
+    from_portal_list(offers, RECRUTES[0])
     return offers
 
 
@@ -232,14 +233,49 @@ async def scroll_list(page) -> None:
         await page.wait_for_timeout(800)
 
 
-HOURS = re.compile(r"de (\d{1,2}:\d{2}) à (\d{1,2}:\d{2})")
+# "de 05:00 à 08:30" (any spaces, even across lines), else "Horaire 1 : 05:00 - 08:30".
+HOURS = re.compile(r"\bde\s+(\d{1,2}:\d{2})\s+à\s+(\d{1,2}:\d{2})")
+HOURS_TABLE = re.compile(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})")
+MONTH_NUMBERS = {"janv": 1, "févr": 2, "fevr": 2, "mars": 3, "avr": 4, "mai": 5, "juin": 6, "juil": 7, "août": 8,
+                 "aout": 8, "sept": 9, "oct": 10, "nov": 11, "déc": 12, "dec": 12}
+
+
+def numeric_date(date: str) -> str:
+    """ "3 nov. 2026" → "03/11/2026" ("" when unreadable)."""
+    try:
+        day, month, year = date.replace(".", "").split()
+        number = MONTH_NUMBERS.get(month.lower()[:5]) or MONTH_NUMBERS[month.lower()[:4]]
+        return f"{int(day):02d}/{number:02d}/{year}"
+    except (ValueError, KeyError):
+        return ""
+
+
+def from_portal_list(offers: list[dict], items) -> None:
+    """Fills what an offer's page didn't give (hours, address) from the list the portal itself
+    downloaded (/apiv/recrutes): same store, same day (and same operation when it repeats)."""
+    if not isinstance(items, list):
+        return
+    for offer in offers:
+        day = numeric_date(offer["date"])
+        matches = [i for i in items if isinstance(i, dict) and i.get("datedeb") == day
+                   and " ".join(str(i.get("entreprise", "")).split()) == offer["store"]]
+        if len(matches) > 1:
+            matches = [i for i in matches if i.get("nomcamp") == offer["kind"]] or matches
+        if not matches:
+            continue
+        item = matches[0]
+        start, end = item.get("heuredeb") or "", item.get("heurefin") or item.get("heurefin1") or ""
+        if not offer.get("start") and re.fullmatch(r"\d{1,2}:\d{2}", start) and re.fullmatch(r"\d{1,2}:\d{2}", end):
+            offer["start"], offer["end"] = start, end
+        if not offer.get("link") and item.get("id") and item.get("typeenseigne") and item.get("codesal"):
+            offer["link"] = f"/accueil/recrutedet;soc={item['typeenseigne']};id={item['id']};sala={item['codesal']}"
 
 
 def parse_offer_page(text: str) -> dict:
     """An offer's page: "Mar. 3 Nov. de 05:00 à 08:30", and the red "Attention vous avez une autre
     mission déjà prévue à cette période : …" when it clashes."""
     found = {}
-    if match := HOURS.search(text):
+    if match := HOURS.search(text) or HOURS_TABLE.search(text):
         found["start"], found["end"] = match.groups()
     if (start := text.find("Attention")) >= 0:
         warning = text[start:].split("\nRefuser")[0].split("\nAccepter")[0]
