@@ -1,5 +1,5 @@
-"""Marcel's assistants: Planning, Pointage, Mails, Veille. Each has its own conversation in the
-app, where the user tunes it by talking to it.
+"""Marcel's bots: the things Marcel takes care of (RMA is one of them, not the whole of him), each
+with its own conversations in the app, where the user tunes it by talking to Marcel there.
 
 An assistant has settings (a fixed list, each with its bounds) and instructions (free text the
 user asked it to keep). In its conversation the model may only *propose* a change, as a block
@@ -95,7 +95,7 @@ class Assistant:
 
 ASSISTANTS: tuple[Assistant, ...] = (
     Assistant(
-        "planning", "Planning", "🗓️",
+        "planning", "Planning RMA", "🗓️",
         "Lit ton planning RMA chaque jour et le met dans ton agenda.",
         "Un robot lit chaque jour le portail RMA de l'utilisateur (en lecture seule : il n'ouvre aucune "
         "mission et ne pointe jamais) et te transmet ses missions ; l'iPhone les ajoute au calendrier "
@@ -107,12 +107,12 @@ ASSISTANTS: tuple[Assistant, ...] = (
                  help="chaque jour à cette heure (heure de Paris)"),
          Setting("ignore", "Missions à ignorer", "text", "", max_chars=200,
                  help="mots séparés par des virgules (magasin, type ou client), ex. « OP GLACES, AUCHAN »")),
-        "Je suis l'assistant **Planning** 🗓️. Je lis ton planning RMA chaque jour et je le range dans ton "
+        "Ici **Marcel**, pour ton planning RMA 🗓️. Je le lis chaque jour et je le range dans ton "
         "agenda.\n\nTu peux me dire par exemple : « lis le planning à 7 h », « ignore les missions OP GLACES », "
         "ou me demander tes missions de la semaine.",
     ),
     Assistant(
-        "pointage", "Pointage", "⏱️",
+        "pointage", "Pointage RMA", "⏱️",
         "Te rappelle de pointer et prépare le SMS « RMA OK » / « RMA fin ».",
         "L'iPhone de l'utilisateur affiche un rappel avant le début et la fin de chaque mission RMA ; le "
         "rappel prépare le SMS de pointage pour le 38200 et demande « J'envoie ? » : rien ne part sans son "
@@ -124,12 +124,12 @@ ASSISTANTS: tuple[Assistant, ...] = (
          Setting("end_reminder", "Rappel de fin", "bool", True),
          Setting("start_text", "SMS de début", "text", "RMA OK", max_chars=40),
          Setting("end_text", "SMS de fin", "text", "RMA fin", max_chars=40)),
-        "Je suis l'assistant **Pointage** ⏱️. Avant chaque mission, je te rappelle de pointer et je prépare "
+        "Ici **Marcel**, pour le pointage RMA ⏱️. Avant chaque mission, je te rappelle de pointer et je prépare "
         "le SMS pour le 38200 : tu réponds Oui ou Non.\n\nTu peux me dire par exemple : « rappelle-moi 10 "
         "minutes avant », « plus de rappel de fin ».",
     ),
     Assistant(
-        "recrutements", "Recrutements", "🧑‍💼",
+        "recrutements", "Offres RMA", "🧑‍💼",
         "Suit les offres de missions RMA qui attendent ta réponse.",
         "Le robot RMA lit chaque jour la page « Recrutements › Attente de réponse » du portail et la page "
         "de chaque offre (horaires, conflit signalé par le portail). Tu vois les offres (magasin, date, "
@@ -142,9 +142,9 @@ ASSISTANTS: tuple[Assistant, ...] = (
         (Setting("notify", "Prévenir des nouvelles offres", "bool", True),
          Setting("ignore", "Offres à ignorer", "text", "", max_chars=200,
                  help="mots séparés par des virgules (magasin, opération ou client)")),
-        "Je suis l'assistant **Recrutements**. Je suis les offres de missions RMA qui attendent ta réponse "
-        "et je te signale les conflits avec ton planning et ton agenda. Sur chaque carte, « Accepter la mission » ou "
-        "« Refuser » : après ton « Oui », je réponds dans le portail.\n\n"
+        "Ici **Marcel**, pour tes offres RMA 🧑‍💼. Je suis les offres de missions qui attendent ta réponse "
+        "et je te signale les conflits avec ton planning et ton agenda. Tu acceptes ou refuses sur chaque "
+        "carte ; après ton Oui, je réponds dans le portail.\n\n"
         "Demande-moi « lesquelles je peux prendre ? », ou donne-moi tes consignes : « pas plus de 3 missions "
         "par semaine », « ignore les offres Lindt ».",
     ),
@@ -161,7 +161,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
                  help="expéditeurs ou mots du sujet, séparés par des virgules"),
          Setting("style", "Style des résumés", "choice", "court",
                  choices=(("court", "Court"), ("detaille", "Détaillé")))),
-        "Je suis l'assistant **Mails** ✉️. Je résume tes e-mails, sans jamais rien envoyer ni supprimer.\n\n"
+        "Ici **Marcel**, pour tes mails ✉️. Je résume tes e-mails, sans jamais rien envoyer ni supprimer.\n\n"
         "Demande-moi « quoi de neuf dans mes mails ? », ou règle-moi : « ignore les newsletters de Fnac », "
         "« seulement les non lus ».",
     ),
@@ -177,7 +177,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
                  choices=(("off", "Désactivée"), ("quiet", "Discrète"), ("normal", "Normale"))),
          Setting("daily_limit", "Idées par jour", "int", 2, 0, 10),
          Setting("max_checks_per_day", "Vérifications par jour", "int", 6, 0, 50)),
-        "Je suis l'assistant **Veille** 💡. Je suis tes objectifs et je te préviens quand il y a du nouveau.\n\n"
+        "Ici **Marcel**, pour ta veille 💡. Je suis tes objectifs et je te préviens quand il y a du nouveau.\n\n"
         "Tu peux me dire par exemple : « sois plus discret », « une idée par jour maximum », "
         "« les promos ne m'intéressent pas ».",
     ),
@@ -191,7 +191,7 @@ MOODS = ("tree", "sleep", "laptop", "coffee", "reading", "music", "roadtrip", "d
          "hammock")
 MAX_CUSTOM, MAX_NAME_CHARS, MAX_MISSION_CHARS = 10, 40, 600
 CUSTOM_ROLE = (
-    "Tu es un assistant créé par l'utilisateur. Ta mission : {mission}\n"
+    "Ici, l'utilisateur t'a donné cette mission : {mission}\n"
     "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "
     "prépares avec ce que tu sais et ce que l'utilisateur te donne (son planning, son agenda s'il le partage). "
     "Tu peux changer ta mission (réglage « role ») et retenir ses consignes. Pour une capacité qui demande un "
@@ -203,7 +203,7 @@ def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> A
         assistant_id, name, "", mission[:120], CUSTOM_ROLE,
         (Setting("role", "Mission", "text", mission, max_chars=MAX_MISSION_CHARS,
                  help="ce que fait l'assistant"),),
-        f"Je suis **{name}**, ton nouvel assistant. Ma mission : {mission}\n\n"
+        f"Ici **Marcel**, pour « {name} ». Ma mission : {mission}\n\n"
         "Parle-moi pour m'améliorer : je te propose chaque changement, il ne s'applique que si tu appuies sur "
         "« Appliquer ».",
         mood=mood if mood in MOODS else "tree", custom=True)
@@ -220,7 +220,9 @@ FOLLOWUPS = """- Suites : termine chaque réponse par une ou deux questions cour
   ```
   L'app les affiche en boutons sous ta réponse. Pas de bloc si aucune suite n'a de sens."""
 
-PROPOSAL_PROMPT = """Tu es l'assistant « {name} » de Marcel, dans une conversation de l'app iPhone où l'utilisateur t'a choisi.
+PROPOSAL_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur. Dans cette conversation de l'app iPhone, il t'a
+ouvert sur le sujet « {name} » : c'est l'une des choses dont tu t'occupes pour lui, pas tout ce que tu es.
+Tu t'appelles toujours Marcel (jamais « l'assistant {name} »).
 Réponds en français, en tutoyant, court et clair.
 {role}
 

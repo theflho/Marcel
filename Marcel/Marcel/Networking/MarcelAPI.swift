@@ -262,6 +262,8 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
     var at: String
     /// "active" or "paused".
     var status: String
+    /// The event it waits for instead of the hour ("offre", "planning", "email", "email:sender"); "" = at the hour.
+    var trigger: String
     let conversationID: String
     /// "Chaque lundi à 8 h", written by the server.
     let schedule: String
@@ -270,9 +272,24 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
     var weekdays: Set<Int> { Set(days.split(separator: ",").compactMap { Int($0) }) }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, prompt, days, at, status, schedule
+        case id, title, prompt, days, at, status, schedule, trigger
         case conversationID = "conversation_id"
         case lastRun = "last_run"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        prompt = try container.decode(String.self, forKey: .prompt)
+        days = try container.decode(String.self, forKey: .days)
+        at = try container.decode(String.self, forKey: .at)
+        status = try container.decode(String.self, forKey: .status)
+        // Older servers don't send it.
+        trigger = try container.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+        conversationID = try container.decode(String.self, forKey: .conversationID)
+        schedule = try container.decode(String.self, forKey: .schedule)
+        lastRun = try container.decodeIfPresent(RoutineRun.self, forKey: .lastRun)
     }
 }
 
@@ -311,6 +328,7 @@ nonisolated struct RoutineChange: Encodable, Sendable {
     var days: String?
     var at: String?
     var status: String?
+    var trigger: String?
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -319,9 +337,10 @@ nonisolated struct RoutineChange: Encodable, Sendable {
         try container.encodeIfPresent(days, forKey: .days)
         try container.encodeIfPresent(at, forKey: .at)
         try container.encodeIfPresent(status, forKey: .status)
+        try container.encodeIfPresent(trigger, forKey: .trigger)
     }
 
-    private enum CodingKeys: String, CodingKey { case title, prompt, days, at, status }
+    private enum CodingKeys: String, CodingKey { case title, prompt, days, at, status, trigger }
 }
 
 /// How proactive Marcel is on a server (`/v1/proactive`), with today's counters.
@@ -431,6 +450,14 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
         let text: String
     }
 
+    /// Something it may read in its conversations (planning, offers…), on or off in its card.
+    struct Read: Decodable, Hashable, Sendable, Identifiable {
+        let key: String
+        let label: String
+        let on: Bool
+        var id: String { key }
+    }
+
     let id: String
     let name: String
     let emoji: String
@@ -443,6 +470,8 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     let mood: String?
     /// Made by the user from a conversation: it can be deleted.
     let custom: Bool?
+    /// A server not updated yet sends none.
+    let reads: [Read]?
 
     func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
     /// The server's choice, else the built-in one (a server not updated yet sends none).
@@ -693,6 +722,15 @@ private nonisolated struct AssistantUpdate: Encodable, Sendable {
     let instruction: String?
     let actions: [String]
     let mood: String?
+    let reads: [String]?
+}
+
+/// A bot's page (`/v1/assistants/{id}/page`): a table the server works out at each opening,
+/// without any model. Empty markdown for a bot that has none.
+nonisolated struct BotPage: Decodable, Hashable, Sendable {
+    let title: String
+    let markdown: String
+    let at: Date
 }
 
 nonisolated struct ProactiveChange: Encodable, Sendable {
@@ -1040,9 +1078,14 @@ nonisolated struct MarcelAPI: Sendable {
 
     /// Saves settings and/or an instruction; the server checks them against their bounds.
     func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil,
-                         actions: [String] = [], mood: String? = nil) async throws -> Assistant {
+                         actions: [String] = [], mood: String? = nil, reads: [String]? = nil) async throws -> Assistant {
         try await call("PATCH", "v1/assistants/\(id)",
-                       body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions, mood: mood))
+                       body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions, mood: mood,
+                                             reads: reads))
+    }
+
+    func botPage(id: String) async throws -> BotPage {
+        try await call("GET", "v1/assistants/\(id)/page")
     }
 
     func createAssistant(_ draft: AssistantDraft) async throws -> Assistant {

@@ -33,7 +33,7 @@ struct AssistantsView: View {
                         }
                     }
                 } footer: {
-                    Text("Pour en créer un, demande-le à Marcel (« crée-moi un assistant pour… »).")
+                    Text("Ce sont les sujets dont Marcel s'occupe pour toi. Pour en ajouter un, demande-le-lui (« crée-moi un bot pour… »).")
                 }
             }
             .overlay {
@@ -42,7 +42,7 @@ struct AssistantsView: View {
                                            description: Text("Ils arrivent quand le serveur répond."))
                 }
             }
-            .navigationTitle("Assistants")
+            .navigationTitle("Bots de Marcel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -101,6 +101,22 @@ private struct AssistantDetailView: View {
                     }
                 }
 
+                BotPageSection(assistantID: assistant.id)
+
+                if let reads = assistant.reads, !reads.isEmpty {
+                    Section {
+                        ForEach(reads) { read in
+                            Toggle(read.label, isOn: Binding(
+                                get: { read.on },
+                                set: { on in Task { await store.setRead(read.key, on, of: assistant) } }))
+                        }
+                    } header: {
+                        Text("Ce que Marcel lit ici")
+                    } footer: {
+                        Text("En lecture seule, dans les conversations de ce bot. Il n'y gagne aucun outil : il ne peut ni écrire, ni envoyer, ni rien supprimer.")
+                    }
+                }
+
                 if !assistant.settings.isEmpty {
                     Section {
                         ForEach(assistant.settings) { setting in
@@ -143,7 +159,7 @@ private struct AssistantDetailView: View {
                         }
                     }
                     if assistant.isCustom {
-                        Button("Supprimer l'assistant", role: .destructive) { confirmingDelete = true }
+                        Button("Supprimer le bot", role: .destructive) { confirmingDelete = true }
                     }
                 }
             }

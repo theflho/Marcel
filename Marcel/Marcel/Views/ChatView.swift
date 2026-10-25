@@ -208,7 +208,7 @@ struct ChatView: View {
                 Button("Nouvelle conversation", systemImage: "square.and.pencil") {
                     store.newConversation(assistant: store.conversation.assistantID)
                 }
-                Button(store.mode.map { "Fiche de \($0.name)" } ?? "Tous les bots", systemImage: "person.crop.circle") {
+                Button(store.mode == nil ? "Tous les bots" : "Fiche du bot", systemImage: "person.crop.circle") {
                     composerFocused = false
                     showAssistants = true
                 }
@@ -222,7 +222,8 @@ struct ChatView: View {
                                 .frame(height: 20)
                         } else {
                             HStack(spacing: 4) {
-                                Text(store.mode?.name ?? "Marcel")
+                                // Always Marcel: a bot is one of the things he takes care of, not someone else.
+                                Text("Marcel")
                                     .font(.subheadline.weight(.semibold))
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 9, weight: .bold))
@@ -230,7 +231,8 @@ struct ChatView: View {
                             }
                         }
                         // "en ligne" when idle; while replying, only what a running step does.
-                        if let line = store.isStreaming ? store.runningActivity : store.headerStatus?.text {
+                        if let line = store.isStreaming ? store.runningActivity
+                            : [store.mode?.name, store.headerStatus?.text].compactMap { $0 }.joined(separator: " · ").nilIfEmpty {
                             Text(line)
                                 .font(.caption2)
                                 .foregroundStyle(store.isStreaming ? Color.accentColor : .secondary)
@@ -246,7 +248,7 @@ struct ChatView: View {
             }
             .tint(.primary)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(store.mode?.name ?? "Marcel")\(store.headerStatus.map { ", \($0.text)" } ?? "")")
+            .accessibilityLabel("Marcel\(store.mode.map { ", \($0.name)" } ?? "")\(store.headerStatus.map { ", \($0.text)" } ?? "")")
             .accessibilityHint("Nouvelle conversation ou fiche du bot")
             .accessibilityAddTraits(.isHeader)
         }
@@ -510,4 +512,8 @@ struct TypingDots: View {
         }
         .accessibilityHidden(true)
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

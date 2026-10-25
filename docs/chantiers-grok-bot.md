@@ -93,13 +93,33 @@ apprise. Marcel n'a ni l'un ni l'autre (**manque**).
    lit le portail, champs masqués. « Je prends la main » l'écarte du portail jusqu'à ce qu'on la rende.
    **Reste** : piloter son navigateur depuis l'iPhone (toucher, taper), à faire seulement si utile.
 
+### Le reste, fait aussi le 25 octobre 2026
+
+- **Un seul Marcel.** Les bots ne sont plus des assistants à part : c'est toujours Marcel qui
+  parle (« Ici Marcel, pour tes offres RMA »), le titre de la conversation reste « Marcel » avec
+  le sujet en dessous, et la saisie dit « Demander à Marcel… ». RMA est un de ses sujets, pas tout
+  ce qu'il est : les bots RMA s'appellent Planning RMA, Pointage RMA et Offres RMA (ex-Recrutements),
+  et l'accueil de Marcel propose d'abord d'organiser la semaine.
+- Suggestions d'Offres RMA : seuls les exemples du dernier paragraphe de l'accueil deviennent des
+  boutons (plus « Accepter la mission », « Refuser », « Oui »).
+- Écran Routines › Quand : à une heure fixe, à chaque nouvelle offre RMA, quand le planning RMA
+  change, à chaque nouvel e-mail, ou à chaque e-mail d'un expéditeur.
+- Fiche d'un bot › « Ce que Marcel lit ici » : planning RMA, offres en attente, comptes rendus du
+  robot, objectifs, agenda de l'iPhone, chacun allumé ou non. En lecture seule, sans outil : la
+  conversation d'un bot va toujours au modèle seul. Les e-mails restent au seul bot Mails, et la
+  **recherche web n'y est pas** : elle demanderait un outil, donc un modèle avec outils à côté de
+  données lues ; à faire seulement via le Hermes restreint, jamais avec des e-mails.
+- Fiche d'un bot › « Page » : un tableau recalculé par le serveur à chaque ouverture, sans modèle
+  (`GET /v1/assistants/{id}/page`). « Afficher à l'ouverture du bot » le met en tête de chaque
+  nouvelle conversation : c'est l'utilisateur qui le choisit, Marcel n'épingle rien.
+
 ## Chantiers que Marcel peut faire lui-même
 
 Chacun se lance en envoyant le message tel quel à Marcel (mode Marcel). Il suit sa skill
 `marcel-code` : branche, modification, vérification, pull request, fusion seulement au vert. Pour
 un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 
-### 1. Routines sur événement — fait (reste : déclencheur choisi dans l'écran Routines)
+### 1. Routines sur événement — fait (déclencheur choisi aussi dans l'écran Routines)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 1. Ajoute aux routines un déclencheur en plus de
 > l'heure : « nouvelle offre RMA », « planning modifié » (lus par le robot RMA) et « e-mail d'un
@@ -114,7 +134,7 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > nouvelles, objectifs qui bougent, e-mails importants (en mode protégé), et seulement les décisions
 > à prendre, en oui / non. Le brief arrive dans sa propre conversation avec une notification.
 
-### 3. Assistants qui agissent, avec des règles « demande d'abord » (règles faites ; reste : outils en lecture par assistant)
+### 3. Assistants qui agissent, avec des règles « demande d'abord » — fait (sans recherche web, voir plus bas)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 3. Aujourd'hui un assistant n'a aucun outil.
 > Ajoute à chaque assistant une liste d'outils en lecture (planning, offres, robot, recherche web),
@@ -135,7 +155,7 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > minutes, ou répète la même étape trois fois, elle s'arrête et envoie une notification : ce qu'elle
 > essayait, où elle bloque, et une question simple. La réponse de l'utilisateur la relance.
 
-### 6. Pages qui se mettent à jour
+### 6. Pages qui se mettent à jour — fait (Planning RMA, Pointage RMA, Offres RMA, Veille)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 6. Un assistant peut épingler dans sa fiche une
 > « page » : un petit tableau Markdown (missions de la semaine, offres en attente, objectifs)

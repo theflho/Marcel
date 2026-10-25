@@ -20,7 +20,7 @@ struct ComposerView: View {
             if !store.pendingAttachments.isEmpty || store.isPreparingAttachment {
                 PendingAttachmentsStrip()
             }
-            TextField(store.emergencyActive ? "Arrêt d'urgence actif" : "Demander \(store.mode?.withArticle ?? "à Marcel")…",
+            TextField(store.emergencyActive ? "Arrêt d'urgence actif" : "Demander à Marcel…",
                       text: $store.draft, axis: .vertical)
                 .lineLimit(1...8)
                 .focused(focused)

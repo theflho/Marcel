@@ -490,6 +490,18 @@ final class ChatStore {
         conversation.assistantID.flatMap { id in assistants.first { $0.id == id } }
     }
 
+    /// What a bot may read, switched on or off in its card.
+    func setRead(_ key: String, _ on: Bool, of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        var reads = Set((assistant.reads ?? []).filter(\.on).map(\.key))
+        if on { reads.insert(key) } else { reads.remove(key) }
+        do {
+            replace(try await api.updateAssistant(id: assistant.id, changes: [:], reads: reads.sorted()))
+        } catch {
+            report("Lecture non changée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
     /// A setting changed by hand in the Assistants screen: checked and saved by the server.
     func updateSetting(_ key: String, to value: SettingValue, of assistant: Assistant) async {
         guard !emergencyActive, let api = settings.api else { return }

@@ -197,6 +197,27 @@ private struct RoutineEditor: View {
     @State private var time = Calendar.current.date(from: DateComponents(hour: 8, minute: 0)) ?? .now
     @State private var saving = false
     @State private var runs: [RoutineRun] = []
+    @State private var when = When.hour
+    @State private var sender = ""
+
+    /// What starts it: the hour, or an event the server watches.
+    private enum When: String, CaseIterable {
+        case hour = "", offer = "offre", planning = "planning", mail = "email", sender = "email:"
+
+        var label: String {
+            switch self {
+            case .hour: "À une heure fixe"
+            case .offer: "À chaque nouvelle offre RMA"
+            case .planning: "Quand le planning RMA change"
+            case .mail: "À chaque nouvel e-mail"
+            case .sender: "À chaque e-mail d'un expéditeur"
+            }
+        }
+    }
+
+    private var trigger: String {
+        when == .sender ? When.sender.rawValue + sender.trimmingCharacters(in: .whitespaces) : when.rawValue
+    }
 
     private static let dayLetters = ["L", "M", "M", "J", "V", "S", "D"]
     private static let dayNames = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
@@ -213,6 +234,25 @@ private struct RoutineEditor: View {
                     Text("Routine")
                 }
                 Section {
+                    Picker("Déclencheur", selection: $when) {
+                        ForEach(When.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }
+                    if when == .sender {
+                        TextField("Adresse ou nom de domaine, ex. rma.fr", text: $sender)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(.emailAddress)
+                    }
+                } header: {
+                    Text("Quand")
+                } footer: {
+                    if when == .mail || when == .sender {
+                        Text("Le serveur regarde tes e-mails toutes les 5 minutes. Ils sont lus par un modèle sans outil : il ne peut rien faire, seulement te prévenir. Si rien ne compte, tu n'es pas dérangé.")
+                    } else if when != .hour {
+                        Text("Après chaque lecture du robot RMA qui trouve du nouveau.")
+                    }
+                }
+                if when == .hour { Section {
                     HStack(spacing: 6) {
                         ForEach(0..<7, id: \.self) { day in
                             let on = days.contains(day)
@@ -232,10 +272,10 @@ private struct RoutineEditor: View {
                     }
                     DatePicker("Heure", selection: $time, displayedComponents: .hourAndMinute)
                 } header: {
-                    Text("Quand")
+                    Text("Jours et heure")
                 } footer: {
                     Text(days.isEmpty ? "Aucun jour choisi : tous les jours." : "Heure du serveur. Si le serveur était éteint, la routine part à son retour, jusqu'à 3 h plus tard.")
-                }
+                } }
                 if !runs.isEmpty {
                     Section("Derniers passages") {
                         ForEach(runs.prefix(5)) { run in
@@ -265,14 +305,16 @@ private struct RoutineEditor: View {
                             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
                             days: days.sorted().map(String.init).joined(separator: ","),
-                            at: String(format: "%02d:%02d", parts.hour ?? 8, parts.minute ?? 0))
+                            at: String(format: "%02d:%02d", parts.hour ?? 8, parts.minute ?? 0),
+                            trigger: trigger)
                         Task {
                             await onSave(change)
                             dismiss()
                         }
                     }
                     .disabled(title.trimmingCharacters(in: .whitespaces).count < 2
-                              || prompt.trimmingCharacters(in: .whitespaces).count < 3 || saving)
+                              || prompt.trimmingCharacters(in: .whitespaces).count < 3 || saving
+                              || (when == .sender && sender.trimmingCharacters(in: .whitespaces).count < 2))
                 }
             }
             .onAppear {
@@ -280,6 +322,12 @@ private struct RoutineEditor: View {
                 title = routine.title
                 prompt = routine.prompt
                 days = routine.weekdays
+                if routine.trigger.hasPrefix(When.sender.rawValue) {
+                    when = .sender
+                    sender = String(routine.trigger.dropFirst(When.sender.rawValue.count))
+                } else {
+                    when = When(rawValue: routine.trigger) ?? .hour
+                }
                 let parts = routine.at.split(separator: ":").compactMap { Int($0) }
                 if parts.count == 2, let date = Calendar.current.date(from: DateComponents(hour: parts[0], minute: parts[1])) {
                     time = date

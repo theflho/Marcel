@@ -4,25 +4,17 @@ import SwiftUI
 // the menu (or "/planning"). A conversation stays with the bot it was started with.
 
 extension Assistant {
-    /// The examples its welcome gives (« lis le planning à 7 h »…), as suggestions to touch.
+    /// The examples its welcome gives (« lis le planning à 7 h »…), as suggestions to touch. Only
+    /// from its last paragraph ("Demande-moi…"): the ones before name buttons (« Refuser »).
     var suggestions: [String] {
         var found: [String] = []
-        var rest = Substring(welcome)
+        var rest = Substring(welcome.components(separatedBy: "\n\n").last ?? welcome)
         while let open = rest.range(of: "«"), let close = rest[open.upperBound...].range(of: "»") {
             let quote = rest[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
             if quote.count > 2, quote.count <= 60 { found.append(quote.prefix(1).uppercased() + quote.dropFirst()) }
             rest = rest[close.upperBound...]
         }
         return Array(found.prefix(3))
-    }
-
-    /// "au Planning", "aux Mails", "à Veille"…
-    var withArticle: String {
-        switch id {
-        case "planning", "pointage": "au \(name)"
-        case "recrutements", "mails": "aux \(name)"
-        default: "à \(name)"
-        }
     }
 }
 
@@ -63,7 +55,7 @@ extension ChatStore {
 struct WelcomeView: View {
     @Environment(ChatStore.self) private var store
 
-    private static let marcelSuggestions = ["Mes missions de la semaine", "Résume mes derniers e-mails",
+    private static let marcelSuggestions = ["Organise ma semaine", "Résume mes derniers e-mails",
                                             "Fais-moi un brief chaque matin"]
 
     private var greeting: String {
@@ -75,9 +67,9 @@ struct WelcomeView: View {
         VStack(spacing: 16) {
             VStack(spacing: 8) {
                 MarcelAvatar(size: 56, mood: store.modeMood, cutout: true)
-                Text(mode.map { "\(greeting) Ici \($0.name)." } ?? greeting)
+                Text("\(greeting) Ici Marcel.")
                     .font(.title3.weight(.semibold))
-                Text(mode?.summary ?? "Qu'est-ce que je fais pour toi ?")
+                Text(mode.map { "\($0.name) : \($0.summary)" } ?? "Qu'est-ce que je fais pour toi ?")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -109,6 +101,10 @@ struct WelcomeView: View {
                 }
             }
             .padding(.horizontal)
+
+            if let mode {
+                BotPageWelcome(assistantID: mode.id)
+            }
 
             if mode?.id == "recrutements" {
                 OffersList(offers: store.offers)

@@ -58,7 +58,7 @@ def test_assistant_relance_comes_back_in_its_conversation(tmp_path):
     text = ('C\'est noté.\n\n```routine\n{"titre": "Relance", "consigne": "Demande si le planning va", '
             '"jours": ["mardi"], "heure": "09:00", "une_fois": true}\n```')
     card = apply_blocks(request, text)[0]
-    assert card["status"] == "done" and card["detail"].startswith("Planning te relancera ici : une fois, mardi")
+    assert card["status"] == "done" and card["detail"].startswith("Je te relancerai ici : une fois, mardi")
     from app.main import routines
     routine = routines.get(card["undo"]["id"])
     assert routine.assistant == "planning" and routine.once
@@ -251,3 +251,42 @@ def test_robot_screen_is_shown_and_hands_held():
     assert client.get("/v1/planning/config", headers=key).json()["hands"]
     client.post("/v1/robot/hands", headers=AUTH, json={"hold": False})
     client.post("/v1/robot/screen/end", headers=key)
+
+
+def test_routine_trigger_chosen_in_the_app():
+    made = client.post("/v1/routines", headers=AUTH,
+                       json={"title": "E-mail de RMA", "prompt": "Dis-moi si c'est urgent", "trigger": "email:rma.fr"})
+    assert made.status_code == 200 and made.json()["trigger"] == "email:rma.fr"
+    assert made.json()["schedule"] == "À chaque e-mail de rma.fr"
+    routine_id = made.json()["id"]
+    try:
+        assert client.patch(f"/v1/routines/{routine_id}", headers=AUTH, json={"trigger": "n'importe"}).status_code == 400
+        back = client.patch(f"/v1/routines/{routine_id}", headers=AUTH, json={"trigger": ""})
+        assert back.json()["trigger"] == "" and back.json()["schedule"].startswith("Chaque jour")
+        assert client.post("/v1/routines", headers=AUTH,
+                           json={"title": "Faux", "prompt": "rien", "trigger": "meteo"}).status_code == 400
+    finally:
+        client.delete(f"/v1/routines/{routine_id}", headers=AUTH)
+
+
+def test_bot_reads_and_page():
+    from app import main
+
+    saved = main.assistants.state("reads", {})
+    try:
+        bots = {a["id"]: a for a in client.get("/v1/assistants", headers=AUTH).json()}
+        reads = {r["key"]: r["on"] for r in bots["veille"]["reads"]}
+        assert reads["objectifs"] and not reads["planning"]
+        changed = client.patch("/v1/assistants/veille", headers=AUTH, json={"reads": ["planning"]})
+        assert {r["key"] for r in changed.json()["reads"] if r["on"]} == {"planning"}
+        assert client.patch("/v1/assistants/veille", headers=AUTH, json={"reads": ["mails"]}).status_code == 400
+        page = client.get("/v1/assistants/planning/page", headers=AUTH).json()
+        assert page["title"] == "Missions des 7 prochains jours" and page["markdown"]
+        assert client.get("/v1/assistants/mails/page", headers=AUTH).json()["markdown"] == ""
+    finally:
+        main.assistants.set_state("reads", saved)
+
+
+def test_bots_speak_as_marcel():
+    for bot in client.get("/v1/assistants", headers=AUTH).json():
+        assert bot["welcome"].startswith("Ici **Marcel**"), bot["id"]

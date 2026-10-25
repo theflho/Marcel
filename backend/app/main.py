@@ -37,7 +37,7 @@ from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries, words
 from .missions import DONE, MissionError, MissionStore, valid_id
 from .offers import OfferStore
 from .planning import PlanningStore
-from .routines import RoutineStore, days_from_names, valid_time
+from .routines import RoutineStore, days_from_names, valid_time, valid_trigger
 from .semantic import LOCAL_MODEL, Embedder, SemanticIndex, digest
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
@@ -545,18 +545,15 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
     assistant = assistants.find(request.assistant)
     parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id)),
              app_context(bool(request.device_context)), note]
-    if assistant.id in ("planning", "pointage"):
-        parts.append(planning_note())
-        if assistant.id == "planning":
-            parts.append(robot_note())
-    elif assistant.id == "recrutements":
-        parts += [planning_note(), offers.context(open_offers()), robot_note(), device]
-    elif assistant.id == "veille":
-        parts.append(goals.context())
-    elif assistant.id == "mails":
-        parts += [device, mail]
-    elif assistant.custom:
-        parts += [planning_note(), device]
+    # What the user lets it read (its card › « Ce que Marcel lit ici »), all read-only data of the
+    # server; the e-mails stay with the Mails bot alone.
+    picked = reads_of(assistant)
+    parts += [planning_note() if "planning" in picked else "",
+              offers.context(open_offers()) if "offres" in picked else "",
+              robot_note() if "robot" in picked else "",
+              goals.context() if "objectifs" in picked else "",
+              device if "agenda" in picked else "",
+              mail if assistant.id == "mails" else ""]
     note = "\n\n".join(filter(None, parts))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
@@ -583,7 +580,9 @@ except ZoneInfoNotFoundError:
     USER_TZ = None
 
 APP_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur, et tu lui parles dans l'app iPhone
-« Marcel » (son propre serveur, son agent Hermes, le modèle choisi dans l'app). Réponds en français, en
+« Marcel » (son propre serveur, son agent Hermes, le modèle choisi dans l'app). Tu l'aides pour tout
+(sa vie, ses projets, ses e-mails, ses idées) ; son travail chez RMA n'est qu'une des choses dont tu
+t'occupes, pas ton seul rôle. Réponds en français, en
 tutoyant, de façon courte et lisible sur un téléphone ; le Markdown s'affiche (titres, listes,
 tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'inventer :
 - Mémoire : tu retiens tout seul ce qui dure (préférences, projets) après chaque échange ; l'utilisateur
@@ -621,10 +620,10 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   sans outil qui agit ; son résultat arrive dans sa propre conversation, avec une notification
   (Réglages › Routines). Dans une conversation avec un assistant, c'est lui qui relance
   l'utilisateur, dans cette conversation même (une fois ou chaque semaine).
-- Commandes « / » : en tapant « / » dans l'app, l'utilisateur ouvre un bot (/planning…), une
+- Commandes « / » : en tapant « / » dans l'app, l'utilisateur ouvre un bot (/mails, /offresrma…), une
   nouvelle conversation (/nouveau) ou une skill (/code, /donnees, /routine, /objectif, /web).
-- Assistants : à côté de toi, des assistants (Planning, Pointage, Recrutements, Mails, Veille) sont
-  des bots, comme dans Grok Bot : chacun a ses propres conversations, ouvertes depuis le menu de
+- Bots : ce sont tes sujets à toi, Marcel, comme dans Grok Bot (Planning RMA, Pointage RMA, Offres RMA,
+  Mails, Veille et ceux qu'il crée) : chacun a ses propres conversations, toujours avec toi, ouvertes depuis le menu de
   l'app (ou « /planning »), et il peut en créer. S'il te demande de créer un assistant (un
   « bot »), crée-le en terminant ta réponse par ce bloc, et rien après sauf le bloc suivi :
   ```assistant
@@ -844,7 +843,7 @@ def apply_blocks(request: ChatRequest, text: str, only=lambda kind: True, at: in
                     day, _, hour = when.partition(" à ")
                     day = day.removeprefix("Chaque ").lower()
                     when = f"une fois, {'' if day == 'jour' else day + ' '}à {hour}"
-                card["detail"] = (f"{bot.name} te relancera ici : {when}" if bot
+                card["detail"] = (f"Je te relancerai ici : {when}" if bot
                                   else f"« {routine.title} » : {when}")
                 card["undo"] = {"kind": "routine", "id": routine.id}
             else:
@@ -1858,7 +1857,7 @@ Routine « {title} » :
 {prompt}"""
 
 
-RELANCE_PROMPT = """Tu es l'assistant « {name} » de Marcel ({summary}). C'est toi qui relances
+RELANCE_PROMPT = """Tu es Marcel, dans la conversation « {name} » ({summary}). C'est toi qui relances
 l'utilisateur, dans sa conversation avec toi : parle-lui directement, comme un message qui arrive
 (« Coucou, … »), et finis par une question simple à laquelle il peut répondre."""
 
@@ -1868,6 +1867,8 @@ class RoutineCreate(BaseModel):
     prompt: str = Field(min_length=3, max_length=1000)
     days: str = Field(default="", max_length=20, pattern=r"^[0-6,]*$")
     at: str = Field(default="08:00", pattern=r"^\d{1,2}:\d{2}$")
+    # An event instead of the hour ("offre", "planning", "email", "email:sender"); "" = at the hour.
+    trigger: str = Field(default="", max_length=130)
 
 
 class RoutineUpdate(BaseModel):
@@ -1876,6 +1877,7 @@ class RoutineUpdate(BaseModel):
     days: str | None = Field(default=None, max_length=20, pattern=r"^[0-6,]*$")
     at: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
     status: Literal["active", "paused"] | None = None
+    trigger: str | None = Field(default=None, max_length=130)
 
 
 def find_routine(routine_id: str):
@@ -2087,7 +2089,7 @@ async def list_routines() -> list[dict]:
 @app.post("/v1/routines", dependencies=[Depends(require_token)])
 async def add_routine(body: RoutineCreate) -> dict:
     try:
-        return routine_public(routines.add(body.title, body.prompt, body.days, body.at))
+        return routine_public(routines.add(body.title, body.prompt, body.days, body.at, trigger=body.trigger.strip()))
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -2095,8 +2097,13 @@ async def add_routine(body: RoutineCreate) -> dict:
 @app.patch("/v1/routines/{routine_id}", dependencies=[Depends(require_token)])
 async def update_routine(routine_id: str, body: RoutineUpdate) -> dict:
     find_routine(routine_id)
+    changes = body.model_dump(exclude_none=True)
+    if "trigger" in changes:
+        changes["trigger"] = changes["trigger"].strip()
+        if changes["trigger"] and not valid_trigger(changes["trigger"]):
+            raise HTTPException(400, f"déclencheur inconnu : {changes['trigger']}")
     try:
-        return routine_public(routines.update(routine_id, **body.model_dump(exclude_none=True)))
+        return routine_public(routines.update(routine_id, **changes))
     except ValueError as error:
         raise HTTPException(400, str(error)) from None
 
@@ -2267,7 +2274,7 @@ async def robot_hands(body: Hands) -> dict:
 
 
 def robot_note() -> str:
-    """The robot's last readings, for the Planning and Recrutements assistants."""
+    """The robot's last readings, for the Planning RMA and Offres RMA bots."""
     reports = assistants.state("reports", [])
     lines = ["État du robot RMA (lit le portail chaque jour à l'heure du Planning, ou sur demande) :"]
     if assistants.state("hands", False):
@@ -2460,6 +2467,8 @@ async def get_offers() -> dict:
 
 class AssistantUpdate(BaseModel):
     changes: dict = Field(default_factory=dict)
+    # What it may read, among READS (its card › « Ce que Marcel lit ici »).
+    reads: list[str] | None = Field(default=None, max_length=10)
     instruction: str | None = Field(default=None, max_length=1000)
     # Something to do right away, among the assistant's actions ("relire").
     actions: list[str] = Field(default_factory=list, max_length=3)
@@ -2512,6 +2521,65 @@ def assistant_status(assistant_id: str) -> str:
     return "Créé par toi" + (f" · {notes} consigne(s)" if notes else "")
 
 
+# What a bot may read in its conversations: data the server already has, read-only, never an
+# e-mail (outside content stays with the Mails bot) and never a tool.
+READS = {"planning": "Planning RMA", "offres": "Offres RMA en attente", "robot": "Comptes rendus du robot RMA",
+         "objectifs": "Objectifs suivis", "agenda": "Agenda de l'iPhone (s'il le partage)"}
+DEFAULT_READS = {"planning": ["planning", "robot"], "pointage": ["planning"],
+                 "recrutements": ["planning", "offres", "robot", "agenda"], "mails": ["agenda"],
+                 "veille": ["objectifs"]}
+
+
+def reads_of(assistant: bots.Assistant) -> list[str]:
+    chosen = assistants.state("reads", {}).get(assistant.id)
+    if chosen is None:
+        chosen = DEFAULT_READS.get(assistant.id, ["planning", "agenda"])
+    return [r for r in chosen if r in READS]
+
+
+def set_reads(assistant: bots.Assistant, reads: list[str]) -> None:
+    if unknown := [r for r in reads if r not in READS]:
+        raise ValueError(f"Lecture inconnue : {', '.join(unknown)}.")
+    every = assistants.state("reads", {})
+    every[assistant.id] = [r for r in READS if r in reads]
+    assistants.set_state("reads", every)
+
+
+def page_of(assistant: bots.Assistant) -> dict:
+    """Its page: a table worked out by the server at each opening, without any model, so it is
+    always the latest and costs nothing. Empty for a bot that has none."""
+    now = time.time()
+    rows: list[list[str]] = []
+    if assistant.id in ("planning", "pointage"):
+        days = 7 if assistant.id == "planning" else 1
+        ignore = bots.words(assistants.value("planning", "ignore"))
+        title = "Missions des 7 prochains jours" if days == 7 else "Missions d'aujourd'hui"
+        until = now + days * 86_400 if days == 7 else datetime.fromtimestamp(now, USER_TZ).replace(
+            hour=23, minute=59, second=59).timestamp()
+        head = ["Jour", "Heures", "Magasin", "Opération"]
+        for m in planning.list(now - 3600, until, ignore):
+            start, end = (datetime.fromtimestamp(m[k], USER_TZ) for k in ("start_at", "end_at"))
+            rows.append([f"{start:%d/%m}", f"{start:%H:%M}-{end:%H:%M}", m["store"], m["kind"]])
+        empty = "Aucune mission à venir." if days == 7 else "Pas de mission aujourd'hui."
+    elif assistant.id == "recrutements":
+        title, head, empty = "Offres en attente", ["Jour", "Magasin", "Opération", "Conflit"], "Aucune offre en attente."
+        for o in open_offers():
+            if o["status"] == "open" and not o["past"]:
+                rows.append([f"{datetime.fromtimestamp(o['day'], USER_TZ):%d/%m}", o["store"], o["kind"],
+                             "oui" if o["conflict"] or o["portal_conflict"] else "—"])
+    elif assistant.id == "veille":
+        title, head, empty = "Objectifs suivis", ["Objectif", "Rythme", "Dernier coup d'œil"], "Aucun objectif suivi."
+        names = {"hourly": "chaque heure", "daily": "chaque jour", "weekly": "chaque semaine", "manual": "à la main"}
+        for g in goals.list(status="active"):
+            rows.append([g.title, names.get(g.cadence, g.cadence), local_time(g.last_run_at) if g.last_run_at else "—"])
+    else:
+        return {"title": "", "markdown": "", "at": now}
+    clean = lambda cell: str(cell).replace("|", "/").replace("\n", " ")  # noqa: E731
+    table = "\n".join(["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+                      + ["| " + " | ".join(map(clean, row)) + " |" for row in rows])
+    return {"title": title, "markdown": table if rows else empty, "at": now}
+
+
 def assistant_public(assistant: bots.Assistant) -> dict:
     values = assistant_values(assistant.id)
     summary = values["role"] if assistant.custom else assistant.summary
@@ -2519,7 +2587,8 @@ def assistant_public(assistant: bots.Assistant) -> dict:
             "mood": assistants.mood(assistant), "custom": assistant.custom,
             "welcome": assistant.welcome, "status": assistant_status(assistant.id),
             "settings": [s.public(values[s.key]) for s in assistant.settings],
-            "instructions": assistants.instructions(assistant.id)}
+            "instructions": assistants.instructions(assistant.id),
+            "reads": [{"key": k, "label": label, "on": k in reads_of(assistant)} for k, label in READS.items()]}
 
 
 def find_assistant(assistant_id: str) -> bots.Assistant:
@@ -2549,6 +2618,11 @@ async def create_assistant(body: AssistantCreate) -> dict:
         raise HTTPException(400, str(error)) from error
 
 
+@app.get("/v1/assistants/{assistant_id}/page", dependencies=[Depends(require_token)])
+async def assistant_page(assistant_id: str) -> dict:
+    return page_of(find_assistant(assistant_id))
+
+
 @app.delete("/v1/assistants/{assistant_id}", dependencies=[Depends(require_token)])
 async def delete_assistant(assistant_id: str) -> dict:
     assistant = find_assistant(assistant_id)
@@ -2563,6 +2637,8 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
     """The user applied a proposal (or changed a setting by hand): checked, then saved."""
     assistant = find_assistant(assistant_id)
     try:
+        if body.reads is not None:
+            set_reads(assistant, body.reads)
         apply_update(assistant, body.changes, body.instruction or "", body.actions, body.mood)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error

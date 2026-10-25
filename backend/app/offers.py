@@ -161,7 +161,7 @@ class OfferStore:
         return last
 
     def context(self, offers: list[dict]) -> str:
-        """The offers with their conflicts, for the Recrutements assistant's note."""
+        """The offers with their conflicts, for the Offres RMA bot's note."""
         waiting = [o for o in offers if o["status"] == OPEN]
         if not waiting:
             return "Aucune offre de recrutement en attente de réponse."
