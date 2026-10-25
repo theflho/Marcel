@@ -80,7 +80,7 @@ enum BackgroundRefresh {
             notified.insert("mission-\(missionID)")
         }
 
-        // New recruitment offers, if the user asked to hear of them (Recrutements assistant).
+        // New recruitment offers, if the user asked to hear of them (Offres RMA bot).
         if let list = try? await api.offers(), list.notify {
             for offer in list.offers.filter({ $0.isWaiting && !$0.past && !notified.contains("offer-\($0.id)") }).prefix(5) {
                 let day = offer.day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))

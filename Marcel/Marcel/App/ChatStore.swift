@@ -70,7 +70,7 @@ final class ChatStore {
     private(set) var unseenIdeas = 0
     /// Marcel's assistants (Planning, Pointage, Mails, Veille): modes a conversation can talk to.
     private(set) var assistants: [Assistant] = []
-    /// Recruitment offers waiting for an answer, shown in the Recrutements assistant's conversation.
+    /// Recruitment offers waiting for an answer, shown in the Offres RMA bot's conversations.
     private(set) var offers: [Offer] = []
     /// The work planning, to show each offer's week and clashes.
     private(set) var planningMissions: [PlanningMission] = []

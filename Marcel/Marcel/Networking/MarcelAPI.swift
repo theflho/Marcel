@@ -540,7 +540,7 @@ private nonisolated struct OfferAnswerBody: Encodable, Sendable {
 }
 
 nonisolated struct OfferList: Decodable, Sendable {
-    /// The user wants a notification for each new offer (Recrutements assistant).
+    /// The user wants a notification for each new offer (Offres RMA bot).
     let notify: Bool
     let offers: [Offer]
 }

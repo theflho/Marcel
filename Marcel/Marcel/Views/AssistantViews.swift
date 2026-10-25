@@ -16,7 +16,7 @@ struct OffersList: View {
                 OfferCard(offer: offer, missions: store.planningMissions)
             }
             Link(destination: Offer.portalURL) {
-                Label("Ouvrir les recrutements dans le portail", systemImage: "arrow.up.right.square")
+                Label("Ouvrir les offres dans le portail RMA", systemImage: "arrow.up.right.square")
                     .font(.footnote.weight(.semibold))
             }
         }
