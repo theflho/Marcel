@@ -42,11 +42,15 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     var status: String?
     /// For what Marcel did himself (a setting, a goal…): what takes it back ("Annuler").
     var undo: ActionUndo?
+    /// A web search a bot asks for: the exact question, sent only once the user validates it.
+    var query: String?
 
     /// Something Marcel carried out at the end of his reply, shown as its result.
     var isResult: Bool { id.hasPrefix("auto-") }
     /// Waits for "Valider" under an "ask first" rule.
     var awaitsApproval: Bool { id.hasPrefix("auto-ask-") && status == "cancelled" }
+    /// The approval sends the question as a new message, which runs the isolated search.
+    var isSearch: Bool { id.hasPrefix("auto-ask-recherche") }
 }
 
 nonisolated struct RobotScreen: Decodable, Sendable {
@@ -67,6 +71,23 @@ private nonisolated struct RobotHands: Decodable, Sendable {
 nonisolated struct ActionRules: Decodable, Sendable {
     var rules: [String: String]
     let labels: [String: String]
+    /// Words a web search question must never carry (name, town…), set by the user.
+    var privateWords: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case rules, labels
+        case privateWords = "private_words"
+    }
+}
+
+private nonisolated struct RulesBody: Encodable {
+    let rules: [String: String]
+    let privateWords: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case rules
+        case privateWords = "private_words"
+    }
 }
 
 /// How to take back what Marcel did himself, sent by the server with its card.
@@ -548,7 +569,7 @@ nonisolated struct OfferList: Decodable, Sendable {
 /// Blocks the server carries out and the action cards already report: hidden from the text.
 nonisolated enum AutoBlocks {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: "```(objectif|routine|demande-code|suivi)[\\s\\S]*?```", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "```(objectif|routine|demande-code|suivi|recherche)[\\s\\S]*?```", with: "", options: .regularExpression)
             // The follow-ups come last: hidden while they are still being written too.
             .replacingOccurrences(of: "```suivi[\\s\\S]*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -868,7 +889,7 @@ nonisolated struct MarcelAPI: Sendable {
     /// Starts generating the reply on the server. Returns as soon as the mission exists.
     func startMission(conversationID: UUID, messages: [ChatMessage], model: String?,
                       deviceContext: String? = nil, assistant: String? = nil,
-                      isPrivate: Bool = false, style: String = "") async throws -> MissionInfo {
+                      isPrivate: Bool = false, style: String = "", search: String = "") async throws -> MissionInfo {
         var request = URLRequest(url: baseURL.appending(path: "v1/missions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -883,7 +904,8 @@ nonisolated struct MarcelAPI: Sendable {
             deviceContext: deviceContext,
             assistant: assistant,
             isPrivate: isPrivate,
-            style: style
+            style: style,
+            search: search
         ))
         let (data, response) = try await Self.session.data(for: request)
         try Self.check(response, body: data)
@@ -1020,8 +1042,8 @@ nonisolated struct MarcelAPI: Sendable {
         try await call("GET", "v1/rules")
     }
 
-    func setRules(_ rules: [String: String]) async throws -> ActionRules {
-        try await call("PUT", "v1/rules", body: ["rules": rules])
+    func setRules(_ rules: [String: String], privateWords: [String]? = nil) async throws -> ActionRules {
+        try await call("PUT", "v1/rules", body: RulesBody(rules: rules, privateWords: privateWords))
     }
 
     /// "Valider" on what waited for the user's go-ahead. Returns the card, now done (with "Annuler").
@@ -1264,12 +1286,14 @@ private nonisolated struct ChatRequest: Encodable {
     /// No memory read nor learnt, the reply never searched again.
     let isPrivate: Bool
     let style: String
+    /// A web search the user validated in a bot's conversation.
+    let search: String
 
     enum CodingKeys: String, CodingKey {
         case conversationId = "conversation_id"
         case deviceContext = "device_context"
         case isPrivate = "private"
-        case messages, model, assistant, style
+        case messages, model, assistant, style, search
     }
 }
 

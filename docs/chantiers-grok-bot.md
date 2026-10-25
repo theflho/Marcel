@@ -108,10 +108,37 @@ apprise. Marcel n'a ni l'un ni l'autre (**manque**).
   robot, objectifs, agenda de l'iPhone, chacun allumé ou non. En lecture seule, sans outil : la
   conversation d'un bot va toujours au modèle seul. Les e-mails restent au seul bot Mails, et la
   **recherche web n'y est pas** : elle demanderait un outil, donc un modèle avec outils à côté de
-  données lues ; à faire seulement via le Hermes restreint, jamais avec des e-mails.
+  données lues ; à faire seulement via le Hermes restreint, jamais avec des e-mails. → Fait
+  autrement, voir « Recherche web isolée » plus bas.
 - Fiche d'un bot › « Page » : un tableau recalculé par le serveur à chaque ouverture, sans modèle
   (`GET /v1/assistants/{id}/page`). « Afficher à l'ouverture du bot » le met en tête de chaque
   nouvelle conversation : c'est l'utilisateur qui le choisit, Marcel n'épingle rien.
+
+### Recherche web isolée des bots (25 octobre 2026)
+
+Fiche d'un bot › « Recherche web isolée » (jamais pour Mails). Le bot qui connaît l'utilisateur
+n'a aucun outil : il écrit seulement une question (bloc `recherche`). Ensuite :
+
+1. **Filtre** : le serveur bloque la question si elle contient une adresse e-mail, un téléphone,
+   un IBAN, une adresse postale, un des « mots privés » (Réglages › Règles) ou un nom que la
+   mémoire de Marcel associe à qui est l'utilisateur.
+2. **« Demander » par défaut** (Règles › Chercher sur le web) : la carte montre la question exacte
+   et attend « Valider ». L'app l'envoie alors comme message, et le serveur la filtre à nouveau.
+3. **Chercheur sans mémoire, et sans IA** : du code (`app/websearch.py`) envoie la question à
+   DuckDuckGo et lit le texte des 3 premières pages. Il ne connaît rien d'autre, ne suit aucune
+   consigne, n'ouvre que des adresses publiques (adresses locales et privées refusées, même après
+   une redirection). Le Hermes restreint n'est pas utilisé : il peut relire ses anciennes sessions,
+   qui contiennent des données de l'utilisateur.
+4. **Une seule recherche** par message : si la réponse en propose une autre, elle attend
+   « Valider », quelle que soit la règle.
+5. **Liens nettoyés** : les images deviennent du texte (l'app n'en charge aucune), les liens perdent
+   leur partie après « ? » et « # », et un lien qui contient une donnée personnelle est retiré. La
+   réponse n'est envoyée à l'app qu'une fois nettoyée.
+
+Limites : une reformulation (« le magasin près de chez moi ») passe le filtre, d'où « Valider » ;
+une page peut mentir ou donner un lien vers un faux site ; le moteur voit la question. Les pages ne
+vont qu'au modèle direct, sans outil : si le serveur n'en a pas (`MARCEL_MEMORY_LLM_URL` absent),
+la recherche reste coupée.
 
 ## Chantiers que Marcel peut faire lui-même
 

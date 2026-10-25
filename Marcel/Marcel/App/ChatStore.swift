@@ -36,6 +36,8 @@ final class ChatStore {
     private let cache = ConversationCache()
     /// One task per conversation following its reply, so switching conversations never cuts an answer.
     private var streamTasks: [UUID: Task<Void, Never>] = [:]
+    /// The web search question the next message carries, once the user validated it.
+    @ObservationIgnored private var pendingSearch: String?
 
     private(set) var conversations: [Conversation]
     private(set) var projects: [Project]
@@ -210,6 +212,25 @@ final class ChatStore {
                 message.content.filter { !"*#`>_".contains($0) }
                     .split(whereSeparator: \.isWhitespace).joined(separator: " ")
             }
+    }
+
+    /// A web search a bot asked for, validated: sent as the user's message with the exact question,
+    /// which the server checks again and searches with code that knows nothing else.
+    private func approveSearch(_ action: MissionAction, in messageID: UUID) {
+        guard let question = action.query, !question.isEmpty, !isStreaming,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
+              conversation.id == currentID else {
+            report("Ouvre la conversation du bot et attends qu'il ait fini pour valider la recherche.", action: nil)
+            return
+        }
+        updateMessage(messageID, in: conversation.id) { message in
+            if let index = message.actions.firstIndex(where: { $0.id == action.id }) {
+                message.actions[index].status = "done"
+                message.actions[index].detail = "« \(question) » : validée"
+            }
+        }
+        pendingSearch = question
+        sendSuggestion("Cherche : « \(question) »")
     }
 
     /// A suggestion touched (on the welcome or under a reply): sent at once as the user's message.
@@ -631,6 +652,9 @@ final class ChatStore {
 
     /// The user approved what waited under an "ask first" rule: the server does it now.
     func approve(_ action: MissionAction, in messageID: UUID) async {
+        if action.isSearch {
+            return approveSearch(action, in: messageID)
+        }
         guard !emergencyActive,
               let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
               let reply = message(messageID, in: conversation.id), let missionID = reply.missionID,
@@ -897,6 +921,8 @@ final class ChatStore {
         mutate(id) { $0.messages.append(reply) }
         persist(id)
 
+        let search = pendingSearch ?? ""
+        pendingSearch = nil
         streamTasks[id] = Task { [weak self] in
             guard let self else { return }
             do {
@@ -907,7 +933,8 @@ final class ChatStore {
                 let mission = try await api.startMission(conversationID: id, messages: history, model: model,
                                                          deviceContext: isPrivate ? nil : Agenda.upcoming(),
                                                          assistant: assistantID, isPrivate: isPrivate,
-                                                         style: UserDefaults.standard.string(forKey: Self.replyStyleKey) ?? "")
+                                                         style: UserDefaults.standard.string(forKey: Self.replyStyleKey) ?? "",
+                                                         search: search)
                 self.updateMessage(reply.id, in: id) { message in
                     message.missionID = mission.id
                     // "Auto" becomes the model the server picked for this message.
