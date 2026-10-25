@@ -9,6 +9,8 @@ The emergency stop cancels every running mission and refuses new ones until it i
 so no request reaches Hermes (and Scaleway) in the meantime. It survives restarts.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
