@@ -585,8 +585,8 @@ def search_cards(question: str, rule: str) -> tuple[dict, bool]:
 
 async def searching(request: ChatRequest, call, note: str, web: bool) -> AsyncIterator[str | dict]:
     """A bot's reply with the isolated web search: one search per message, its question checked,
-    asked first (the default rule), the pages read by code that knows nothing else, then given to
-    the bot (which has no tool) as outside content; links in that reply are cleaned."""
+    asked first (the default rule), searched by a model locked in a box that knows nothing else,
+    whose summary goes to the bot (which has no tool) as outside content; links are cleaned."""
     question = " ".join(request.search.split())
     if question:
         if not web:
@@ -620,15 +620,19 @@ async def searching(request: ChatRequest, call, note: str, web: bool) -> AsyncIt
 
 
 async def answer_with_results(request: ChatRequest, call, note: str, question: str, card: dict):
+    yield card | {"detail": f"« {question} » : le chercheur isolé regarde, sans rien savoir de toi"}
     try:
-        results = (await websearch.search(question) if not MOCK else
-                   [{"title": "Mac mini M4", "url": "https://shop.example/mac-mini", "snippet": "649 €", "text": ""}])
-    except httpx.HTTPError as error:
-        yield card | {"status": "cancelled", "detail": f"« {question} » : moteur injoignable ({type(error).__name__})"}
+        # The searcher: the direct model, without any tool, locked in websearch.agent's box.
+        found = (await websearch.agent(question, llm_json, private_words()) if not MOCK else
+                 {"summary": "Le Mac mini M4 est à 649 €.", "sources": ["https://shop.example/mac-mini"],
+                  "alerts": [], "steps": [f"cherché « {question} »", "lu shop.example"]})
+    except (httpx.HTTPError, ValueError, KeyError) as error:
+        yield card | {"status": "cancelled", "detail": f"« {question} » : recherche impossible ({type(error).__name__})"}
         return
-    yield card | {"status": "done", "detail": f"« {question} » : {len(results)} résultat(s), lus sans tes données"}
+    yield card | {"status": "done", "detail": f"« {question} » : {', '.join(found['steps']) or 'rien trouvé'}"
+                  + (f" · {len(found['alerts'])} page(s) suspecte(s) ignorée(s)" if found["alerts"] else "")}
     text = "\n\n".join([note, SEARCH_RESULTS.format(question=question),
-                         untrusted("RÉSULTATS WEB", websearch.results_text(results))])
+                         untrusted("RÉSULTATS WEB", websearch.agent_text(found))])
     # Collected, not streamed: the links are cleaned before anything reaches the app.
     reply = []
     async for item in call(request, text):
