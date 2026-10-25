@@ -1,0 +1,10 @@
+# Les réglages de Hermes que Marcel peut changer lui-même (pull request fusionnée), fusionnés dans
+# ~/.hermes/config.yaml par deploy/auto-update.sh, qui redémarre Hermes et remet l'ancien fichier
+# s'il ne répond plus. On ajoute ou on change des clés, on n'en retire pas. Restent à
+# l'utilisateur : model, providers et fournisseurs, gateway, et tout secret en clair (seul
+# ${MARCEL_MCP_TOKEN} est remplacé, pour le serveur MCP « marcel »). Voir app/hermes_config.py.
+mcp_servers:
+  marcel:
+    url: "http://marcel-api:8000/mcp"
+    headers:
+      Authorization: "Bearer ${MARCEL_MCP_TOKEN}"

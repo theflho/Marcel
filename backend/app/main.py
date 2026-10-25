@@ -28,12 +28,17 @@ from pydantic import BaseModel, Field
 
 from . import assistants as bots
 from .gmail import DEFAULT_QUERY, MAIL_WORDS, Gmail, GmailExpired, GmailRefused
+from .code_requests import AGENTS, DEFAULT_AGENT, CodeRequestStore, GitHubError
+from .code_tools import CodeError, CodeWorkspace, GitHub
+from . import server_log
 from .goals import ACTIVE, GoalStore
 from .mcp import MCPServer, ToolError
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries, words
 from .missions import DONE, MissionError, MissionStore, valid_id
 from .offers import OfferStore
 from .planning import PlanningStore
+from .routines import RoutineStore, days_from_names, valid_time
+from .semantic import LOCAL_MODEL, Embedder, SemanticIndex, digest
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
 
@@ -79,10 +84,28 @@ MOCK_MODELS = [{"id": "deepseek-r1-distill-llama-70b", "label": "DeepSeek R1 Dis
                {"id": "deepseek-v3", "label": "DeepSeek V3"}]
 MODELS_CACHE_SECONDS = 300
 _models_cache: tuple[float, list[dict]] = (0.0, [])
+# A stronger model for long or delicate tasks (another provider, through the LLM guard's
+# GUARD_ROUTES, with its own budget). Hermes must accept a model per request
+# (gateway.platforms.api_server.direct_model_requests: true). With it, the app offers "Auto":
+# the usual model, and the stronger one when the message calls for it.
+STRONG_MODEL = os.environ.get("MARCEL_STRONG_MODEL", "")
+STRONG_LABEL = os.environ.get("MARCEL_STRONG_LABEL", "")
+AUTO = "auto"
 
 
 async def available_models() -> list[dict]:
-    """Models offered in the app; the first one is the default."""
+    """Models offered in the app; the first one is the default ("Auto" when a stronger model is set)."""
+    base = await base_models()
+    if not STRONG_MODEL:
+        return base
+    usual = base[0]["label"]
+    strong = {"id": STRONG_MODEL, "label": f"{STRONG_LABEL or model_label(STRONG_MODEL)} (renfort)"}
+    auto = {"id": AUTO, "label": f"Auto ({usual}, renfort si besoin)"}
+    return [auto] + [m for m in base if m["id"] != STRONG_MODEL] + [strong]
+
+
+async def base_models() -> list[dict]:
+    """The models Hermes (or MARCEL_MODELS) offers; the first one is the usual one."""
     global _models_cache
     if MODELS_OVERRIDE:
         return MODELS_OVERRIDE
@@ -134,13 +157,40 @@ CHECK_HERMES_MODEL = os.environ.get("MARCEL_CHECK_HERMES_MODEL", "")
 # The LLM guard (app/llm_guard.py) counts every token sent to the model provider; Marcel reads
 # its usage with the memory model's key, to show it and to pause checks once their share is spent.
 GUARD_URL = os.environ.get("MARCEL_GUARD_URL", "").rstrip("/")
+# Search by meaning (app/semantic.py): embeddings through the LLM guard, like the memory model.
+# Without a direct access to the provider (or with MARCEL_EMBED_MODEL=off), it is off; in mock
+# mode, a local stand-in runs the whole pipeline.
+EMBED_MODEL = os.environ.get("MARCEL_EMBED_MODEL") or "bge-multilingual-gemma2"
+EMBED_URL = os.environ.get("MARCEL_EMBED_URL") or ("" if MOCK or MEMORY_LLM_URL == HERMES_URL else MEMORY_LLM_URL)
+EMBED_KEY = os.environ.get("MARCEL_EMBED_KEY") or MEMORY_LLM_KEY
+SEMANTIC_ON = EMBED_MODEL != "off" and bool(EMBED_URL or MOCK)
+SEMANTIC_MIN_SCORE = float(os.environ["MARCEL_EMBED_MIN_SCORE"]) if os.environ.get("MARCEL_EMBED_MIN_SCORE") else None
+# Everything is re-checked this often (and right after a reply, a memory or a planning change).
+SEMANTIC_TICK = 600
+# Routines (tasks at a fixed time): how often the scheduler looks, and a ceiling of runs per day.
+ROUTINE_TICK = 60
+ROUTINES_MAX_PER_DAY = int(os.environ.get("MARCEL_ROUTINES_MAX_PER_DAY") or 10)
 
 log = logging.getLogger("marcel")
+server_log.install()
 missions = MissionStore(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
 ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
 assistants = bots.AssistantStore(DATA_DIR / "marcel.db")
+vectors = SemanticIndex(DATA_DIR / "marcel.db")
+embedder = Embedder(EMBED_URL, EMBED_KEY, EMBED_MODEL if EMBED_URL else LOCAL_MODEL, SEMANTIC_MIN_SCORE)
+# Code (app/code_tools.py, app/code_requests.py): the repository the app is built from, a GitHub
+# key limited to it, and the coding agent big requests go to (changeable in the app).
+GITHUB_REPO = os.environ.get("MARCEL_GITHUB_REPO", "")
+GITHUB_TOKEN = os.environ.get("MARCEL_GITHUB_TOKEN", "")
+CODE_AGENT = os.environ.get("MARCEL_CODE_AGENT", DEFAULT_AGENT)
+code_requests = CodeRequestStore(DATA_DIR / "marcel.db", GITHUB_REPO, GITHUB_TOKEN, mock=MOCK and not GITHUB_TOKEN)
+# Marcel's own copy of the repository, where his code tools work (app/code_tools.py). For local
+# tests, MARCEL_CODE_TEST_REMOTE points at a bare git repository instead of GitHub.
+CODE_TEST_REMOTE = os.environ.get("MARCEL_CODE_TEST_REMOTE", "")
+workspace = CodeWorkspace(DATA_DIR / "code", GITHUB_REPO, GITHUB_TOKEN, mock_remote=CODE_TEST_REMOTE)
+github = GitHub(GITHUB_REPO, GITHUB_TOKEN)
 # Key the rma robot uses to hand over the planning it read (it has no access to anything else).
 PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 # Gmail, read only (connected once with python -m app.gmail_auth).
@@ -158,7 +208,8 @@ def spawn(coro) -> asyncio.Task:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    jobs = [asyncio.create_task(nightly_tidy()), asyncio.create_task(proactive_loop())]
+    jobs = [asyncio.create_task(nightly_tidy()), asyncio.create_task(proactive_loop()),
+            asyncio.create_task(semantic_loop()), asyncio.create_task(routine_loop())]
     yield
     for job in jobs:
         job.cancel()
@@ -168,12 +219,14 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Marcel", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
+# garde-fou : jeton de l'app
 def require_token(authorization: str = Header(default="")) -> None:
     if not MARCEL_TOKEN:
         raise HTTPException(503, "MARCEL_TOKEN is not configured")
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not secrets.compare_digest(token, MARCEL_TOKEN):
         raise HTTPException(401, "Invalid token")
+# fin garde-fou : jeton de l'app
 
 
 class Message(BaseModel):
@@ -191,6 +244,11 @@ class ChatRequest(BaseModel):
     device_context: str | None = Field(default=None, max_length=8000)
     # Set in an assistant's own conversation (Planning, Pointage…), where the user tunes it.
     assistant: str | None = Field(default=None, pattern=r"^[a-z]+(-[0-9a-f]{8})?$")
+    # A private conversation: no memory read or learnt, the reply never searched again, and
+    # erased from the server a little after the iPhone got it.
+    private: bool = False
+    # How long the replies should be, from Réglages.
+    style: Literal["", "concis", "detaille"] = ""
 
 
 def sse(payload: dict) -> str:
@@ -210,6 +268,7 @@ async def list_models() -> dict:
     return {"models": models, "default": models[0]["id"]}
 
 
+# garde-fou : arrêt d'urgence
 @app.get("/v1/emergency", dependencies=[Depends(require_token)])
 async def emergency_state() -> dict:
     return {"active": missions.emergency}
@@ -227,6 +286,7 @@ async def emergency_stop() -> dict:
 async def emergency_resume() -> dict:
     missions.emergency_resume()
     return {"active": False}
+# fin garde-fou : arrêt d'urgence
 
 
 @app.post("/v1/files", dependencies=[Depends(require_token)])
@@ -319,6 +379,25 @@ def hermes_content(message: Message) -> str | list[dict]:
     return parts
 
 
+# "/code …", "/web …" or "/<skill> …" at the start of a message, typed from the app's "/" menu.
+SLASH = re.compile(r"^/([\w-]+)")
+SLASH_SKILLS = {"code": "marcel-code", "donnees": "marcel-donnees", "données": "marcel-donnees",
+                "routine": "marcel-routines-objectifs", "objectif": "marcel-routines-objectifs"}
+
+
+def slash_note(text: str) -> str:
+    """What a "/" command asks for, told plainly: the API doesn't run Hermes' slash commands."""
+    if not (match := SLASH.match(text.strip())):
+        return ""
+    name = match.group(1).lower()
+    if name == "web":
+        return "Commande /web : cherche sur le web avant de répondre, et cite tes sources."
+    skill = SLASH_SKILLS.get(name, name)
+    return (f"Commande /{name} : l'utilisateur appelle la skill « {skill} ». Charge-la (skill_view) et "
+            "suis-la pour ce qu'il demande ; si elle n'existe pas, dis-le et donne les skills disponibles.")
+
+
+# garde-fou : mode protégé des conversations
 @app.post("/v1/missions", dependencies=[Depends(require_token)])
 async def start_mission(request: ChatRequest) -> dict:
     """Starts generating the reply on the server and returns at once."""
@@ -334,16 +413,27 @@ async def start_mission(request: ChatRequest) -> dict:
     if model not in {m["id"] for m in models}:
         raise HTTPException(400, "Modèle inconnu")
     title = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
-    note, facts = memory.context(title)
+    if request.private:
+        note, facts = "", []
+        extra_private = [{"id": "private", "name": "Conversation privée", "status": "done",
+                          "detail": "Ni mémoire lue, ni rien appris ; la réponse ne sera pas cherchée plus tard"}]
+    else:
+        close_facts, recalled = await semantic_recall(title, request.conversation_id)
+        note, facts = memory.context(title, close=close_facts)
+        note = "\n\n".join(filter(None, [note, recalled]))
+        extra_private = []
+    note = "\n\n".join(filter(None, [STYLES.get(request.style, ""), note]))
     # The calendar can hold invitations written by others: read as data.
     device = untrusted("AGENDA DE L'IPHONE", request.device_context) if request.device_context else ""
     mail, extra = await mail_context(title, force=request.assistant == "mails")
+    model, routed = await route_model(request, model, protected=bool(mail or request.assistant))
+    extra = extra_private + extra + routed
     if request.assistant:
         if not assistants.find(request.assistant):
             raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning_note(), assistants_note(request), device, mail]))
+                                      planning_note(), assistants_note(request), slash_note(title), device, mail]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -361,9 +451,77 @@ async def start_mission(request: ChatRequest) -> dict:
         inner = lambda: hermes_stream(request, CHECK_HERMES_MODEL or model, note,  # noqa: E731
                                       CHECK_HERMES_URL, CHECK_HERMES_KEY)
     else:
-        inner = lambda: hermes_stream(request, model, note)  # noqa: E731
-    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra),
-                          model=model, title=title).public()
+        # The full Hermes may have a browser, which can submit forms: only once the user said go.
+        browser = approves(title) or rules()["navigateur"] == "auto"
+        inner = lambda: hermes_stream(request, model, note, browser=browser)  # noqa: E731
+    mission = missions.start(request.conversation_id,
+                             lambda: with_memory(request, inner, facts, extra, learn=not request.private),
+                             model=model, title=title)
+    if request.private:
+        spawn(forget_private(mission))
+    return mission.public()
+# fin garde-fou : mode protégé des conversations
+
+
+STYLES = {
+    "concis": "Style demandé par l'utilisateur : CONCIS. Va droit au but, quelques phrases ou une courte "
+              "liste, sans introduction ni récapitulatif.",
+    "detaille": "Style demandé par l'utilisateur : DÉTAILLÉ. Explique pas à pas, avec exemples et "
+                "précisions utiles, tout en restant lisible sur un téléphone.",
+}
+PRIVATE_KEEP = 10 * 60
+
+
+async def forget_private(mission) -> None:
+    """Erases a private reply from the server once the iPhone has had time to fetch it."""
+    if mission.task:
+        await asyncio.gather(mission.task, return_exceptions=True)
+    await asyncio.sleep(PRIVATE_KEEP)
+    missions.forget(mission.id)
+
+
+# What calls for the stronger model in "Auto": a long message, a document to study, or a task
+# where reasoning matters more than speed.
+STRONG_WORDS = re.compile(
+    r"\b(analys\w*|compar\w* en d[ée]tail|strat[ée]gi\w*|contrat\w*|juridique\w*|plan d[ée]taill[ée]\w*|"
+    r"business plan|lettre de motivation|\bcv\b|code|script|programme[rz]?|d[ée]bogu\w*|"
+    r"r[ée]fl[ée]chis bien|en profondeur|pas à pas|d[ée]montr\w*)", re.IGNORECASE)
+LONG_MESSAGE_CHARS = 1500
+
+
+def strong_reason(request: ChatRequest) -> str:
+    """Why "Auto" should take the stronger model for this message, or ""."""
+    last = request.messages[-1]
+    documents = [f for f in last.attachments if not load_file(f)[0]["mime_type"].startswith("image/")]
+    if documents:
+        return "document à étudier"
+    if len(last.content) > LONG_MESSAGE_CHARS:
+        return "long message"
+    if match := STRONG_WORDS.search(last.content):
+        return f"tâche délicate (« {match.group(0).lower()} »)"
+    return ""
+
+
+async def route_model(request: ChatRequest, model: str, protected: bool) -> tuple[str, list[dict]]:
+    """The model the mission really uses, and the card that says why when it's the stronger one.
+    E-mails and assistants' settings never leave for the other provider."""
+    if not STRONG_MODEL or model not in (AUTO, STRONG_MODEL):
+        return model, []
+    usual = (await base_models())[0]["id"]
+    if protected:
+        return usual, []
+    reason = strong_reason(request) if model == AUTO else "choisi par toi"
+    if not reason:
+        return usual, []
+    spent = await guard_usage(fresh=True)
+    route = next((r for prefix, r in ((spent or {}).get("routes") or {}).items() if STRONG_MODEL.startswith(prefix)),
+                 None)
+    label = STRONG_LABEL or model_label(STRONG_MODEL)
+    if route and route["tokens"] >= route["budget"]:
+        return usual, [{"id": "model", "name": "Modèle", "status": "cancelled",
+                        "detail": f"{label} : budget du jour atteint, réponse avec {model_label(usual)}"}]
+    return STRONG_MODEL, [{"id": "model", "name": "Modèle renfort", "status": "done",
+                           "detail": f"{label} : {reason} · ce message part chez un autre fournisseur que Scaleway"}]
 
 
 # A message about the assistants or their settings brings their list (about 400 tokens) into the
@@ -411,8 +569,11 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
                   "detail": "Conversation de réglage : modèle seul, sans aucun outil ; rien ne change sans « Appliquer »",
                   "status": "done"})
     # What the user tells an assistant becomes its instructions (shown, removable), not memories.
-    return missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra, learn=False),
-                          model=model, title=f"{assistant.name} : {title}").public()
+    mission = missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra, learn=False),
+                             model=model, title=f"{assistant.name} : {title}")
+    if request.private:
+        spawn(forget_private(mission))
+    return mission.public()
 
 
 # The user's time zone, for "today", "tomorrow at 9"… (the server runs in UTC).
@@ -422,7 +583,7 @@ except ZoneInfoNotFoundError:
     USER_TZ = None
 
 APP_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur, et tu lui parles dans l'app iPhone
-« Marcel » (son propre serveur, son agent Hermes, le modèle DeepSeek). Réponds en français, en
+« Marcel » (son propre serveur, son agent Hermes, le modèle choisi dans l'app). Réponds en français, en
 tutoyant, de façon courte et lisible sur un téléphone ; le Markdown s'affiche (titres, listes,
 tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'inventer :
 - Mémoire : tu retiens tout seul ce qui dure (préférences, projets) après chaque échange ; l'utilisateur
@@ -435,21 +596,64 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   (rythme : hourly, daily, weekly ou manual). Il est créé dès ta réponse finie (Réglages ›
   Objectifs suivis) ; tu le vérifies alors seul et, si ça vaut la peine, une idée arrive sous
   l'ampoule en haut de l'écran.
+- Navigateur : pour lire une page ou comparer, les outils web (recherche, extraction) suffisent. Le
+  navigateur (outils browser_*) sert à agir sur un site : tu t'en sers seul quand la tâche le
+  demande, et tu dis ensuite ce que tu as fait. Tu ne remplis jamais un mot de passe ni une carte
+  bancaire (les identifiants enregistrés, browser_vault, restent coupés par Marcel).
 - Actions : tu prépares (brouillon, panier, réservation) mais rien ne part sans lui. Pour une
   action réelle, donne le contenu exact (destinataire, texte, montant) et attends son accord
   explicite dans la conversation ; sur une idée, l'app propose le bouton « Valider ».
-- Assistants : à côté de toi, des assistants ont chacun leur conversation (Planning, Pointage,
-  Recrutements, Mails, Veille) et l'utilisateur peut en créer. S'il te demande de créer un assistant (un
-  « bot »), crée-le en terminant ta réponse par ce bloc, et rien après :
+- Routines : pour une tâche à heure fixe, sans suivi dans le temps (« chaque lundi à 8 h, le point de
+  ma semaine », « chaque soir, résume mes e-mails »), crée-la quand il le demande ou l'accepte, en
+  terminant ta réponse par :
+  ```routine
+  {{"titre": "Point de la semaine", "consigne": "ce que tu feras à chaque fois", "jours": ["lundi"], "heure": "08:00"}}
+  ```
+  (jours : noms des jours, « semaine », « week-end » ou [] pour tous les jours). Au lieu d'une heure,
+  elle peut attendre un événement lu par le robot RMA : ajoute "quand": "offre" (à chaque nouvelle
+  offre) ou "quand": "planning" (quand le planning change), ou un e-mail : "quand": "email" (chaque
+  nouvel e-mail) ou "quand": "email:adresse" (un expéditeur). Pour « préviens-moi d'un e-mail
+  urgent », c'est "quand": "email" avec une consigne qui ne parle que s'il est urgent et sinon répond
+  « Rien à signaler. » (rien ne le dérange alors). Brief du matin : s'il en veut un, crée
+  une routine à 07:30 dont la consigne couvre les missions du jour, les offres nouvelles, les
+  objectifs qui bougent et les e-mails importants, et finit par les seules décisions à prendre,
+  en oui / non. Elle tourne seule,
+  sans outil qui agit ; son résultat arrive dans sa propre conversation, avec une notification
+  (Réglages › Routines). Dans une conversation avec un assistant, c'est lui qui relance
+  l'utilisateur, dans cette conversation même (une fois ou chaque semaine).
+- Commandes « / » : en tapant « / » dans l'app, l'utilisateur ouvre un bot (/planning…), une
+  nouvelle conversation (/nouveau) ou une skill (/code, /donnees, /routine, /objectif, /web).
+- Assistants : à côté de toi, des assistants (Planning, Pointage, Recrutements, Mails, Veille) sont
+  des bots, comme dans Grok Bot : chacun a ses propres conversations, ouvertes depuis le menu de
+  l'app (ou « /planning »), et il peut en créer. S'il te demande de créer un assistant (un
+  « bot »), crée-le en terminant ta réponse par ce bloc, et rien après sauf le bloc suivi :
   ```assistant
   {{"nom": "Nom court", "mission": "ce qu'il fait, en une ou deux phrases", "illustration": "coffee"}}
   ```
   illustration parmi : tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool, sport,
   cooking, hammock. Il est créé dès ta réponse finie : dis-le au passé (« c'est fait »). Un
   assistant créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare. Tu ne
-  supprimes, n'épingles et ne touches au serveur (VPS) jamais : ça, c'est l'utilisateur.
+  supprimes et n'épingles jamais rien, et tu n'ouvres pas de session sur le serveur (VPS) : ça,
+  c'est l'utilisateur.
+- Tes outils marcel_* : tes données (marcel_resume, marcel_chercher, marcel_historique…), et des
+  outils qui agissent : marcel_retenir, marcel_creer_objectif, marcel_creer_routine,
+  marcel_lancer_routine. Tes skills (marcel-code, marcel-donnees, marcel-routines-objectifs)
+  disent comment t'en servir.
+- Ton propre code : tu peux modifier toi-même l'app et son serveur avec les outils marcel_code_*
+  (suis la skill marcel-code) : branche, modification, vérification, pull request, puis fusion ; le
+  serveur se met à jour seul quelques minutes après et revient en arrière s'il ne répond plus. La
+  CI de GitHub teste le serveur et compile l'app ; tu ne fusionnes qu'au vert (marcel_code_ci), et
+  tu peux annuler une fusion (marcel_code_annuler). La config de Hermes se change aussi par le code
+  (deploy/hermes-overrides.yaml). Pour comprendre une panne : marcel_journaux. Tu ne retires jamais
+  un garde-fou (mode protégé, arrêt d'urgence, budgets, refus de supprimer). Pour un gros chantier, tu peux aussi, si tu le juges mieux, préparer une demande pour
+  un agent de code (Claude Code ou Codex, au choix de l'utilisateur) en terminant ta réponse par :
+  ```demande-code
+  {{"titre": "Titre court", "demande": "la demande complète, en français"}}
+  ```
+  Elle part quand l'utilisateur touche « Envoyer » sous ta réponse (Réglages › Code de Marcel).
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
+{followups}
 
 Où sont les données (ne cherche pas ailleurs, n'invente pas) :
 - Tout ce que l'app sait est dans la base du serveur Marcel : planning RMA et offres (lus chaque jour
@@ -459,9 +663,12 @@ Où sont les données (ne cherche pas ailleurs, n'invente pas) :
 - Ce qui est joint plus bas n'est qu'un extrait : les totaux à jour (« Données de Marcel ») et le
   détail des 7 prochains jours. Les totaux font foi : pour un nombre (missions, heures, offres),
   pars d'eux et dis d'où vient le chiffre.
-- Si tu as les outils « marcel » (marcel_planning, marcel_offres, marcel_robot, marcel_historique,
-  marcel_memoire, marcel_objectifs), utilise-les pour le reste : une période précise, une mission
-  passée, une ancienne réponse. Sinon, dis ce que tu vois et ce qui te manque.
+- Si tu as les outils « marcel » (marcel_chercher, marcel_planning, marcel_offres, marcel_robot,
+  marcel_historique, marcel_memoire, marcel_objectifs), utilise-les pour le reste : une période
+  précise, une mission passée, une ancienne réponse ; marcel_chercher trouve par le sens quand tu
+  ne sais pas où regarder. Sinon, dis ce que tu vois et ce qui te manque.
+- Plus bas, des anciennes réponses et missions « retrouvées par le sens » peuvent être jointes :
+  elles viennent d'autres conversations, vérifie qu'elles répondent bien à la question.
 - Les conversations sont gardées sur l'iPhone : tu ne vois que celle-ci. Une autre conversation (un
   assistant, une ancienne discussion) ne t'est pas jointe ; marcel_historique retrouve tes réponses.
 - Mot piège : pour l'utilisateur, une « mission » est une mission de travail RMA (magasin, horaires).
@@ -472,6 +679,7 @@ Où sont les données (ne cherche pas ailleurs, n'invente pas) :
 
 planning = PlanningStore(DATA_DIR / "marcel.db", USER_TZ)
 offers = OfferStore(DATA_DIR / "marcel.db", USER_TZ)
+routines = RoutineStore(DATA_DIR / "marcel.db", USER_TZ)
 
 
 def app_context(agenda_shared: bool) -> str:
@@ -488,7 +696,7 @@ def app_context(agenda_shared: bool) -> str:
                  if agenda_shared else "Agenda : non partagé (Réglages › Sur cet iPhone › Partager mon agenda).")
     level = {"off": "désactivées", "quiet": "discrètes (l'important seulement)", "normal": "normales"}
     state.append(f"Vérifications automatiques des objectifs : {level.get(ideas.settings()['level'], 'normales')}.")
-    return APP_PROMPT.format(state="\n".join(state)) + "\n\n" + data_overview()
+    return APP_PROMPT.format(state="\n".join(state), followups=bots.FOLLOWUPS) + "\n\n" + data_overview()
 
 
 def data_overview() -> str:
@@ -511,6 +719,9 @@ def data_overview() -> str:
     waiting = sum(1 for o in offers.all() if o["status"] == "open")
     lines.append(f"- Offres de recrutement : {waiting} en attente de réponse ; sur 30 jours, {accepted} acceptées "
                  f"et {len(answered) - accepted} refusées depuis l'app.")
+    if active_routines := routines.list("active"):
+        lines.append("- Routines actives : " + " ; ".join(
+            f"{r.title} ({r.schedule})" for r in active_routines[:6]) + ".")
     stats = memory.stats()
     lines.append(f"- Objectifs suivis : {len(goals.list(ACTIVE))} ; idées non vues : {ideas.unseen()} ; mémoire : "
                  f"{stats['core_count']} faits au noyau, {stats['archive_count']} aux archives.")
@@ -556,16 +767,48 @@ async def mail_context(question: str, force: bool = False) -> tuple[str, list[di
 
 
 # Blocks Marcel (or an assistant) ends a reply with, carried out by the server once it's complete.
-AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif)[ \t]*\n?(.*?)```", re.DOTALL)
+AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif|routine)[ \t]*\n?(.*?)```", re.DOTALL)
+
+# "Ask first" rules, set per kind of action in Réglages › Règles (like ChatGPT's dots, loosened one
+# kind at a time). "auto": Marcel does it and shows "Annuler"; "ask": it waits for "Valider".
+# What stays fixed whatever the rules: never delete nor pin, never the password vault, and
+# never on his own when an e-mail or a file is involved.
+RULE_KINDS = {
+    "reglage": "Changer le réglage d'un assistant",
+    "assistant": "Créer un assistant",
+    "objectif": "Suivre un nouvel objectif",
+    "routine": "Créer une routine ou une relance",
+    "navigateur": "Agir sur un site (navigateur)",
+}
+RULE_VALUES = ("auto", "ask")
 
 
-def apply_blocks(request: ChatRequest, text: str) -> list[dict]:
+def rules() -> dict[str, str]:
+    saved = assistants.state("rules", {}) or {}
+    defaults = {kind: "auto" for kind in RULE_KINDS} | {"navigateur": "ask" if BROWSER_GUARD else "auto"}
+    return defaults | {k: v for k, v in saved.items() if k in RULE_KINDS and v in RULE_VALUES}
+
+
+ASK_CARD = "auto-ask-"
+
+
+def ask_first(kind: str) -> None:
+    """For Hermes' tools: under an "ask" rule, it proposes with a block instead of doing it."""
+    if rules()[kind] == "ask":
+        raise ToolError(f"Règle « demande d'abord » ({RULE_KINDS[kind].lower()}) : ne le fais pas toi-même, "
+                        f"propose-le en terminant ta réponse par le bloc ```{kind}``` ; l'utilisateur le validera.")
+
+
+def apply_blocks(request: ChatRequest, text: str, only=lambda kind: True, at: int | None = None) -> list[dict]:
     """Applies what the reply asks for: a setting, an action ("relire"), an instruction or a
     mascot for an assistant; a new assistant; a followed goal. Each becomes an action card,
     done or refused with the reason. Never deletes, pins or touches the server."""
     cards = []
     for index, (kind, body) in enumerate(AUTO_BLOCK.findall(text)):
-        name = {"reglage": "Réglage", "assistant": "Nouvel assistant", "objectif": "Objectif suivi"}[kind]
+        if not only(kind) or (at is not None and index != at):
+            continue
+        name = {"reglage": "Réglage", "assistant": "Nouvel assistant", "objectif": "Objectif suivi",
+                "routine": "Nouvelle routine"}[kind]
         card = {"id": f"auto-{kind}-{index}", "name": name}
         try:
             data = json.loads(body)
@@ -575,14 +818,35 @@ def apply_blocks(request: ChatRequest, text: str) -> list[dict]:
                 assistant = assistants.find(str(data.get("assistant") or request.assistant or ""))
                 if not assistant:
                     raise ValueError("assistant inconnu")
-                apply_update(assistant, data.get("changes") or {}, str(data.get("consigne") or ""),
-                             [str(a) for a in data.get("actions") or []], data.get("mascotte"))
+                undo = apply_update(assistant, data.get("changes") or {}, str(data.get("consigne") or ""),
+                                    [str(a) for a in data.get("actions") or []], data.get("mascotte"))
                 done = str(data.get("resume") or "") or "réglage changé"
                 card["detail"] = f"{assistant.name} : {done}"
+                card["undo"] = {"kind": "reglage"} | undo
             elif kind == "assistant":
                 created = assistants.create(str(data.get("nom", "")), str(data.get("mission", "")),
                                             str(data.get("illustration") or "tree"))
-                card["detail"] = f"{created.name} créé : il a sa conversation dans le menu"
+                card["detail"] = f"{created.name} créé : choisis-le comme mode d'une conversation"
+                card["undo"] = {"kind": "assistant", "id": created.id}
+            elif kind == "routine":
+                jours = data.get("jours") or []
+                # Made by an assistant: it comes back in this conversation, as itself.
+                bot = assistants.find(request.assistant) if request.assistant else None
+                once = data.get("une_fois") is True
+                routine = routines.add(str(data.get("titre", "")), str(data.get("consigne", "")),
+                                       days_from_names(jours if isinstance(jours, list) else [jours]),
+                                       valid_time(str(data.get("heure") or "08:00")),
+                                       assistant=bot.id if bot else "",
+                                       conversation_id=request.conversation_id if bot else "", once=once,
+                                       trigger=str(data.get("quand") or ""))
+                when = routine.schedule
+                if once and not routine.trigger:
+                    day, _, hour = when.partition(" à ")
+                    day = day.removeprefix("Chaque ").lower()
+                    when = f"une fois, {'' if day == 'jour' else day + ' '}à {hour}"
+                card["detail"] = (f"{bot.name} te relancera ici : {when}" if bot
+                                  else f"« {routine.title} » : {when}")
+                card["undo"] = {"kind": "routine", "id": routine.id}
             else:
                 title = " ".join(str(data.get("titre", "")).split())
                 if len(title) < 3:
@@ -592,6 +856,7 @@ def apply_blocks(request: ChatRequest, text: str) -> list[dict]:
                                  cadence if cadence in ("hourly", "daily", "weekly", "manual") else "weekly",
                                  conversation_id=request.conversation_id)
                 card["detail"] = f"« {goal.title} » suivi ({goal.cadence})"
+                card["undo"] = {"kind": "objectif", "id": goal.id}
             card["status"] = "done"
         except (ValueError, TypeError, AttributeError) as error:
             card |= {"detail": f"Non appliqué : {error}"[:300], "status": "cancelled"}
@@ -599,16 +864,20 @@ def apply_blocks(request: ChatRequest, text: str) -> list[dict]:
     return cards
 
 
+# garde-fou : contenu extérieur : ni action ni souvenir
 async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = (),
                       learn: bool = True) -> AsyncIterator[str | dict]:
     """Shows which memories (and e-mails) were sent, then, once the reply is complete, learns
     from the exchange."""
     for action in extra:
         yield action
+    if files := request.messages[-1].attachments:
+        # Marks the reply as built on outside content: it won't be searched nor handed back later.
+        yield {"id": "files", "name": "Pièces jointes", "detail": f"{len(files)} fichier(s) lu(s)", "status": "done"}
     if facts:
         core = sum(1 for f in facts if f.tier == CORE)
         detail = f"{core} du noyau, {len(facts) - core} des archives : " + " · ".join(f.text for f in facts)
-        yield {"id": "memory", "name": "Mémoire", "detail": detail[:300], "status": "done"}
+        yield {"id": "memory", "name": "Mémoire", "detail": detail[:2000], "status": "done"}
     reply = []
     try:
         async for item in inner():
@@ -624,17 +893,67 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
     # A reply built on outside content (e-mails, attached files) could repeat what a stranger
     # wrote: only the user's own message is learnt from, so it can't plant lasting "facts".
     outside = any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
-    text = "".join(reply)
+    text = bots.FOLLOWUP_BLOCK.sub("", "".join(reply)).strip()
     if AUTO_BLOCK.search(text):
         if outside:
             # A stranger's e-mail or file could have asked for it: the user decides.
             yield {"id": "auto-outside", "name": "Réglage", "status": "cancelled",
                    "detail": "Pas appliqué tout seul : la réponse s'appuie sur un e-mail ou un fichier. Valide-le toi-même."}
         else:
-            for card in apply_blocks(request, text):
+            for card in apply_blocks(request, text, only=lambda kind: rules()[kind] == "auto"):
                 yield card
+            for index, (kind, _) in enumerate(AUTO_BLOCK.findall(text)):
+                # A setting or a new assistant already has its own card to approve in the app.
+                if rules()[kind] == "ask" and kind in ("objectif", "routine"):
+                    yield {"id": f"{ASK_CARD}{kind}-{index}", "name": RULE_KINDS[kind], "status": "cancelled",
+                           "detail": "Attend ton accord (Réglages › Règles) : touche « Valider »",
+                           "assistant": request.assistant or ""}
     if learn:
-        spawn(remember(request, "" if outside else "".join(reply)))
+        spawn(remember(request, "" if outside else text))
+# fin garde-fou : contenu extérieur : ni action ni souvenir
+
+
+@app.get("/v1/rules", dependencies=[Depends(require_token)])
+async def get_rules() -> dict:
+    return {"rules": rules(), "labels": RULE_KINDS}
+
+
+class RulesUpdate(BaseModel):
+    rules: dict[str, Literal["auto", "ask"]]
+
+
+@app.put("/v1/rules", dependencies=[Depends(require_token)])
+async def put_rules(body: RulesUpdate) -> dict:
+    unknown = set(body.rules) - set(RULE_KINDS)
+    if unknown:
+        raise HTTPException(400, f"Règle inconnue : {', '.join(sorted(unknown))}")
+    assistants.set_state("rules", rules() | body.rules)
+    return {"rules": rules(), "labels": RULE_KINDS}
+
+
+class BlockApproval(BaseModel):
+    card: str = Field(pattern=r"^auto-ask-(objectif|routine)-\d{1,2}$")
+
+
+@app.post("/v1/missions/{mission_id}/approve", dependencies=[Depends(require_token)])
+async def approve_block(mission_id: str, body: BlockApproval) -> dict:
+    """The user tapped "Valider" on what waited for their go-ahead: it is done now, with "Annuler"."""
+    mission = find_mission(mission_id)
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif.")
+    waiting = next((a for a in mission.actions if a["id"] == body.card and a.get("status") == "cancelled"), None)
+    if not waiting:
+        raise HTTPException(404, "Rien n'attend ton accord ici (déjà validé ?)")
+    kind, index = body.card.removeprefix(ASK_CARD).rsplit("-", 1)
+    request = ChatRequest(conversation_id=mission.conversation_id, assistant=waiting.get("assistant") or None,
+                          messages=[Message(role="user", content="Valider")])
+    cards = apply_blocks(request, mission.text, only=lambda k: k == kind, at=int(index))
+    if not cards:
+        raise HTTPException(404, "Bloc introuvable dans la réponse")
+    card = cards[0] | {"id": body.card}
+    mission.record(card)
+    missions.save(mission)
+    return card
 
 
 @app.get("/v1/missions", dependencies=[Depends(require_token)])
@@ -679,11 +998,31 @@ async def cancel_mission(mission_id: str) -> dict:
     return mission.public()
 
 
+# Hermes' browser (browser_exec, browser_cdp…) can click, type and submit: it has no step that
+# asks before a form leaves. With MARCEL_BROWSER_GUARD=1, Marcel cuts the reply as soon as Hermes
+# reaches for it, unless the user's message is an explicit go-ahead ("Vas-y", "Je valide…"); by
+# default the browser is free. Saved logins and cards (browser_vault) are never filled for him.
+# garde-fou : navigateur
+BROWSER_GUARD = os.environ.get("MARCEL_BROWSER_GUARD", "0") != "0"
+BROWSER_TOOL = re.compile(r"^browser", re.IGNORECASE)
+APPROVAL = re.compile(r"^\W*(je valide|vas[- ]y|oui,? vas[- ]y|ok,? vas[- ]y|go\b|fais[- ]le|envoie[- ]le|c'est bon,? vas[- ]y)",
+                      re.IGNORECASE)
+BROWSER_STOP = ("Navigateur arrêté : Marcel ne s'en sert qu'après ton accord. Il doit d'abord te dire exactement ce "
+                "qu'il fera (site, champs, montant) ; réponds « Vas-y » pour qu'il le fasse.")
+
+
+def approves(message: str) -> bool:
+    return bool(APPROVAL.search(message))
+# fin garde-fou : navigateur
+
+
 async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
-                        url: str = HERMES_URL, key: str = HERMES_API_KEY) -> AsyncIterator[str | dict]:
+                        url: str = HERMES_URL, key: str = HERMES_API_KEY,
+                        browser: bool = True) -> AsyncIterator[str | dict]:
     """Calls Hermes' OpenAI-compatible endpoint and yields text deltas.
 
     Tool calls streamed by Hermes become actions, so the app can show what the agent does.
+    Without `browser`, the first browser tool call ends the reply (and the request to Hermes).
     """
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {
@@ -723,6 +1062,13 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                                                         "detail": "", "status": "running"})
                         tool["name"] += function.get("name") or ""
                         tool["detail"] = (tool["detail"] + (function.get("arguments") or ""))[:300]
+                        # garde-fou : navigateur coupé
+                        if BROWSER_TOOL.match(tool["name"]) and (not browser or "vault" in tool["name"]):
+                            yield tool | {"status": "cancelled", "detail": "coupé par Marcel avant d'agir"}
+                            raise MissionError(BROWSER_STOP if "vault" not in tool["name"] else
+                                               "Navigateur arrêté : Marcel ne remplit jamais tes mots de passe ni "
+                                               "tes cartes. Ce geste-là reste le tien.")
+                        # fin garde-fou : navigateur coupé
                         yield dict(tool)
                     if text := delta.get("content"):
                         for update in finish_tools():
@@ -765,6 +1111,25 @@ async def mock_stream(request: ChatRequest, facts=()) -> AsyncIterator[str | dic
             await asyncio.sleep(0.03)
             yield word + " "
         return
+    if request.assistant and re.search(r"(rappelle|relance)-moi", last.lower()):
+        reply = ("C'est noté : je reviens vers toi ici mardi.\n\n```routine\n"
+                 '{"titre": "Relance", "consigne": "Demande si le planning de la semaine lui convient.", '
+                 '"jours": ["mardi"], "heure": "09:00", "une_fois": true}\n```')
+    elif re.search(r"chaque (lundi|jour|matin|soir)", last.lower()):
+        reply = ("C'est noté : je le ferai seul, à heure fixe.\n\n```routine\n"
+                 '{"titre": "Point de la semaine", "consigne": "Résume mon planning RMA de la semaine, mes objectifs '
+                 'suivis et ce qui demande une décision.", "jours": ["lundi"], "heure": "08:00"}\n```')
+    elif re.search(r"il manque|ajoute à l'app|demande de code", last.lower()):
+        reply = ("C'est un gros chantier : voici la demande prête pour l'agent de code.\n\n```demande-code\n"
+                 '{"titre": "Bouton pour copier un tableau", "demande": "Dans une réponse de Marcel, ajouter un bouton '
+                 'qui copie chaque tableau Markdown au format texte. Vérifier sur la démo Markdown."}\n```')
+    else:
+        reply = ""
+    if reply:
+        for word in reply.split(" "):
+            await asyncio.sleep(0.03)
+            yield word + " "
+        return
     if "mission" in last.lower():
         # A slow reply (about 20 s) with agent steps, to test closing the app while Marcel works.
         steps = [
@@ -794,6 +1159,7 @@ async def mock_stream(request: ChatRequest, facts=()) -> AsyncIterator[str | dic
         f"Bien reçu : *{last}*.\n\n"
         "Je suis le **backend de test** de Marcel. Cette réponse arrive mot par mot "
         "pour vérifier le `streaming` de bout en bout."
+        '\n\n```suivi\n["Et la semaine prochaine ?", "Fais-moi une démo Markdown"]\n```'
     )
     for word in reply.split(" "):
         await asyncio.sleep(0.06)
@@ -1026,6 +1392,7 @@ async def remember(request: ChatRequest, reply: str) -> None:
                               str(item.get("cadence") or "weekly"), request.conversation_id)
     except Exception:
         log.exception("memory extraction failed")
+    reindex.set()
 
 
 async def run_tidy() -> dict:
@@ -1189,7 +1556,7 @@ async def run_check(goal):
     # No memory: a check reads the open web and could leak what it carries (in a search or a
     # URL). The goal and its detail are enough to know what to look for.
     note = ""
-    model = CHECK_HERMES_MODEL or (await available_models())[0]["id"]
+    model = CHECK_HERMES_MODEL or (await base_models())[0]["id"]
     source = ((lambda: mock_check_stream(goal)) if MOCK
               else (lambda: hermes_stream(request, model, note, CHECK_HERMES_URL, CHECK_HERMES_KEY)))
     try:
@@ -1411,6 +1778,376 @@ async def delete_idea(idea_id: str) -> dict:
     return idea.public()
 
 
+# MARK: Code requests
+
+CODE_BLOCK = re.compile(r"```demande-code[ \t]*\n?(.*?)```", re.DOTALL)
+
+
+class CodeRequestSend(BaseModel):
+    mission_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+def code_agent() -> str:
+    agent = assistants.state("code_agent", CODE_AGENT)
+    return agent if agent in AGENTS else DEFAULT_AGENT
+
+
+@app.get("/v1/code-requests", dependencies=[Depends(require_token)])
+async def list_code_requests() -> dict:
+    return {"configured": code_requests.configured, "repo": GITHUB_REPO, "requests": await code_requests.statuses(),
+            "agent": code_agent(), "agents": [{"id": key, "name": name} for key, (_, name) in AGENTS.items()]}
+
+
+class CodeAgentChoice(BaseModel):
+    agent: str
+
+
+@app.put("/v1/code-requests/agent", dependencies=[Depends(require_token)])
+async def set_code_agent(body: CodeAgentChoice) -> dict:
+    """Which coding agent big requests go to: Claude Code or OpenAI Codex (a workflow each on GitHub)."""
+    if body.agent not in AGENTS:
+        raise HTTPException(400, f"Agent inconnu : {', '.join(AGENTS)}.")
+    assistants.set_state("code_agent", body.agent)
+    return {"agent": body.agent}
+
+
+@app.post("/v1/code-requests", dependencies=[Depends(require_token)])
+async def send_code_request(body: CodeRequestSend) -> dict:
+    """The user tapped "Envoyer à <agent>" under Marcel's request: the issue is opened.
+    The request is read from Marcel's reply itself, never from what the app sends, and a reply
+    built on e-mails or attached files can't send one (a stranger could have written it)."""
+    mission = find_mission(body.mission_id)
+    if not code_requests.configured:
+        raise HTTPException(503, "Demandes de code non branchées : MARCEL_GITHUB_REPO et MARCEL_GITHUB_TOKEN "
+                                 "sont à régler dans le .env du serveur.")
+    if mission.status != DONE:
+        raise HTTPException(409, "La réponse de Marcel n'est pas terminée.")
+    if from_outside(mission):
+        raise HTTPException(403, "Cette réponse s'appuie sur un e-mail ou un fichier : demande-la à nouveau à Marcel "
+                                 "sans pièce jointe, avec tes mots.")
+    if sent := code_requests.sent_for(mission.id):
+        return sent
+    match = CODE_BLOCK.search(mission.text)
+    try:
+        data = json.loads(match.group(1)) if match else None
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or len(str(data.get("titre", "")).strip()) < 3 or len(str(data.get("demande", "")).strip()) < 10:
+        raise HTTPException(400, "Demande illisible dans la réponse de Marcel.")
+    try:
+        return await code_requests.send(str(data["titre"]), str(data["demande"]), mission.conversation_id, mission.id,
+                                        code_agent())
+    except GitHubError as error:
+        raise HTTPException(502, str(error)) from None
+
+
+# MARK: Routines
+
+# Routines being run right now, so the same one never runs twice at once.
+running_routines: set[str] = set()
+
+ROUTINE_PROMPT = """Routine automatique de l'utilisateur, lancée seule à son heure ({schedule}) : il n'est
+pas là pour répondre. Fais exactement ce qu'elle demande, avec ce qui t'est joint et tes outils de
+lecture, puis écris directement le résultat, court et lisible sur un téléphone (pas de « voici »).
+Tu peux PRÉPARER une action (brouillon, panier) en la décrivant en entier, mais tu n'envoies,
+n'achètes, ne réserves et ne modifies rien : il validera dans la conversation s'il le veut.
+Si rien de nouveau ni d'important ne ressort, commence par « Rien à signaler. » et dis en une
+phrase ce que tu as vérifié : un silence ne doit jamais laisser croire que tu as oublié de regarder.
+
+Routine « {title} » :
+{prompt}"""
+
+
+RELANCE_PROMPT = """Tu es l'assistant « {name} » de Marcel ({summary}). C'est toi qui relances
+l'utilisateur, dans sa conversation avec toi : parle-lui directement, comme un message qui arrive
+(« Coucou, … »), et finis par une question simple à laquelle il peut répondre."""
+
+
+class RoutineCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=80)
+    prompt: str = Field(min_length=3, max_length=1000)
+    days: str = Field(default="", max_length=20, pattern=r"^[0-6,]*$")
+    at: str = Field(default="08:00", pattern=r"^\d{1,2}:\d{2}$")
+
+
+class RoutineUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=80)
+    prompt: str | None = Field(default=None, min_length=3, max_length=1000)
+    days: str | None = Field(default=None, max_length=20, pattern=r"^[0-6,]*$")
+    at: str | None = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    status: Literal["active", "paused"] | None = None
+
+
+def find_routine(routine_id: str):
+    if not re.fullmatch(r"[0-9a-f]{12}", routine_id) or not (routine := routines.get(routine_id)):
+        raise HTTPException(404, "Routine introuvable")
+    return routine
+
+
+def routine_refusal(routine, scheduled: bool = False) -> tuple[int, str] | None:
+    """Why a routine can't run now, as (HTTP status, message), or None."""
+    if missions.emergency:
+        return 423, "Arrêt d'urgence actif : aucune routine ne part."
+    if routine.id in running_routines:
+        return 409, "Cette routine tourne déjà."
+    if routines.runs_today() >= ROUTINES_MAX_PER_DAY:
+        return 429, f"Plafond de {ROUTINES_MAX_PER_DAY} routines par jour atteint."
+    if missions.running_count() >= missions.max_running - (1 if scheduled else 0):
+        return 429, "Trop de missions en cours, réessaie dans un instant."
+    return None
+
+
+# garde-fou : routines en mode protégé
+async def run_routine(routine, event: str = ""):
+    """Starts the routine's mission; its reply waits on the server for the iPhone to fetch it."""
+    running_routines.add(routine.id)
+    routines.mark_run(routine.id, time.time())
+    content = ROUTINE_PROMPT.format(schedule=routine.schedule.lower(), title=routine.title, prompt=routine.prompt)
+    from_mail = routine.trigger.startswith("email")
+    if event:
+        content += ("\n\nCe qui vient d'arriver :\n" + untrusted("E-MAILS REÇUS", event) if from_mail
+                    else "\n\nCe qui vient d'arriver (lu par le robot RMA) :\n" + event)
+    if bot := assistants.find(routine.assistant) if routine.assistant else None:
+        content = RELANCE_PROMPT.format(name=bot.name, summary=bot.summary) + "\n\n" + content
+    request = ChatRequest(conversation_id=routine.conversation_id, messages=[Message(role="user", content=content)])
+    mail, extra = await mail_context(routine.prompt)
+    parts = [app_context(False), goals.context(), planning_note(), robot_note()]
+    if from_mail and MEMORY_LLM_URL == HERMES_URL:
+        # Never a stranger's e-mail to a Hermes, even the one without tools that act.
+        running_routines.discard(routine.id)
+        raise HTTPException(409, "Routine sur e-mail impossible sans accès direct au modèle (mode protégé).")
+    if (mail or from_mail) and MEMORY_LLM_URL != HERMES_URL:
+        # E-mails: the model alone, with no tool at all (as in a conversation), so memories can go too.
+        note, _ = memory.context(routine.prompt)
+        extra.append({"id": "shield", "name": "Mode protégé", "status": "done",
+                      "detail": "E-mails lus par le modèle seul, sans aucun outil : ni web, ni envoi, ni terminal"})
+        model, url, key = MEMORY_LLM_MODEL, MEMORY_LLM_URL, MEMORY_LLM_KEY
+        parts += [note, mail]
+    else:
+        # The Hermes without tools that act. No memories: it reads the open web, where they could leak.
+        model = CHECK_HERMES_MODEL or (await base_models())[0]["id"]
+        url, key = CHECK_HERMES_URL, CHECK_HERMES_KEY
+        extra.append({"id": "routine", "name": "Routine", "status": "done",
+                      "detail": f"{routine.schedule} · lancée seule, sans outil qui agit"})
+        parts.append(mail)
+    note = "\n\n".join(filter(None, parts))
+    looked = looked_at(planning=planning_note(), goals=goals.context(), mail=mail or (from_mail and event), event=event)
+
+    async def source() -> AsyncIterator[str | dict]:
+        for action in extra:
+            yield action
+        inner = mock_routine_stream(routine) if MOCK else hermes_stream(request, model, note, url, key)
+        async for item in inner:
+            yield item
+        # Written by the server, not the model: what was really in front of it.
+        yield f"\n\n_Regardé : {looked}._"
+
+    try:
+        mission = missions.start(routine.conversation_id, source, model=model, title=f"Routine : {routine.title}")
+    except Exception:
+        running_routines.discard(routine.id)
+        raise
+    run_id = routines.start_run(routine.id, mission.id)
+    return mission, spawn(finish_routine(routine, mission, run_id))
+# fin garde-fou : routines en mode protégé
+
+
+def looked_at(planning: str, goals: str, mail: str, event: str) -> str:
+    """What a routine had in front of it, said at the end of its result, so "nothing to report"
+    can be trusted (Grok Bot and ChatGPT dots users can't tell silence from a miss)."""
+    seen = []
+    if event:
+        seen.append("ce qui vient d'arriver")
+    if planning:
+        seen.append("ton planning")
+    if assistants.state("reports", []):
+        seen.append("les relevés du robot RMA")
+    if count := goals.count("\n- "):
+        seen.append(f"{count} objectif{'s' if count > 1 else ''}")
+    if mail:
+        seen.append("tes derniers e-mails (en mode protégé)" if MEMORY_LLM_URL != HERMES_URL else "tes derniers e-mails")
+    return ", ".join(seen) or "rien d'autre que la consigne (aucune donnée jointe)"
+
+
+async def fire_routines(event: str, what: str) -> int:
+    """Starts the routines waiting for this event (a new offer, a changed planning), in the
+    background so the robot isn't kept waiting. Same limits as the routines at a fixed hour."""
+    if missions.emergency:
+        return 0
+    started = 0
+    for routine in routines.waiting_for(event):
+        if routine_refusal(routine, scheduled=True):
+            continue
+        await run_routine(routine, what)
+        started += 1
+    return started
+
+
+async def finish_routine(routine, mission, run_id: int) -> None:
+    try:
+        await asyncio.gather(mission.task, return_exceptions=True)
+        if mission.status == DONE:
+            routines.finish_run(run_id, "done")
+            if routine.once:
+                routines.update(routine.id, status="paused")
+            if routine.trigger.startswith("email") and mission.text.lstrip("*_ ").lower().startswith("rien à signaler"):
+                # Every e-mail wakes it up: only what matters reaches the iPhone.
+                routines.mark_delivered(run_id)
+        else:
+            routines.finish_run(run_id, "failed", mission.error or mission.status)
+    finally:
+        running_routines.discard(routine.id)
+
+
+MAIL_WATCH_EVERY = 5 * 60
+MAIL_SEEN_KEEP = 300
+
+
+def mails_for(routine, mails: list[dict]) -> list[dict]:
+    """The new e-mails a routine waits for: all of them, or those from its sender."""
+    if not routine.trigger.startswith("email:"):
+        return mails
+    sender = routine.trigger.split(":", 1)[1].lower()
+    return [m for m in mails if sender in m["from"].lower()]
+
+
+async def watch_mail() -> int:
+    """Wakes the routines waiting for an e-mail with the ones that arrived since last time. The
+    first look only notes what is there: nothing old fires."""
+    waiting = routines.waiting_for("email")
+    if not waiting or not gmail.connected or missions.emergency or MEMORY_LLM_URL == HERMES_URL:
+        return 0
+    try:
+        mails = await gmail.recent(limit=20, query="in:inbox newer_than:2d")
+    except Exception as error:
+        log.warning("mail watch: %s", error)
+        return 0
+    seen = assistants.state("mail_seen")
+    fresh = [m for m in mails if seen is not None and m["id"] not in seen]
+    assistants.set_state("mail_seen", ([m["id"] for m in mails] + (seen or []))[:MAIL_SEEN_KEEP])
+    started = 0
+    for routine in waiting:
+        if not (matching := mails_for(routine, fresh)) or routine_refusal(routine, scheduled=True):
+            continue
+        what = "\n".join(f"- {m['date'][:22]} · {m['from']} · {m['subject']} — {m['snippet'][:400]}" for m in matching)
+        await run_routine(routine, what)
+        started += 1
+    return started
+
+
+async def run_due_routines() -> int:
+    if missions.emergency:
+        return 0
+    if (spent := await guard_usage()) and spent["tokens"] >= spent["checks_budget"]:
+        return 0
+    ran = 0
+    for routine in routines.due(time.time()):
+        if routine_refusal(routine, scheduled=True):
+            continue
+        _, finished = await run_routine(routine)
+        await finished
+        ran += 1
+    return ran
+
+
+async def routine_loop() -> None:
+    last_mail_watch = 0.0
+    while True:
+        await asyncio.sleep(ROUTINE_TICK)
+        try:
+            if ran := await run_due_routines():
+                log.info("routines: %d run(s)", ran)
+            if time.time() - last_mail_watch >= MAIL_WATCH_EVERY:
+                last_mail_watch = time.time()
+                if woke := await watch_mail():
+                    log.info("routines: %d woken by e-mail", woke)
+        except Exception:
+            log.exception("routines failed")
+
+
+async def mock_routine_stream(routine) -> AsyncIterator[str | dict]:
+    yield {"id": "routine-1", "name": "Lecture", "detail": "planning et objectifs", "status": "running"}
+    await asyncio.sleep(1)
+    yield {"id": "routine-1", "status": "done"}
+    for word in f"**{routine.title}** (réponse de test) : trois missions cette semaine, rien d'urgent.".split(" "):
+        await asyncio.sleep(0.03)
+        yield word + " "
+
+
+def routine_public(routine) -> dict:
+    runs = routines.runs(routine.id, limit=1)
+    return routine.public() | {"last_run": runs[0] if runs else None}
+
+
+@app.get("/v1/routines", dependencies=[Depends(require_token)])
+async def list_routines() -> list[dict]:
+    return [routine_public(r) for r in routines.list()]
+
+
+@app.post("/v1/routines", dependencies=[Depends(require_token)])
+async def add_routine(body: RoutineCreate) -> dict:
+    try:
+        return routine_public(routines.add(body.title, body.prompt, body.days, body.at))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+
+
+@app.patch("/v1/routines/{routine_id}", dependencies=[Depends(require_token)])
+async def update_routine(routine_id: str, body: RoutineUpdate) -> dict:
+    find_routine(routine_id)
+    try:
+        return routine_public(routines.update(routine_id, **body.model_dump(exclude_none=True)))
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from None
+
+
+@app.delete("/v1/routines/{routine_id}", dependencies=[Depends(require_token)])
+async def delete_routine(routine_id: str) -> dict:
+    routine = find_routine(routine_id)
+    routines.delete(routine_id)
+    return routine.public()
+
+
+@app.post("/v1/routines/{routine_id}/run", dependencies=[Depends(require_token)])
+async def run_routine_now(routine_id: str) -> dict:
+    """Runs a routine now, whatever its hour (it counts toward the daily ceiling)."""
+    routine = find_routine(routine_id)
+    if refusal := routine_refusal(routine):
+        raise HTTPException(*refusal)
+    mission, _ = await run_routine(routine)
+    return mission.public()
+
+
+@app.get("/v1/routines/{routine_id}/runs", dependencies=[Depends(require_token)])
+async def routine_runs(routine_id: str) -> list[dict]:
+    find_routine(routine_id)
+    return routines.runs(routine_id)
+
+
+@app.get("/v1/routine-runs", dependencies=[Depends(require_token)])
+async def pending_routine_runs() -> list[dict]:
+    """Finished runs not yet put in their conversation on the iPhone, with their reply."""
+    pending = []
+    for run in routines.pending():
+        routine = routines.get(run["routine_id"])
+        mission = missions.get(run["mission_id"]) if valid_id(run["mission_id"]) else None
+        if not routine or not mission:
+            routines.mark_delivered(run["id"])
+            continue
+        pending.append(run | {"title": routine.title, "conversation_id": routine.conversation_id,
+                              "assistant": routine.assistant,
+                              "assistant_name": bot.name if (bot := assistants.find(routine.assistant)) else "",
+                              "text": mission.text, "model": mission.model, "actions": mission.actions})
+    return pending
+
+
+@app.post("/v1/routine-runs/{run_id}/delivered", dependencies=[Depends(require_token)])
+async def routine_run_delivered(run_id: int) -> dict:
+    if not routines.mark_delivered(run_id):
+        raise HTTPException(404, "Passage introuvable")
+    return {"delivered": run_id}
+
+
 # MARK: Planning (RMA missions)
 
 
@@ -1432,7 +2169,19 @@ async def put_planning(body: PlanningUpdate, x_planning_key: str = Header(defaul
     """The rma robot's reading. Its own key: it can hand over the planning, nothing else."""
     if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
         raise HTTPException(401, "Invalid key")
-    return {"count": planning.replace([m.model_dump() for m in body.missions])}
+    now = time.time()
+    before = {m["id"] for m in planning.list(now, now + 60 * 86_400)}
+    count = planning.replace([m.model_dump() for m in body.missions])
+    reindex.set()
+    upcoming = planning.list(now, now + 60 * 86_400)
+    if {m["id"] for m in upcoming} != before:
+        added = [m for m in upcoming if m["id"] not in before]
+        lines = [f"- nouvelle mission : {m['store']} le {datetime.fromtimestamp(m['start_at'], USER_TZ):%d/%m à %H:%M}"
+                 for m in added[:10]]
+        if removed := len(before - {m["id"] for m in upcoming}):
+            lines.append(f"- {removed} mission(s) retirée(s) du planning")
+        await fire_routines("planning", "\n".join(lines))
+    return {"count": count}
 
 
 @app.get("/v1/planning", dependencies=[Depends(require_token)])
@@ -1447,7 +2196,8 @@ async def planning_config(x_planning_key: str = Header(default="")) -> dict:
     """For the rma robot: when to read (the Planning assistant's setting)."""
     if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
         raise HTTPException(401, "Invalid key")
-    return {"hour": assistants.value("planning", "hour"), "read_now": bool(assistants.state("read_now", False))}
+    return {"hour": assistants.value("planning", "hour"), "read_now": bool(assistants.state("read_now", False)),
+            "hands": bool(assistants.state("hands", False))}
 
 
 class RobotReport(BaseModel):
@@ -1455,6 +2205,8 @@ class RobotReport(BaseModel):
     missions: int | None = None
     offers: int | None = None
     message: str = Field(default="", max_length=500)
+    # The end of the container's log when it failed (docker compose logs), for Marcel to read.
+    log: str = Field(default="", max_length=20_000)
 
 
 @app.post("/v1/robot/report")
@@ -1467,10 +2219,60 @@ async def robot_report(body: RobotReport, x_planning_key: str = Header(default="
     return {"ok": True}
 
 
+# What the robot's browser shows right now (inputs masked by the robot: no login, no password),
+# so the user can watch it work, like the dots' cloud computer. Kept in memory only.
+ROBOT_SCREEN: dict = {"live": False, "at": 0.0, "step": "", "image": b""}
+SCREEN_MAX_BYTES = 600_000
+
+
+@app.post("/v1/robot/screen")
+async def robot_screen_in(request: Request, step: str = Query(default="", max_length=80),
+                          x_planning_key: str = Header(default="")) -> dict:
+    check_planning_key(x_planning_key)
+    image = await request.body()
+    if not image.startswith(b"\xff\xd8") or len(image) > SCREEN_MAX_BYTES:
+        raise HTTPException(400, "Capture JPEG attendue (600 Ko au plus)")
+    ROBOT_SCREEN.update(live=True, at=time.time(), step=step, image=image)
+    return {"ok": True}
+
+
+@app.post("/v1/robot/screen/end")
+async def robot_screen_end(x_planning_key: str = Header(default="")) -> dict:
+    check_planning_key(x_planning_key)
+    ROBOT_SCREEN.update(live=False, at=time.time(), step="Terminé")
+    return {"ok": True}
+
+
+@app.get("/v1/robot/screen", dependencies=[Depends(require_token)])
+async def robot_screen_out() -> dict:
+    # A robot that stopped sending (crash, container down) isn't shown as live for ever.
+    live = ROBOT_SCREEN["live"] and time.time() - ROBOT_SCREEN["at"] < 30
+    return {"live": live, "at": ROBOT_SCREEN["at"], "step": ROBOT_SCREEN["step"],
+            "image": base64.b64encode(ROBOT_SCREEN["image"]).decode() if ROBOT_SCREEN["image"] else None,
+            "hands": bool(assistants.state("hands", False))}
+
+
+class Hands(BaseModel):
+    hold: bool
+
+
+@app.post("/v1/robot/hands", dependencies=[Depends(require_token)])
+async def robot_hands(body: Hands) -> dict:
+    """"Je prends la main": the robot leaves the portal alone (no reading, no answer) until the
+    user gives it back, so they can act in the portal themselves without the robot in the way."""
+    assistants.set_state("hands", body.hold)
+    if not body.hold:
+        assistants.set_state("read_now", True)  # back in its hands: it reads what the user changed
+    return {"hands": body.hold}
+
+
 def robot_note() -> str:
     """The robot's last readings, for the Planning and Recrutements assistants."""
     reports = assistants.state("reports", [])
     lines = ["État du robot RMA (lit le portail chaque jour à l'heure du Planning, ou sur demande) :"]
+    if assistants.state("hands", False):
+        lines.append("- l'utilisateur a pris la main (Activité › Voir le robot) : le robot ne touche plus au "
+                     "portail tant qu'il ne l'a pas rendue.")
     if not reports:
         lines.append("- aucun compte rendu reçu : le robot n'a pas encore tourné depuis sa mise à jour, ou il ne "
                      "joint pas Marcel (conteneur rma arrêté ?).")
@@ -1552,7 +2354,13 @@ async def put_offers(body: OffersUpdate, x_planning_key: str = Header(default=""
     """The rma robot's reading of the offers waiting for an answer (same key as the planning)."""
     if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
         raise HTTPException(401, "Invalid key")
-    return {"count": offers.replace([o.model_dump() for o in body.offers])}
+    before = {o["id"] for o in offers.visible()}
+    count = offers.replace([o.model_dump() for o in body.offers])
+    if fresh := [o for o in offers.visible() if o["id"] not in before]:
+        await fire_routines("offre", "\n".join(
+            f"- nouvelle offre : {o['store']}, {o['kind'] or 'mission'}, le {datetime.fromtimestamp(o['day'], USER_TZ):%d/%m}"
+            for o in fresh[:10]))
+    return {"count": count}
 
 
 def open_offers() -> list[dict]:
@@ -1762,9 +2570,10 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
 
 
 def apply_update(assistant: bots.Assistant, raw_changes: dict, instruction: str, actions: list[str],
-                 mood: str | None) -> None:
+                 mood: str | None) -> dict:
     """Checks then saves an assistant's settings, instruction, actions and mascot (from the app,
-    or from a reply of Marcel's). ValueError, and nothing saved, when something isn't allowed."""
+    or from a reply of Marcel's). ValueError, and nothing saved, when something isn't allowed.
+    Returns what puts it back as it was (the app's « Annuler ») ; a reading asked stays asked."""
     if not isinstance(raw_changes, dict):
         raise ValueError("réglages illisibles")
     changes = bots.clean_changes(assistant, raw_changes)
@@ -1780,17 +2589,24 @@ def apply_update(assistant: bots.Assistant, raw_changes: dict, instruction: str,
             raise ValueError(f"{bots.MAX_INSTRUCTIONS} consignes au plus : retire-en une d'abord.")
     if mood and mood not in bots.MOODS:
         raise ValueError(f"Mascotte inconnue : {mood}.")
+    before = assistant_values(assistant.id)
+    undo = {"assistant": assistant.id, "changes": {key: before[key] for key in changes},
+            "mood": assistants.mood(assistant) if mood else None, "instruction": None}
+    known = {note["id"] for note in assistants.instructions(assistant.id)}
     if assistant.id in bots.EXTERNAL:
         ideas.update_settings(**changes)
     else:
         assistants.save(assistant.id, changes)
     if instruction:
-        assistants.add_instruction(assistant.id, instruction)
+        note = assistants.add_instruction(assistant.id, instruction)
+        # An instruction it already had isn't taken back by « Annuler ».
+        undo["instruction"] = None if note["id"] in known else note["id"]
     if mood:
         assistants.set_mood(assistant.id, mood)
     if "relire" in actions:
         # The robot looks every minute and reads the portal at once.
         assistants.set_state("read_now", True)
+    return undo
 
 
 @app.delete("/v1/assistants/{assistant_id}/instructions/{note_id}", dependencies=[Depends(require_token)])
@@ -1822,11 +2638,11 @@ async def mcp_endpoint(request: Request, authorization: str = Header(default="")
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "JSON invalide"}},
                             status_code=400)
     if isinstance(body, list):
-        answers = [a for m in body if isinstance(m, dict) and (a := mcp.handle(m))]
+        answers = [a for m in body if isinstance(m, dict) and (a := await mcp.handle(m))]
         return JSONResponse(answers) if answers else Response(status_code=202)
     if not isinstance(body, dict):
         raise HTTPException(400, "Message JSON-RPC attendu")
-    answer = mcp.handle(body)
+    answer = await mcp.handle(body)
     return JSONResponse(answer) if answer else Response(status_code=202)
 
 
@@ -1907,11 +2723,12 @@ def tool_robot(_: dict) -> str:
     return robot_note() + "\n" + tail
 
 
+# garde-fou : réponses tirées d'e-mails jamais rendues
 def safe_replies(since: float) -> list:
     """Past replies Hermes may read back: not those built on e-mails, whose text was written by
     strangers and could carry instructions."""
-    return [m for m in missions.finished_since(since)
-            if not any(a.get("id") == "mail" and a.get("status") == "done" for a in m.actions)]
+    return [m for m in missions.finished_since(since) if not from_outside(m)]
+# fin garde-fou : réponses tirées d'e-mails jamais rendues
 
 
 @mcp.tool("marcel_historique",
@@ -1921,22 +2738,27 @@ def safe_replies(since: float) -> list:
            "jours": {"type": "integer", "description": "Remonter jusqu'à N jours (défaut 90, max 365)"},
            "limite": {"type": "integer", "description": "Nombre de résultats (défaut 8, max 20)"}},
           required=("recherche",))
-def tool_history(args: dict) -> str:
-    terms = words(str(args.get("recherche", "")))
+async def tool_history(args: dict) -> str:
+    query = str(args.get("recherche", ""))
+    terms = words(query)
     if not terms:
         raise ToolError("Donne au moins un mot significatif à chercher.")
     days = max(1, min(int(args.get("jours") or 90), 365))
     limit = max(1, min(int(args.get("limite") or 8), 20))
-    scored = []
-    for m in safe_replies(time.time() - days * 86_400):
-        found = terms & words(f"{m.title} {m.text}")
-        if found:
-            scored.append((len(found), m.created_at, m))
-    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
-    if not scored:
-        return f"Aucune réponse passée ne contient « {args['recherche']} » sur {days} jours."
-    lines = [f"{len(scored)} réponse(s) trouvée(s), les {min(limit, len(scored))} plus proches :"]
-    for _, _, m in scored[:limit]:
+    since = time.time() - days * 86_400
+    replies = {m.id: m for m in safe_replies(since)}
+    # By meaning first (close even without a shared word), then by shared words.
+    ranked: list = []
+    for hit in await semantic_hits(query, "reponse", limit * 3):
+        if (m := replies.get(hit.meta["mission_id"])) and m not in ranked:
+            ranked.append(m)
+    by_words = sorted(((len(terms & words(f"{m.title} {m.text}")), m.created_at, m) for m in replies.values()),
+                      key=lambda s: (s[0], s[1]), reverse=True)
+    ranked += [m for n, _, m in by_words if n and m not in ranked]
+    if not ranked:
+        return f"Aucune réponse passée ne parle de « {query} » sur {days} jours."
+    lines = [f"{len(ranked)} réponse(s) trouvée(s), les {min(limit, len(ranked))} plus proches :"]
+    for m in ranked[:limit]:
         excerpt = " ".join(m.text.split())[:350]
         lines.append(f"- [{m.id}] {local_time(m.created_at)} · question : « {' '.join(m.title.split())[:120]} »\n"
                      f"  {excerpt}{'…' if len(m.text) > 350 else ''}")
@@ -1952,16 +2774,23 @@ def tool_reply(args: dict) -> str:
     mission = missions.get(mission_id) if valid_id(mission_id) else None
     if not mission or mission.status != DONE:
         raise ToolError("Réponse introuvable.")
-    if any(a.get("id") == "mail" and a.get("status") == "done" for a in mission.actions):
-        raise ToolError("Cette réponse s'appuie sur des e-mails : elle n'est pas transmise aux outils.")
+    # garde-fou : réponse tirée d'un e-mail jamais rendue
+    if from_outside(mission):
+        raise ToolError("Cette réponse s'appuie sur des e-mails ou des fichiers : elle n'est pas transmise aux outils.")
+    # fin garde-fou : réponse tirée d'un e-mail jamais rendue
     return f"{local_time(mission.created_at)} · question : « {mission.title} »\n\n{mission.text}"
 
 
-@mcp.tool("marcel_memoire", "Ce que Marcel sait de l'utilisateur : faits liés à une recherche, ou tout le noyau "
-          "sans recherche.", {"recherche": {"type": "string", "description": "Mots à chercher (facultatif)"}})
-def tool_memory(args: dict) -> str:
+@mcp.tool("marcel_memoire", "Ce que Marcel sait de l'utilisateur : faits liés à une recherche (par le sens et par les "
+          "mots), ou tout le noyau sans recherche.",
+          {"recherche": {"type": "string", "description": "Ce qu'on cherche (facultatif)"}})
+async def tool_memory(args: dict) -> str:
     query = str(args.get("recherche") or "").strip()
-    facts = memory.search(query, limit=20) if query else memory.active(CORE)
+    if query:
+        close = [f for h in await semantic_hits(query, "memoire", 12) if (f := memory.get(h.ref)) and f.status == "active"]
+        facts = close + [f for f in memory.search(query, limit=20) if f.id not in {c.id for c in close}]
+    else:
+        facts = memory.active(CORE)
     if not facts:
         return "Aucun souvenir trouvé." if query else "Le noyau de la mémoire est vide."
     return "\n".join(f"- {f.text} ({'noyau' if f.tier == CORE else 'archives'})" for f in facts)
@@ -1978,3 +2807,481 @@ def tool_goals(_: dict) -> str:
     lines.append(f"Dernières idées : {len(recent)}")
     lines += [f"- {local_time(i.created_at)} · {i.title} ({i.status}) — objectif « {i.goal_title} »" for i in recent]
     return "\n".join(lines)
+
+
+# MARK: Search by meaning
+
+reindex = asyncio.Event()
+REPLY_CHUNK = 1200
+MAX_CHUNKS = 4
+MONTH_NAMES = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+               "octobre", "novembre", "décembre")
+DAY_NAMES = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+
+
+# garde-fou : contenu extérieur
+def from_outside(mission) -> bool:
+    """A reply built on e-mails or attached files: their text was written by strangers and could
+    carry instructions, so it is never searched, indexed nor handed back to a model."""
+    return any(a.get("id") in ("mail", "files", "private") and a.get("status") == "done" for a in mission.actions)
+# fin garde-fou : contenu extérieur
+
+
+def semantic_documents() -> dict[str, dict[str, tuple[str, dict]]]:
+    """What is searchable by meaning, kind → ref → (text, meta)."""
+    docs: dict[str, dict[str, tuple[str, dict]]] = {"memoire": {}, "reponse": {}, "planning": {}}
+    for fact in memory.active():
+        docs["memoire"][fact.id] = (fact.text, {"tier": fact.tier})
+    for mission in missions.finished_since(time.time() - 365 * 86_400, limit=3000):
+        if from_outside(mission) or not mission.text.strip():
+            continue
+        text = " ".join(mission.text.split())
+        for n in range(min(MAX_CHUNKS, (len(text) + REPLY_CHUNK - 1) // REPLY_CHUNK)):
+            chunk = text[n * REPLY_CHUNK:(n + 1) * REPLY_CHUNK]
+            docs["reponse"][f"{mission.id}:{n}"] = (
+                f"Question : {' '.join(mission.title.split())[:300]}\nRéponse de Marcel : {chunk}",
+                {"mission_id": mission.id, "conversation_id": mission.conversation_id, "at": mission.created_at})
+    for m in planning.list(time.time() - 45 * 86_400, float("inf"), bots.words(assistants.value("planning", "ignore"))):
+        start, end = datetime.fromtimestamp(m["start_at"], USER_TZ), datetime.fromtimestamp(m["end_at"], USER_TZ)
+        docs["planning"][m["id"]] = (
+            f"Mission de travail RMA le {DAY_NAMES[start.weekday()]} {start.day} {MONTH_NAMES[start.month - 1]} "
+            f"{start.year} de {start:%H:%M} à {end:%H:%M} : magasin {m['store']}, {m['kind']}, client {m['client']}",
+            {"start_at": m["start_at"]})
+    return docs
+
+
+async def semantic_sync() -> dict[str, int]:
+    """Embeds what is new or changed, forgets what is gone. Returns how many were embedded."""
+    done: dict[str, int] = {}
+    for kind, wanted in semantic_documents().items():
+        known = vectors.known(kind)
+        vectors.remove(kind, [ref for ref in known if ref not in wanted])
+        todo = [(ref, text, meta) for ref, (text, meta) in wanted.items()
+                if known.get(ref) != (digest(text), embedder.model)]
+        for i in range(0, len(todo), 64):
+            if missions.emergency:
+                return done
+            batch = todo[i:i + 64]
+            vectors.put(kind, embedder.model, batch, await embedder.embed([text for _, text, _ in batch]))
+        done[kind] = len(todo)
+    return done
+
+
+async def semantic_loop() -> None:
+    if not SEMANTIC_ON:
+        return
+    reindex.set()
+    while True:
+        try:
+            await asyncio.wait_for(reindex.wait(), SEMANTIC_TICK)
+        except TimeoutError:
+            pass
+        reindex.clear()
+        if missions.emergency:
+            continue
+        try:
+            if any((done := await semantic_sync()).values()):
+                log.info("semantic index updated: %s", done)
+        except Exception:
+            log.exception("semantic indexing failed")
+
+
+async def embed_question(question: str):
+    """The question's vector, or None when search by meaning is off or fails (words only, then)."""
+    if not SEMANTIC_ON or not question.strip() or missions.emergency:
+        return None
+    try:
+        return (await asyncio.wait_for(embedder.embed([question[:2000]]), 8))[0]
+    except Exception:
+        log.warning("could not embed the question, searching by words only")
+        return None
+
+
+async def semantic_hits(question: str, kind: str, limit: int) -> list:
+    """The closest items of a kind to a question, best first."""
+    query = await embed_question(question)
+    return [] if query is None else vectors.search(query, kind, embedder.model, limit, embedder.min_score)
+
+
+async def semantic_recall(question: str, conversation_id: str) -> tuple[list[str], str]:
+    """Memories close to the question (their ids, for the memory note), and a note with the past
+    replies and planning missions close to it."""
+    if (query := await embed_question(question)) is None:
+        return [], ""
+    close = [h.ref for h in vectors.search(query, "memoire", embedder.model, 8, embedder.min_score)]
+    replies, seen = [], set()
+    for hit in vectors.search(query, "reponse", embedder.model, 12, embedder.min_score):
+        if hit.meta["conversation_id"] == conversation_id or hit.meta["mission_id"] in seen:
+            continue  # this conversation is already in the messages
+        seen.add(hit.meta["mission_id"])
+        replies.append(f"- {local_time(hit.meta['at'])} · {hit.text[:600]}")
+        if len(replies) == 3:
+            break
+    work = vectors.search(query, "planning", embedder.model, 6, embedder.min_score)
+    parts = []
+    if replies:
+        parts.append(untrusted("ANCIENNES RÉPONSES DE MARCEL RETROUVÉES PAR LE SENS (autres conversations)",
+                               "\n".join(replies)))
+    if work:
+        parts.append("Missions du planning proches de la question :\n" + "\n".join(f"- {h.text}" for h in work))
+    return close, "\n\n".join(parts)
+
+
+@mcp.tool("marcel_chercher",
+          "Cherche PAR LE SENS dans tout ce que Marcel garde : mémoire, réponses passées (toutes conversations) "
+          "et missions du planning. Trouve même sans mot en commun (« missions validées » ↔ « 45 missions "
+          "lues »). À utiliser quand on ne sait pas où est l'information.",
+          {"recherche": {"type": "string", "description": "La question ou ce qu'on cherche, en langage naturel"},
+           "limite": {"type": "integer", "description": "Résultats par type (défaut 5, max 15)"}},
+          required=("recherche",))
+async def tool_search(args: dict) -> str:
+    query = str(args.get("recherche", "")).strip()
+    if not query:
+        raise ToolError("Dis ce qu'il faut chercher.")
+    if not SEMANTIC_ON:
+        raise ToolError("Recherche par le sens désactivée sur ce serveur : utilise marcel_historique ou marcel_memoire.")
+    limit = max(1, min(int(args.get("limite") or 5), 15))
+    if (vector := await embed_question(query)) is None:
+        raise ToolError("Le modèle d'embeddings ne répond pas : utilise marcel_historique ou marcel_memoire.")
+    sections = []
+    facts = vectors.search(vector, "memoire", embedder.model, limit, embedder.min_score)
+    if facts:
+        sections.append("Mémoire :\n" + "\n".join(f"- ({h.score:.2f}) {h.text}" for h in facts))
+    seen, replies = set(), []
+    for hit in vectors.search(vector, "reponse", embedder.model, limit * 3, embedder.min_score):
+        if hit.meta["mission_id"] not in seen and len(replies) < limit:
+            seen.add(hit.meta["mission_id"])
+            replies.append(f"- ({hit.score:.2f}) [{hit.meta['mission_id']}] {local_time(hit.meta['at'])} · {hit.text[:400]}")
+    if replies:
+        sections.append("Réponses passées (texte complet : marcel_reponse) :\n" + "\n".join(replies))
+    work = vectors.search(vector, "planning", embedder.model, limit, embedder.min_score)
+    if work:
+        sections.append("Planning :\n" + "\n".join(f"- ({h.score:.2f}) {h.text}" for h in work))
+    if not sections:
+        return f"Rien de proche de « {query} ». Pour un chiffre, essaie marcel_resume ou marcel_planning."
+    return "\n\n".join(sections) + "\n(entre parenthèses : proximité de sens, 1 = identique)"
+
+
+# MARK: MCP tools that act
+
+MAX_TOOL_LOG = 8000
+
+def code_log(action: str, detail: str, url: str = "", number: int | None = None) -> None:
+    """What Marcel did to his code and its deployments, shown in the app (Réglages › Code de Marcel)."""
+    entries = assistants.state("code_log", [])[-49:] + [{"at": time.time(), "action": action, "detail": detail,
+                                                          "url": url, "number": number}]
+    assistants.set_state("code_log", entries)
+
+
+async def code_call(work) -> str:
+    try:
+        return await work
+    except CodeError as error:
+        raise ToolError(str(error)) from None
+
+
+@mcp.tool("marcel_creer_objectif", "Crée un objectif suivi (Marcel le vérifie seul à son rythme et propose des idées).",
+          {"titre": {"type": "string"}, "detail": {"type": "string"},
+           "rythme": {"type": "string", "enum": ["hourly", "daily", "weekly", "manual"]}},
+          required=("titre",), read_only=False)
+def tool_add_goal(args: dict) -> str:
+    ask_first("objectif")
+    title = " ".join(str(args.get("titre", "")).split())
+    if len(title) < 3:
+        raise ToolError("Titre trop court.")
+    cadence = str(args.get("rythme") or "weekly")
+    goal = goals.add(title, str(args.get("detail") or "")[:500],
+                     cadence if cadence in ("hourly", "daily", "weekly", "manual") else "weekly")
+    return f"Objectif « {goal.title} » suivi ({goal.cadence}), id {goal.id}."
+
+
+@mcp.tool("marcel_creer_routine",
+          "Crée une routine : une tâche que Marcel fait seul à heure fixe ; son résultat arrive dans sa conversation.",
+          {"titre": {"type": "string"}, "consigne": {"type": "string", "description": "Ce qu'il fera à chaque fois"},
+           "jours": {"type": "array", "items": {"type": "string"},
+                     "description": "Noms des jours, « semaine », « week-end », ou vide pour tous les jours"},
+           "heure": {"type": "string", "description": "HH:MM, heure de l'utilisateur"},
+           "quand": {"type": "string",
+                     "description": "À la place de l'heure : « offre » (nouvelle offre), « planning » (planning "
+                                    "modifié), « email » (nouvel e-mail) ou « email:expéditeur »"}},
+          required=("titre", "consigne"), read_only=False)
+def tool_add_routine(args: dict) -> str:
+    ask_first("routine")
+    try:
+        jours = args.get("jours") or []
+        routine = routines.add(str(args.get("titre", "")), str(args.get("consigne", "")),
+                               days_from_names(jours if isinstance(jours, list) else [jours]),
+                               valid_time(str(args.get("heure") or "08:00")), trigger=str(args.get("quand") or ""))
+    except ValueError as error:
+        raise ToolError(f"Routine non créée : {error}") from None
+    return f"Routine « {routine.title} » créée : {routine.schedule} (id {routine.id})."
+
+
+@mcp.tool("marcel_routines", "Routines de l'utilisateur, avec leur horaire, leur état et leur dernier passage.")
+def tool_routines(_: dict) -> str:
+    found = routines.list()
+    if not found:
+        return "Aucune routine."
+    lines = []
+    for r in found:
+        last = routines.runs(r.id, limit=1)
+        lines.append(f"- [{r.id}] {r.title} : {r.schedule}"
+                     + (" (en pause)" if r.status != "active" else "")
+                     + (f", dernier passage {local_time(last[0]['at'])} ({last[0]['status']})" if last else "")
+                     + f"\n  {r.prompt}")
+    return "\n".join(lines)
+
+
+@mcp.tool("marcel_lancer_routine", "Lance une routine tout de suite (son résultat arrive dans sa conversation).",
+          {"id": {"type": "string"}}, required=("id",), read_only=False)
+async def tool_run_routine(args: dict) -> str:
+    routine = routines.get(str(args.get("id", "")))
+    if not routine:
+        raise ToolError("Routine introuvable : vois marcel_routines.")
+    if refusal := routine_refusal(routine):
+        raise ToolError(refusal[1])
+    await run_routine(routine)
+    return f"Routine « {routine.title} » lancée."
+
+
+@mcp.tool("marcel_retenir", "Ajoute un fait durable à la mémoire de Marcel (préférence, projet, information utile).",
+          {"texte": {"type": "string"}, "important": {"type": "boolean", "description": "Au noyau, envoyé à chaque fois"}},
+          required=("texte",), read_only=False)
+def tool_remember(args: dict) -> str:
+    text = " ".join(str(args.get("texte", "")).split())[:300]
+    if len(text) < 3:
+        raise ToolError("Rien à retenir.")
+    fact = memory.add(text, tier=CORE if args.get("important") else ARCHIVE, importance=4 if args.get("important") else 3,
+                      source="hermes", reason="retenu par Marcel")
+    reindex.set()
+    return f"Retenu ({'noyau' if fact.tier == CORE else 'archives'}) : {fact.text}"
+
+
+@mcp.tool("marcel_code_commencer",
+          "Prépare une modification du code de Marcel (l'app iPhone et son serveur) : nouvelle branche depuis la "
+          "dernière version de main, dans la copie de travail de Marcel. À appeler avant de modifier.",
+          {"sujet": {"type": "string", "description": "Quelques mots sur le changement"}},
+          required=("sujet",), read_only=False)
+async def tool_code_start(args: dict) -> str:
+    return await code_call(workspace.start(str(args.get("sujet", ""))))
+
+
+@mcp.tool("marcel_code_fichiers", "Liste les fichiers du dépôt de Marcel (ou d'un dossier : Marcel/ pour l'app, "
+          "backend/ pour le serveur).", {"dossier": {"type": "string"}})
+async def tool_code_files(args: dict) -> str:
+    return await code_call(workspace.files(str(args.get("dossier") or "")))
+
+
+@mcp.tool("marcel_code_lire", "Lit un fichier du dépôt avec ses numéros de ligne (400 lignes à la fois).",
+          {"chemin": {"type": "string"}, "debut": {"type": "integer"}, "fin": {"type": "integer"}},
+          required=("chemin",))
+async def tool_code_read(args: dict) -> str:
+    return await code_call(workspace.read(str(args.get("chemin", "")), int(args.get("debut") or 1),
+                                          int(args["fin"]) if args.get("fin") else None))
+
+
+@mcp.tool("marcel_code_chercher", "Cherche un motif (expression régulière) dans le code, avec fichier et ligne.",
+          {"motif": {"type": "string"}, "dossier": {"type": "string"}}, required=("motif",))
+async def tool_code_search(args: dict) -> str:
+    return await code_call(workspace.search(str(args.get("motif", "")), str(args.get("dossier") or "")))
+
+
+@mcp.tool("marcel_code_ecrire", "Crée un fichier ou le remplace en entier (pour un petit changement, préfère "
+          "marcel_code_remplacer).", {"chemin": {"type": "string"}, "contenu": {"type": "string"}},
+          required=("chemin", "contenu"), read_only=False)
+async def tool_code_write(args: dict) -> str:
+    return await code_call(workspace.write(str(args.get("chemin", "")), str(args.get("contenu", ""))))
+
+
+@mcp.tool("marcel_code_remplacer", "Remplace un passage exact (unique) d'un fichier par un autre. Recopie le passage "
+          "tel quel depuis marcel_code_lire, sans les numéros de ligne.",
+          {"chemin": {"type": "string"}, "ancien": {"type": "string"}, "nouveau": {"type": "string"}},
+          required=("chemin", "ancien", "nouveau"), read_only=False)
+async def tool_code_replace(args: dict) -> str:
+    return await code_call(workspace.replace(str(args.get("chemin", "")), str(args.get("ancien", "")),
+                                             str(args.get("nouveau", ""))))
+
+
+@mcp.tool("marcel_code_verifier", "Vérifie les fichiers modifiés : Python compilé, scripts shell relus, JSON lus "
+          "(le Swift est compilé par la CI de GitHub, voir marcel_code_ci).")
+async def tool_code_check(_: dict) -> str:
+    return await code_call(workspace.check())
+
+
+@mcp.tool("marcel_code_diff", "Montre les modifications en cours par rapport à main.")
+async def tool_code_diff(_: dict) -> str:
+    return await code_call(workspace.diff())
+
+
+@mcp.tool("marcel_code_proposer",
+          "Enregistre les modifications, pousse la branche et ouvre (ou met à jour) la pull request sur GitHub.",
+          {"titre": {"type": "string"}, "description": {"type": "string",
+                                                      "description": "Ce qui change, comment le vérifier, ce qui "
+                                                                     "n'a pas pu l'être"}},
+          required=("titre", "description"), read_only=False)
+async def tool_code_propose(args: dict) -> str:
+    title = " ".join(str(args.get("titre", "")).split())[:100] or "Modification de Marcel"
+    body = str(args.get("description", "")).strip() + "\n\n---\nPréparée par Marcel lui-même, depuis son serveur."
+    branch = await code_call(workspace.commit_and_push(title))
+    if CODE_TEST_REMOTE:
+        code_log("proposée", f"{title} (branche {branch}, dépôt de test)")
+        return f"Branche {branch} poussée sur le dépôt de test (pas de pull request en test)."
+    pull = await code_call(github.open_pull(branch, title, body))
+    code_log("proposée", f"#{pull['number']} {pull['title']}", pull["html_url"], pull["number"])
+    return (f"Pull request #{pull['number']} : {pull['html_url']}\nFusionne-la avec marcel_code_fusionner quand tu "
+            "es sûr ; le serveur se met à jour seul quelques minutes après.")
+
+
+@mcp.tool("marcel_code_reprendre", "Revient sur la branche d'une pull request ouverte de Marcel pour la modifier.",
+          {"numero": {"type": "integer"}}, required=("numero",), read_only=False)
+async def tool_code_resume(args: dict) -> str:
+    pulls = await code_call(github.pulls())
+    return await code_call(workspace.resume(int(args.get("numero") or 0), pulls))
+
+
+async def open_pull(number: int) -> dict:
+    pull = next((p for p in await code_call(github.pulls()) if p["number"] == number), None)
+    if not pull:
+        raise ToolError(f"Pull request #{number} introuvable parmi celles ouvertes.")
+    return pull
+
+
+def checks_text(runs: list[dict]) -> str:
+    icons = {"success": "OK", "skipped": "ignorée", "neutral": "OK", None: "en cours"}
+    return "\n".join(f"- {r['name']} : {icons.get(r['conclusion'], 'ÉCHEC')}" for r in runs)
+
+
+@mcp.tool("marcel_code_ci", "Résultat des vérifications GitHub (tests du serveur, compilation de l'app iPhone) "
+          "d'une pull request, avec la fin du journal de ce qui a échoué.",
+          {"numero": {"type": "integer"}}, required=("numero",))
+async def tool_code_ci(args: dict) -> str:
+    pull = await open_pull(int(args.get("numero") or 0))
+    state, runs = await code_call(github.checks(pull["head"]["sha"]))
+    if state == "none":
+        return "Aucune vérification lancée pour l'instant (elles démarrent quelques secondes après le push)."
+    text = {"ok": "Tout est vert.", "pending": "Vérifications en cours (l'app met environ 10 minutes).",
+            "failed": "Des vérifications ont échoué."}[state] + "\n" + checks_text(runs)
+    for run in runs:
+        if run["status"] == "completed" and run["conclusion"] not in ("success", "skipped", "neutral"):
+            text += f"\n\nJournal de {run['name']} (fin) :\n" + await github.job_log(run["id"])
+    return text[-MAX_TOOL_LOG:]
+
+
+# garde-fou : fusion seulement si tout est vert
+@mcp.tool("marcel_code_fusionner",
+          "Fusionne une de tes pull requests dans main, seulement quand toutes les vérifications GitHub sont vertes. "
+          "Le VPS la déploie seul (deploy/auto-update.sh) et revient à la version précédente si le serveur ne "
+          "répond plus.", {"numero": {"type": "integer"}}, required=("numero",), read_only=False)
+async def tool_code_merge(args: dict) -> str:
+    number = int(args.get("numero") or 0)
+    pull = await open_pull(number)
+    if not pull["head"]["ref"].startswith("marcel/"):
+        raise ToolError("Tu ne fusionnes que tes propres pull requests (branches marcel/…) : celles de Claude Code "
+                        "ou de Codex, c'est l'utilisateur qui les relit et les fusionne.")
+    state, runs = await code_call(github.checks(pull["head"]["sha"]))
+    if state != "ok":
+        raise ToolError({"none": "Aucune vérification n'a encore tourné : attends une minute et réessaie.",
+                         "pending": "Vérifications en cours : réessaie dans quelques minutes.\n" + checks_text(runs),
+                         "failed": "Vérifications en échec : regarde marcel_code_ci, corrige, repropose.\n"
+                                   + checks_text(runs)}[state])
+    await code_call(github.merge(number, pull["title"], pull["head"]["sha"]))
+    code_log("fusionnée", f"#{number} {pull['title']}", pull["html_url"], number)
+    return f"#{number} fusionnée dans main. Déploiement automatique dans les minutes qui viennent (voir marcel_code_etat)."
+# fin garde-fou : fusion seulement si tout est vert
+
+
+async def revert_pull(number: int, by: str) -> str:
+    """Undoes a merged pull request: a revert on a new branch, its pull request, merged at once
+    (going back to a version that ran doesn't wait for the checks). The deploy follows."""
+    pull = await code_call(github.call("GET", f"/pulls/{number}"))
+    if not pull.get("merged_at") or not pull.get("merge_commit_sha"):
+        raise CodeError(f"#{number} n'a pas été fusionnée : rien à annuler.")
+    branch = await workspace.revert(pull["merge_commit_sha"], str(number))
+    title = f"Annule #{number} : {pull['title']}"[:100]
+    revert = await github.open_pull(branch, title, f"Annule #{number} ({by}).\n\n---\nPréparée par Marcel.")
+    await github.merge(revert["number"], title)
+    code_log("annulée", f"#{number} {pull['title']} ({by}, via #{revert['number']})", revert["html_url"], revert["number"])
+    return f"#{number} annulée par #{revert['number']}, fusionnée : le serveur revient en arrière dans quelques minutes."
+
+
+@mcp.tool("marcel_code_annuler", "Annule une pull request déjà fusionnée (nouvelle pull request qui la défait, "
+          "fusionnée tout de suite ; le déploiement suit).", {"numero": {"type": "integer"}},
+          required=("numero",), read_only=False)
+async def tool_code_revert(args: dict) -> str:
+    return await code_call(revert_pull(int(args.get("numero") or 0), "par Marcel"))
+
+
+@mcp.tool("marcel_code_etat", "Où en est le code : branche de travail, fichiers modifiés, pull requests ouvertes, "
+          "derniers déploiements et retours arrière.")
+async def tool_code_state(_: dict) -> str:
+    lines = []
+    if workspace.configured and (workspace.dir / ".git").exists():
+        branch = await code_call(workspace.branch())
+        changed = await code_call(workspace.changed_files())
+        lines.append(f"Branche de travail : {branch} ; fichiers modifiés : {', '.join(changed) or 'aucun'}.")
+    if GITHUB_TOKEN and not CODE_TEST_REMOTE:
+        pulls = await code_call(github.pulls())
+        lines.append("Pull requests ouvertes :\n" + ("\n".join(f"- #{p['number']} {p['title']} ({p['head']['ref']})"
+                                                             for p in pulls) or "- aucune"))
+    deploys = assistants.state("deploys", [])[-5:]
+    lines.append("Derniers déploiements :\n" + ("\n".join(
+        f"- {local_time(d['at'])} {d['status']} {d.get('commit', '')[:7]} {d.get('message', '')}" for d in deploys)
+        or "- aucun compte rendu (deploy/auto-update.sh n'est pas encore en place ?)"))
+    return "\n\n".join(lines)
+
+
+@mcp.tool("marcel_journaux", "Les dernières lignes du journal du serveur Marcel (erreurs, avertissements, ce que "
+          "fait le serveur), secrets masqués. Pour comprendre une panne ou un retour arrière.",
+          {"lignes": {"type": "integer", "description": "80 par défaut, 300 au plus"},
+           "niveau": {"type": "string", "enum": ["info", "warning", "error"]},
+           "cherche": {"type": "string", "description": "Ne garder que les lignes qui contiennent ce texte"}})
+def tool_logs(args: dict) -> str:
+    count = max(1, min(int(args.get("lignes") or 80), 300))
+    text = server_log.handler.tail(count, str(args.get("niveau") or ""), str(args.get("cherche") or ""))
+    deploys = [d for d in assistants.state("deploys", []) if d.get("log")]
+    if deploys and not args.get("cherche"):
+        last = deploys[-1]
+        text += (f"\n\nDernier déploiement avec journal ({local_time(last['at'])}, {last['status']}, "
+                 f"{last.get('commit', '')[:7]}) :\n{last['log']}")
+    return (text or "Journal vide depuis le dernier démarrage du serveur.")[-MAX_TOOL_LOG:]
+
+
+# MARK: Deployments
+
+class DeployReport(BaseModel):
+    status: Literal["deployed", "rolled_back", "failed", "skipped"]
+    commit: str = Field(default="", max_length=64)
+    message: str = Field(default="", max_length=500)
+
+
+@app.post("/v1/deploy/report", dependencies=[Depends(require_token)])
+async def deploy_report(body: DeployReport) -> dict:
+    """deploy/auto-update.sh says how a deployment went (on the VPS, with MARCEL_TOKEN)."""
+    entry = body.model_dump() | {"at": time.time(), "log": server_log.mask(body.log)[-6000:]}
+    assistants.set_state("deploys", assistants.state("deploys", [])[-19:] + [entry])
+    code_log({"deployed": "déployée", "rolled_back": "retour arrière", "failed": "déploiement raté",
+              "skipped": "déploiement ignoré"}[body.status], f"{body.commit[:7]} {body.message}".strip())
+    return entry
+
+
+class CodeRevert(BaseModel):
+    number: int
+
+
+@app.post("/v1/code/revert", dependencies=[Depends(require_token)])
+async def revert_from_app(body: CodeRevert) -> dict:
+    """The user tapped « Annuler » on a merge in Réglages › Code de Marcel."""
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif.")
+    if not workspace.configured or CODE_TEST_REMOTE:
+        raise HTTPException(503, "Outils de code non branchés sur GitHub.")
+    try:
+        return {"message": await revert_pull(body.number, "à ta demande")}
+    except CodeError as error:
+        raise HTTPException(409, str(error)) from None
+
+
+@app.get("/v1/code-log", dependencies=[Depends(require_token)])
+async def get_code_log() -> dict:
+    return {"configured": workspace.configured, "entries": list(reversed(assistants.state("code_log", [])))}
+

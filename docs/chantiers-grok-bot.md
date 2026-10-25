@@ -1,0 +1,157 @@
+# Marcel face à Grok Bot : ce qui manque
+
+Grok Bot (xAI, sorti le 11 août 2026, encore en bêta) n'est pas un chat : chaque « bot » est un
+agent qui tourne sur un ordinateur dans le cloud, garde ses connexions, apprend des tâches et
+travaille quand l'app est fermée. Ce qui suit vient des retours d'utilisateurs (forums, avis,
+retours après une semaine), lus en octobre 2026.
+
+## Ce que les utilisateurs aiment
+
+- Des bots toujours allumés, qui avancent l'app fermée et reviennent avec le résultat.
+- Un « chef de cabinet » qui fait le brief du lundi et le résumé du jour, et ne remonte que les
+  décisions à prendre (oui / non).
+- Des routines à heure fixe **et sur événement** (un e-mail qui arrive, un ticket, un webhook).
+- Des règles « demande d'abord » écrites en clair : envoyer, publier, supprimer ou acheter attend un
+  accord, puis on autorise un travail précis quand on a confiance.
+- Des skills partagées entre bots, et « Teach a Task » (on fait la tâche une fois devant le bot).
+- Des Pages : des tableaux qui se remettent à jour seuls.
+- La voix, et l'app iPhone synchronisée avec l'ordinateur.
+
+## Ce qu'ils reprochent (et où Marcel est déjà mieux)
+
+| Plainte sur Grok Bot | Marcel |
+| --- | --- |
+| On ne voit ni ne corrige ce que le bot a retenu | Mémoire visible, modifiable, effaçable (Réglages › Mémoire) |
+| On ne sait pas quel modèle a travaillé, on ne peut pas choisir | Modèle affiché sous chaque réponse, choisi dans le composeur, « Auto » |
+| Factures surprises, quotas vides en milieu de semaine | Jauge de tokens, budgets, plafond de routines par jour |
+| Un bot bloqué réessaie trop longtemps avant de demander de l'aide | Une mission qui répète trois fois la même étape ou dépasse 30 min s'arrête : « Marcel a besoin de toi » ; arrêt d'urgence |
+| Tous les bots partagent le même ordinateur et les mêmes connexions | Assistants sans outils ; e-mails lus en mode protégé ; coffre du navigateur jamais ouvert |
+| Une conversation sans fin qui recharge tout l'historique | Une conversation par sujet, nouvelle conversation en un geste |
+
+## Déjà fait dans l'app
+
+- Menu unique, assistants en modes, commandes « / » (modes, /nouveau, /code, /donnees, /routine,
+  /objectif, /web).
+- Relances : un assistant revient de lui-même dans sa conversation (une fois ou chaque semaine),
+  avec une notification à son nom.
+- Cartes de résultat avec « Annuler », ligne d'activité, questions de suite, « écrit… » sous le nom.
+- Chantier 1 (en partie) : une routine peut partir « à chaque nouvelle offre » ou « quand le planning
+  change » (`"quand": "offre" | "planning"`), sans outil qui agit. Reste : « e-mail d'un expéditeur
+  donné » et l'affichage du déclencheur dans l'écran Routines.
+- Chantier 2 : suggestion « Fais-moi un brief chaque matin » dans l'accueil de Marcel (routine à
+  7 h 30, seulement les décisions en oui / non).
+- Chantier 4 : mode vocal mains libres (bouton à la place d'« Envoyer » quand le champ est vide) :
+  dictée et voix sur l'iPhone, envoi après un silence, réponse lue, puis le micro se rouvre.
+- Chantier 5 : « Je bloque » — trois fois la même étape ou plus de 30 minutes, la mission s'arrête et
+  la notification « Marcel a besoin de toi » dit où elle bloque.
+
+## Et les « dots » de ChatGPT (OpenAI, sortis le 29 septembre 2026)
+
+Même idée que Grok Bot : un agent toujours allumé, avec son propre ordinateur dans le cloud. Il
+travaille entre deux conversations et revient quand il y a quelque chose à voir. Réservé à ChatGPT
+Pro (dès 100 $/mois), pas encore en Europe, réglage depuis l'ordinateur seulement.
+
+| Ce que les gens aiment | Marcel |
+| --- | --- |
+| Des tâches permanentes : plus besoin de réécrire la même demande chaque semaine | Routines et relances |
+| Le résultat est prêt au réveil, lancé la veille au soir | Missions qui tournent l'app fermée |
+| Il prévient seul : e-mail urgent, agenda qui change, panne | Offres et planning oui ; e-mails urgents non (**manque**) |
+| Règles réglables **action par action** (automatique → demander → rendre la main), qu'on assouplit petit à petit | Règles fixes dans le code (**manque** : réglage par type d'action) |
+| Onglet Activité : en cours / programmé / terminé, plus les demandes en attente | Missions, Routines et Idées sont trois écrans séparés (**manque** : une vue unique) |
+| On le regarde travailler et on peut prendre la main (mot de passe tapé sans que le modèle le voie) | Pas de vue en direct du navigateur du robot (**manque**, gros chantier) |
+| Le même agent sur ChatGPT, Slack, SMS et en appel vocal | App iPhone et Telegram (via Hermes), mode vocal |
+
+| Ce qu'ils reprochent | Marcel |
+| --- | --- |
+| Silence ambigu : rien d'important, ou il a raté quelque chose ? | **Manque** : le brief devrait dire « rien à signaler » et ce qu'il a regardé |
+| A envoyé un e-mail sans demander, alors qu'il avait demandé la première fois | Règles appliquées par le serveur, pas par le modèle : jamais seul si un e-mail est en jeu |
+| « Terminé » ne veut pas dire que c'est vraiment fait | **Manque** : vérifier le résultat avant de marquer une mission terminée |
+| Coût imprévisible après le mois de lancement | Jauge de tokens et plafonds |
+| Lent : deux minutes pour démarrer l'ordinateur cloud | Serveur toujours allumé |
+
+Côté Grok (le chat, pas Grok Bot), les utilisateurs citent aussi deux choses simples :
+**le style de réponse** (concis, formel, pédagogue) et **la conversation privée**, ni gardée ni
+apprise. Marcel n'a ni l'un ni l'autre (**manque**).
+
+### Ce qui manquait, fait le 25 octobre 2026
+
+1. « Rien à signaler » : une routine le dit en premier quand rien ne bouge, et le serveur ajoute
+   lui-même à la fin « Regardé : ton planning, 2 objectifs, … » (ce qu'il avait vraiment sous les yeux).
+2. Conversation privée (menu « … » ou `/prive`) : rien gardé sur l'iPhone, aucune mémoire lue ni
+   apprise, réponse jamais cherchée plus tard et effacée du serveur 10 minutes après.
+3. Style de réponse : Réglages › Réponses (concises, normales, détaillées).
+4. Vue Activité (menu « … ») : à voir (bloqué, à vérifier, idées), en cours, programmé, terminé.
+5. Vérification avant « terminé » : si la réponse dit « c'est fait » sans qu'aucune action n'ait
+   tourné, ou si une étape a été coupée, la mission est marquée « À vérifier » au lieu de « Livrée ».
+6. E-mails : une routine peut partir à chaque nouvel e-mail (`"quand": "email"`) ou d'un expéditeur
+   (`"email:adresse"`), toujours en mode protégé (modèle seul, sans outil) ; « préviens-moi d'un
+   e-mail urgent » ne dérange que si c'est urgent.
+7. Règles « demande d'abord » par type d'action (Réglages › Règles) : réglage, assistant, objectif,
+   routine, navigateur, chacun « tout seul » ou « demander » (bouton « Valider »). Les limites fixes
+   restent : jamais supprimer ni épingler, jamais le coffre, jamais seul avec un e-mail ou un fichier.
+8. Voir le robot RMA travailler (Activité › Voir le robot) : son écran toutes les 2 s pendant qu'il
+   lit le portail, champs masqués. « Je prends la main » l'écarte du portail jusqu'à ce qu'on la rende.
+   **Reste** : piloter son navigateur depuis l'iPhone (toucher, taper), à faire seulement si utile.
+
+## Chantiers que Marcel peut faire lui-même
+
+Chacun se lance en envoyant le message tel quel à Marcel (mode Marcel). Il suit sa skill
+`marcel-code` : branche, modification, vérification, pull request, fusion seulement au vert. Pour
+un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
+
+### 1. Routines sur événement — fait (reste : déclencheur choisi dans l'écran Routines)
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 1. Ajoute aux routines un déclencheur en plus de
+> l'heure : « nouvelle offre RMA », « planning modifié » (lus par le robot RMA) et « e-mail d'un
+> expéditeur donné ». Le bloc `routine` accepte `"quand": "offre" | "planning" | "email:adresse"`.
+> La routine part au plus une fois par événement, sans outil qui agit, comme les autres (et en mode
+> protégé pour les e-mails). Tests dans backend/tests, puis l'écran Routines affiche le déclencheur.
+
+### 2. Brief du matin (chef de cabinet) — fait
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 2. Propose dans l'accueil de Marcel une suggestion
+> « Fais-moi un brief chaque matin » qui crée une routine à 7 h 30 : missions du jour, offres
+> nouvelles, objectifs qui bougent, e-mails importants (en mode protégé), et seulement les décisions
+> à prendre, en oui / non. Le brief arrive dans sa propre conversation avec une notification.
+
+### 3. Assistants qui agissent, avec des règles « demande d'abord » (règles faites ; reste : outils en lecture par assistant)
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 3. Aujourd'hui un assistant n'a aucun outil.
+> Ajoute à chaque assistant une liste d'outils en lecture (planning, offres, robot, recherche web),
+> réglable dans sa fiche, et des règles « demande d'abord » en clair : tout ce qui envoie, publie,
+> achète ou réserve s'arrête et attend « Valider » dans sa conversation. Rien ne supprime ni
+> n'épingle. Les e-mails restent lus en mode protégé, sans outil.
+
+### 4. Mode vocal mains libres — fait
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 4. Ajoute un mode vocal dans l'app : un bouton à
+> côté du micro ouvre un écran plein avec la mascotte ; la dictée part seule quand l'utilisateur se
+> tait, la réponse est lue à voix haute, puis le micro se rouvre. Tout reste sur l'iPhone (dictée et
+> voix locales), rien d'autre n'est envoyé que le texte.
+
+### 5. « Je bloque, aide-moi » — fait
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 5. Quand une mission tourne depuis plus de 10
+> minutes, ou répète la même étape trois fois, elle s'arrête et envoie une notification : ce qu'elle
+> essayait, où elle bloque, et une question simple. La réponse de l'utilisateur la relance.
+
+### 6. Pages qui se mettent à jour
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 6. Un assistant peut épingler dans sa fiche une
+> « page » : un petit tableau Markdown (missions de la semaine, offres en attente, objectifs)
+> recalculé par le serveur à chaque ouverture, sans modèle. Commence par Planning et Recrutements.
+
+## Sources
+
+- [ChatGPT dots (Zapier)](https://zapier.com/blog/chatgpt-dots.md)
+- [ChatGPT dots (Lindy)](https://www.lindy.ai/blog/chatgpt-dots)
+- [OpenAI Dots Review](https://aiprofitboardroom.com/blog/openai-dots/)
+- [Grok AI Reddit: What Users Think](https://www.aitooldiscovery.com/guides/grok-reddit)
+- [Grok reviews (G2)](https://www.g2.com/products/grok-4/reviews)
+
+- [What Is Grok Bot? A Paying User's Week-One Review](https://christopheralarcon.com/blog/what-is-grok-bot)
+- [Grok Bot Review (2026): Strengths, Limits & Who It's For](https://grok-bots.com/grok-bot-review)
+- [7 levels of Grok Bot](https://wrightmode.substack.com/p/7-levels-of-grok-bot-from-your-first)
+- [Grok Bot Problems and Limitations: What Users Are Reporting](https://cellcog.ai/blog/grok-bot-problems/)
+- [Grok Bot Routines don't wake up at the beginning of a new day](https://forum.cursor.com/t/grok-bot-routines-dont-wake-up-at-the-beginning-of-a-new-day/172545)
+- [Grok Bot can now add events, set reminders… (Digital Trends)](https://www.digitaltrends.com/phones/grok-bot-can-now-manage-your-calendar-reminders-and-more/)

@@ -19,3 +19,8 @@ backend/compose.yaml
 backend/guard.env*
 *.avant-guard-*
 backend/rma.env
+
+# Déploiement automatique (deploy/auto-update.sh)
+backend/.auto-update.lock
+backend/.auto-update-refused
+backend/.hermes-overrides-refused

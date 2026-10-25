@@ -9,7 +9,10 @@
 #
 # Chaque nuit à 3 h 30 (crontab -e) :
 #   30 3 * * * cd $HOME/marcel/backend && ./deploy/backup.sh >> $HOME/backups/marcel-backup.log 2>&1
-# Restaurer : age -d -i ~/hermes-backup.key marcel-<date>.tar.gz.age | tar -xz -C <dossier>
+# Chaque sauvegarde est vérifiée avant d'être chiffrée (bases lisibles, intactes, comptées) :
+# en cas de problème, elle est quand même gardée, mais le script le dit et finit en erreur.
+# Une copie hors du VPS : deploy/pull-backup.sh, depuis le Mac. Restaurer et tester une
+# sauvegarde : deploy/restore.sh (sur le Mac, avec la clé privée).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,6 +31,10 @@ work=$(mktemp -d)
 trap 'sudo rm -rf "$work"' EXIT
 
 docker compose exec -T marcel-api python -m app.backup /data > "$work/marcel-data.tar.gz"
+checked=ok
+if ! docker compose exec -T marcel-api python -m app.backup check - < "$work/marcel-data.tar.gz"; then
+  checked=failed
+fi
 if docker compose ps --services --status running | grep -qx llm-guard; then
   docker compose exec -T llm-guard python -m app.backup /data > "$work/guard-data.tar.gz"
 fi
@@ -44,3 +51,8 @@ echo "Sauvegarde : $out ($(du -h "$out" | cut -f1))"
 
 # Only the most recent ones are kept.
 ls -1t "$dest"/marcel-*.tar.gz.age 2>/dev/null | tail -n +"$((keep + 1))" | xargs -r rm --
+
+if [[ "$checked" != ok ]]; then
+  echo "ATTENTION : la vérification de la base a trouvé un problème (voir plus haut)." >&2
+  exit 2
+fi

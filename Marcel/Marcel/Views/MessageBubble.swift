@@ -3,19 +3,22 @@ import SwiftUI
 struct MessageBubble: View {
     @Environment(ChatStore.self) private var store
     let message: ChatMessage
+    @State private var selecting = false
 
     private var isUser: Bool { message.role == .user }
     private var isAssistantChat: Bool { store.conversation.assistantID != nil }
+    private var steps: [MissionAction] { message.actions.filter { !$0.isResult } }
+    private var results: [MissionAction] { message.actions.filter(\.isResult) }
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 60) }
             VStack(alignment: .leading, spacing: 6) {
-                if !isUser && !message.actions.isEmpty {
-                    ActionsCard(actions: message.actions, isRunning: message.status == .streaming)
+                if !isUser && (!steps.isEmpty || message.status == .streaming) {
+                    StepsLine(actions: steps, isRunning: message.status == .streaming)
                 }
                 if message.content.isEmpty && message.status == .streaming {
-                    TypingIndicator()
+                    // Nothing written yet: the line above says what Marcel is doing.
                 } else if isUser {
                     if !message.attachments.isEmpty {
                         MessageAttachmentsView(attachments: message.attachments)
@@ -23,26 +26,28 @@ struct MessageBubble: View {
                     if !message.content.isEmpty {
                         Text(message.content)
                     }
-                } else if isAssistantChat {
-                    // An assistant's proposal comes as a block at the end: shown as a card instead.
-                    let parts = AssistantProposal.split(AutoBlocks.strip(message.content))
-                    MarkdownView(text: parts.text)
-                    if let proposal = parts.proposal, message.status == .complete {
-                        ProposalCard(message: message, proposal: proposal)
-                    }
                 } else {
                     // No text selection: it would swallow the long press that opens the menu below.
-                    // An assistant Marcel proposes to create comes as a block: shown as a card.
-                    // So does a change to an assistant's settings he proposes ("Appliquer").
+                    // A new assistant or a change of settings comes as a block at the end. Carried out
+                    // by the server, it shows as a result below; otherwise as a card to approve.
                     let parts = AssistantDraft.split(AutoBlocks.strip(message.content))
                     let tuned = AssistantProposal.split(parts.text)
                     MarkdownView(text: tuned.text)
-                    if let draft = parts.draft, message.status == .complete {
-                        NewAssistantCard(message: message, draft: draft)
+                    if message.status == .complete {
+                        if let draft = parts.draft, !message.autoApplied("assistant") {
+                            NewAssistantCard(message: message, draft: draft)
+                        }
+                        if let proposal = tuned.proposal, proposal.assistant != nil || isAssistantChat,
+                           !message.autoApplied("reglage") {
+                            ProposalCard(message: message, proposal: proposal)
+                        }
+                        if let request = CodeRequestDraft.find(in: message.content) {
+                            CodeRequestCard(message: message, draft: request)
+                        }
                     }
-                    if let proposal = tuned.proposal, proposal.assistant != nil, message.status == .complete {
-                        ProposalCard(message: message, proposal: proposal)
-                    }
+                }
+                if !isUser {
+                    ForEach(results) { ResultRow(action: $0, message: message) }
                 }
                 statusLine
             }
@@ -50,7 +55,12 @@ struct MessageBubble: View {
             .padding(.vertical, 10)
             .background(isUser ? Theme.userBubble : Theme.assistantBubble, in: .rect(cornerRadius: 20))
             .contextMenu {
-                Button("Copier", systemImage: "doc.on.doc") { UIPasteboard.general.string = message.content }
+                Button("Copier", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = isUser ? message.content : SelectableTextSheet.plain(message.content)
+                }
+                if !message.content.isEmpty && message.status != .streaming {
+                    Button("Sélectionner le texte", systemImage: "selection.pin.in.out") { selecting = true }
+                }
                 if !isUser && message.status != .streaming && !message.content.isEmpty {
                     let reading = store.speaker.speakingID == message.id
                     Button(reading ? "Arrêter la lecture" : "Lire à voix haute",
@@ -67,6 +77,9 @@ struct MessageBubble: View {
                 }
             }
             if !isUser { Spacer(minLength: 40) }
+        }
+        .sheet(isPresented: $selecting) {
+            SelectableTextSheet(text: message.content)
         }
         .padding(.horizontal)
         .accessibilityElement(children: .combine)
@@ -87,28 +100,5 @@ struct MessageBubble: View {
         case .streaming:
             EmptyView()
         }
-    }
-}
-
-private struct TypingIndicator: View {
-    @State private var phase = 0
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<3) { index in
-                Circle()
-                    .fill(.secondary)
-                    .frame(width: 7, height: 7)
-                    .opacity(phase == index ? 1 : 0.35)
-            }
-        }
-        .padding(.vertical, 6)
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(300))
-                withAnimation(.easeInOut(duration: 0.2)) { phase = (phase + 1) % 3 }
-            }
-        }
-        .accessibilityLabel("Marcel écrit")
     }
 }

@@ -9,6 +9,7 @@ enum BackgroundRefresh {
     static let enabledKey = "localNotifications"
     private static let notifiedKey = "notifiedItems"
     private static let emergencyKey = "emergencyStop"
+    private static let codeLogSeenKey = "codeLogSeen"
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: enabledKey) }
 
@@ -48,6 +49,19 @@ enum BackgroundRefresh {
             }
         }
 
+        // Routines that ran: their reply is put in their conversation when the app opens.
+        if let runs = try? await api.pendingRoutineRuns() {
+            for run in runs.filter({ !notified.contains("routine-\($0.id)") }).prefix(3) {
+                let firstLine = (run.text ?? "").split(separator: "\n").first.map(String.init) ?? ""
+                // An assistant's relance comes from it, like a message.
+                let title = run.assistantName.flatMap { $0.isEmpty ? nil : $0 } ?? "Routine · \(run.title ?? "Marcel")"
+                await post(id: "routine-\(run.id)", title: title,
+                           body: run.status == "done" ? AutoBlocks.strip(firstLine).replacingOccurrences(of: "**", with: "")
+                                                      : "La routine n'a pas pu aboutir.")
+                notified.insert("routine-\(run.id)")
+            }
+        }
+
         let waiting = ConversationCache().loadAll().compactMap { conversation -> (String, String)? in
             guard let reply = conversation.messages.last, reply.status == .streaming,
                   reply.serverID == nil || reply.serverID == settings.activeID,
@@ -56,8 +70,13 @@ enum BackgroundRefresh {
         }
         for (missionID, title) in waiting.prefix(5) {
             guard let mission = try? await api.mission(id: missionID), mission.status != "running" else { continue }
-            let body = mission.status == "done" ? title : "\(title) : la réponse n'a pas pu aboutir."
-            await post(id: "mission-\(missionID)", title: "Marcel a répondu", body: body)
+            // A mission going in circles stops and asks how to go on: say so, not "failed".
+            if let error = mission.error, error.hasPrefix("Je bloque") {
+                await post(id: "mission-\(missionID)", title: "Marcel a besoin de toi", body: "\(title) : \(error)")
+            } else {
+                let body = mission.status == "done" ? title : "\(title) : la réponse n'a pas pu aboutir."
+                await post(id: "mission-\(missionID)", title: "Marcel a répondu", body: body)
+            }
             notified.insert("mission-\(missionID)")
         }
 
@@ -82,6 +101,17 @@ enum BackgroundRefresh {
                     : "Réponse non envoyée ⚠️"
                 await post(id: "answer-\(offer.id)", title: title, body: "\(offer.store) · \(offer.answerMessage)")
                 notified.insert("answer-\(offer.id)")
+            }
+        }
+
+        // What Marcel did to his own code: merges, undos, deployments that went back or failed.
+        if let log = try? await api.codeLog() {
+            let shown = ["fusionnée": "Marcel a fusionné", "annulée": "Fusion annulée",
+                         "retour arrière": "Déploiement annulé ⚠️", "déploiement raté": "Serveur en panne ⚠️"]
+            let since = UserDefaults.standard.object(forKey: codeLogSeenKey) as? Date ?? .now
+            UserDefaults.standard.set(Date.now, forKey: codeLogSeenKey)
+            for entry in log.entries.filter({ $0.at > since && shown[$0.action] != nil }).prefix(3) {
+                await post(id: "code-\(entry.at.timeIntervalSince1970)", title: shown[entry.action]!, body: entry.detail)
             }
         }
 

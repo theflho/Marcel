@@ -39,7 +39,9 @@ final class ChatStore {
 
     private(set) var conversations: [Conversation]
     private(set) var projects: [Project]
-    private(set) var currentID: UUID
+    private(set) var currentID: UUID {
+        didSet { if oldValue != currentID { dropPrivate(oldValue) } }
+    }
     private(set) var serverStatus: ServerStatus = .unknown
     private(set) var lastError: String? {
         didSet { lastErrorAction = nil }
@@ -66,7 +68,7 @@ final class ChatStore {
     private(set) var goalProposals: [Goal] = []
     /// Ideas Marcel found on its own that the user hasn't looked at yet (badge in the header).
     private(set) var unseenIdeas = 0
-    /// Marcel's assistants (Planning, Pointage, Mails, Veille), each with its own conversation.
+    /// Marcel's assistants (Planning, Pointage, Mails, Veille): modes a conversation can talk to.
     private(set) var assistants: [Assistant] = []
     /// Recruitment offers waiting for an answer, shown in the Recrutements assistant's conversation.
     private(set) var offers: [Offer] = []
@@ -91,6 +93,11 @@ final class ChatStore {
                 loaded[c].messages[m].status = .stopped
             }
         }
+        // An assistant's old conversation that never went past its welcome: the welcome view says it now.
+        for stale in loaded where stale.assistantID != nil && !stale.messages.contains(where: { $0.role == .user }) {
+            cache.delete(stale.id)
+        }
+        loaded.removeAll { $0.assistantID != nil && !$0.messages.contains { $0.role == .user } }
         if loaded.isEmpty { loaded = [Conversation()] }
         conversations = loaded
         projects = cache.loadProjects()
@@ -129,11 +136,32 @@ final class ChatStore {
 
     // MARK: - Conversations
 
-    /// Conversations worth listing: the open one plus any that have messages.
+    /// Conversations worth listing, whatever their mode: any that have messages.
     var listedConversations: [Conversation] {
         conversations
-            .filter { !$0.messages.isEmpty && $0.assistantID == nil }
+            .filter { !$0.messages.isEmpty && !$0.isPrivate }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// A private conversation: nothing kept on the iPhone nor learnt on the server.
+    /// Réglages › Réponses: "" (normal), "concis" or "detaille", sent with each message.
+    static let replyStyleKey = "replyStyle"
+
+    func newPrivateConversation() {
+        dropCurrentIfEmpty()
+        let fresh = Conversation(title: "Conversation privée", isPrivate: true)
+        conversations.append(fresh)
+        currentID = fresh.id
+        lastError = nil
+        goalProposals = []
+    }
+
+    /// Leaving a private conversation erases it.
+    private func dropPrivate(_ id: UUID) {
+        guard let conversation = conversations.first(where: { $0.id == id }), conversation.isPrivate else { return }
+        streamTasks[id]?.cancel()
+        AttachmentStore.delete(conversation.messages.flatMap(\.attachments))
+        conversations.removeAll { $0.id == id }
     }
 
     func select(_ id: UUID) {
@@ -145,17 +173,56 @@ final class ChatStore {
         Task { await refreshGoalProposals() }
     }
 
-    func newConversation(in projectID: UUID? = nil) {
+    /// A blank conversation, with Marcel or with an assistant (`assistantID`), as many as wanted.
+    func newConversation(in projectID: UUID? = nil, assistant assistantID: String? = nil) {
         if conversation.messages.isEmpty {
             // Reuse the blank conversation instead of stacking empty ones.
-            mutate(currentID) { $0.projectID = projectID }
-            return
+            mutate(currentID) {
+                $0.projectID = projectID
+                $0.assistantID = assistantID
+            }
+        } else {
+            let fresh = Conversation(projectID: projectID, assistantID: assistantID)
+            conversations.append(fresh)
+            currentID = fresh.id
+            lastError = nil
+            goalProposals = []
         }
-        let fresh = Conversation(projectID: projectID)
-        conversations.append(fresh)
-        currentID = fresh.id
-        lastError = nil
-        goalProposals = []
+        if assistantID != nil { Task { await refreshAssistants() } }
+    }
+
+    /// Opens a bot, like Grok Bot: Marcel (nil) or an assistant, at its latest conversation, or a
+    /// new one when it has none yet. A conversation stays with the bot it was started with.
+    func openBot(_ assistantID: String?) {
+        if conversation.assistantID == assistantID, !conversation.isPrivate { return }
+        if let latest = listedConversations.first(where: { $0.assistantID == assistantID && $0.projectID == nil }) {
+            select(latest.id)
+        } else {
+            newConversation(assistant: assistantID)
+        }
+    }
+
+    /// The last thing said in a bot's latest conversation, for its row in the menu.
+    func lastLine(ofBot assistantID: String?) -> String? {
+        listedConversations.first { $0.assistantID == assistantID }?.messages.last
+            .map { message in
+                // Plain text: no Markdown marks in a one-line preview.
+                message.content.filter { !"*#`>_".contains($0) }
+                    .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            }
+    }
+
+    /// A suggestion touched (on the welcome or under a reply): sent at once as the user's message.
+    /// What was waiting in the composer stays there.
+    func sendSuggestion(_ text: String) {
+        guard !isStreaming, !emergencyActive else { return }
+        let previousDraft = draft
+        let previousAttachments = pendingAttachments
+        draft = text
+        pendingAttachments = []
+        send()
+        draft = previousDraft
+        pendingAttachments = previousAttachments
     }
 
     func rename(_ id: UUID, to title: String) {
@@ -274,6 +341,7 @@ final class ChatStore {
             if assistants.isEmpty { await refreshAssistants() }
             resumeMissions()
             await refreshGoalProposals()
+            await importRoutineRuns()
         case 401, 403: serverStatus = .unauthorized
         default: serverStatus = .unreachable
         }
@@ -422,26 +490,15 @@ final class ChatStore {
         conversation.assistantID.flatMap { id in assistants.first { $0.id == id } }
     }
 
-    /// The assistant's own conversation, started with its welcome the first time.
-    func conversation(forAssistant id: String) -> Conversation? {
-        conversations.first { $0.assistantID == id }
-    }
-
-    func openAssistant(_ assistant: Assistant) {
-        if let existing = conversation(forAssistant: assistant.id) {
-            select(existing.id)
-        } else {
-            let fresh = Conversation(title: assistant.name,
-                                     messages: [ChatMessage(role: .assistant, content: assistant.welcome, serverID: settings.activeID)],
-                                     assistantID: assistant.id)
-            dropCurrentIfEmpty()
-            conversations.append(fresh)
-            currentID = fresh.id
-            lastError = nil
-            goalProposals = []
-            persist(fresh.id)
+    /// A setting changed by hand in the Assistants screen: checked and saved by the server.
+    func updateSetting(_ key: String, to value: SettingValue, of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            replace(try await api.updateAssistant(id: assistant.id, changes: [key: value]))
+            if assistant.id == "planning" { await syncPlanning(force: true) }
+        } catch {
+            report("Réglage non appliqué : \(error.localizedDescription)", action: action(for: error))
         }
-        Task { await refreshAssistants() }
     }
 
     /// Fetches the assistants, then applies Pointage's settings to the reminders on this iPhone.
@@ -539,37 +596,131 @@ final class ChatStore {
             replace(created)
             updateMessage(messageID, in: conversationID) { $0.proposalDecision = "applied" }
             persist(conversationID, touch: false)
-            openAssistant(created)
+            newConversation(assistant: created.id)
         } catch {
             report("Assistant non créé : \(error.localizedDescription)", action: action(for: error))
         }
     }
 
-    /// Deletes an assistant the user made, with its conversation.
+    /// Deletes an assistant the user made; its conversations stay, back with Marcel.
     func deleteAssistant(_ assistant: Assistant) async {
         guard assistant.isCustom, !emergencyActive, let api = settings.api else { return }
         do {
             try await api.deleteAssistant(id: assistant.id)
             assistants.removeAll { $0.id == assistant.id }
-            if let conversation = conversation(forAssistant: assistant.id) { delete(conversation.id) }
+            for conversation in conversations where conversation.assistantID == assistant.id {
+                mutate(conversation.id) { $0.assistantID = nil }
+                persist(conversation.id, touch: false)
+            }
         } catch {
             report("Assistant non supprimé : \(error.localizedDescription)", action: action(for: error))
         }
     }
 
-    /// Starts the assistant's conversation over (its settings and instructions stay).
-    func resetAssistantConversation(_ assistant: Assistant) {
-        guard let existing = conversation(forAssistant: assistant.id), !isStreaming(existing.id) else { return }
-        conversations.removeAll { $0.id == existing.id }
-        cache.delete(existing.id)
-        AttachmentStore.delete(existing.messages.flatMap(\.attachments))
-        let fresh = Conversation(title: assistant.name,
-                                 messages: [ChatMessage(role: .assistant, content: assistant.welcome, serverID: settings.activeID)],
-                                 assistantID: assistant.id)
-        conversations.append(fresh)
-        currentID = fresh.id
-        lastError = nil
-        persist(fresh.id)
+    /// The user approved what waited under an "ask first" rule: the server does it now.
+    func approve(_ action: MissionAction, in messageID: UUID) async {
+        guard !emergencyActive,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
+              let reply = message(messageID, in: conversation.id), let missionID = reply.missionID,
+              let api = api(forServer: reply.serverID) else { return }
+        do {
+            let card = try await api.approve(card: action.id, missionID: missionID)
+            updateMessage(messageID, in: conversation.id) { message in
+                if let index = message.actions.firstIndex(where: { $0.id == action.id }) { message.actions[index] = card }
+            }
+            persist(conversation.id, touch: false)
+        } catch {
+            report("Pas validé : \(error.localizedDescription)", action: self.action(for: error))
+        }
+    }
+
+    /// The user took back what Marcel did himself at the end of a reply ("Annuler" on its result).
+    func undo(_ action: MissionAction, in messageID: UUID) async {
+        guard let undo = action.undo, !emergencyActive,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
+              let api = api(forServer: message(messageID, in: conversation.id)?.serverID) else { return }
+        do {
+            switch undo.kind {
+            case "reglage":
+                guard let assistantID = undo.assistant else { return }
+                if !(undo.changes ?? [:]).isEmpty || undo.mood != nil {
+                    replace(try await api.updateAssistant(id: assistantID, changes: undo.changes ?? [:], mood: undo.mood))
+                }
+                if let note = undo.instruction {
+                    replace(try await api.deleteInstruction(assistantID: assistantID, id: note))
+                }
+                if assistantID == "planning" { await syncPlanning(force: true) }
+            case "assistant":
+                guard let id = undo.id else { return }
+                if let created = assistants.first(where: { $0.id == id }) {
+                    await deleteAssistant(created)
+                } else {
+                    try await api.deleteAssistant(id: id)
+                }
+            case "objectif":
+                guard let id = undo.id else { return }
+                _ = try await api.updateGoal(id: id, GoalChange(status: "dismissed"))
+            case "routine":
+                guard let id = undo.id else { return }
+                try await api.deleteRoutine(id: id)
+            default:
+                return
+            }
+            updateMessage(messageID, in: conversation.id) { $0.undone.append(action.id) }
+            persist(conversation.id, touch: false)
+        } catch {
+            report("Pas annulé : \(error.localizedDescription)", action: self.action(for: error))
+        }
+    }
+
+    // MARK: - Code requests
+
+    /// The user tapped "Envoyer à Claude Code" (or Codex) under Marcel's request: GitHub gets the issue.
+    func sendCodeRequest(from messageID: UUID) async -> CodeRequest? {
+        guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
+              let reply = message(messageID, in: conversation.id), let missionID = reply.missionID,
+              !emergencyActive, let api = api(forServer: reply.serverID) else { return nil }
+        do {
+            let sent = try await api.sendCodeRequest(missionID: missionID)
+            updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
+            persist(conversation.id, touch: false)
+            return sent
+        } catch {
+            report("Demande non envoyée : \(error.localizedDescription)", action: action(for: error))
+            return nil
+        }
+    }
+
+    // MARK: - Routines
+
+    /// Puts the replies of routines that ran on the server in their own conversation (one per
+    /// routine, which the user can answer like any other).
+    func importRoutineRuns() async {
+        guard !emergencyActive, let api = settings.api, let runs = try? await api.pendingRoutineRuns() else { return }
+        for run in runs {
+            guard let rawID = run.conversationID, let id = UUID(uuidString: rawID) else { continue }
+            // A reply is being written there: the routine's comes after it, next time.
+            guard !isStreaming(id) else { continue }
+            let content = run.status == "done"
+                ? (run.text ?? "")
+                : "La routine « \(run.title ?? "") » n'a pas pu aboutir : \(run.error.isEmpty ? "erreur inconnue" : run.error)."
+            var reply = ChatMessage(role: .assistant, content: content, createdAt: run.at, serverID: settings.activeID,
+                                    model: run.model)
+            reply.missionID = run.missionID
+            reply.actions = run.actions ?? []
+            if conversations.contains(where: { $0.id == id }) {
+                mutate(id) { conversation in
+                    guard !conversation.messages.contains(where: { $0.missionID == run.missionID }) else { return }
+                    conversation.messages.append(reply)
+                }
+            } else {
+                let assistantID = run.assistant.flatMap { $0.isEmpty ? nil : $0 }
+                conversations.append(Conversation(id: id, title: run.title ?? "Routine", messages: [reply],
+                                                  assistantID: assistantID))
+            }
+            persist(id)
+            try? await api.markRoutineRunDelivered(id: run.id)
+        }
     }
 
     // MARK: - Ideas
@@ -703,6 +854,8 @@ final class ChatStore {
     }
 
     func send() {
+        // "/planning …": the mode changes, then the rest is sent (nothing when it was only that).
+        if !isStreaming, applySlashMode(), draft.isEmpty, pendingAttachments.isEmpty { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard canSend else { return }
@@ -738,9 +891,16 @@ final class ChatStore {
                 try await self.uploadAttachments(of: userMessageID, in: id, using: api)
                 let history = self.conversations.first { $0.id == id }?.messages.filter { $0.status == .complete } ?? []
                 let assistantID = self.conversations.first { $0.id == id }?.assistantID
+                let isPrivate = self.conversations.first { $0.id == id }?.isPrivate ?? false
                 let mission = try await api.startMission(conversationID: id, messages: history, model: model,
-                                                         deviceContext: Agenda.upcoming(), assistant: assistantID)
-                self.updateMessage(reply.id, in: id) { $0.missionID = mission.id }
+                                                         deviceContext: isPrivate ? nil : Agenda.upcoming(),
+                                                         assistant: assistantID, isPrivate: isPrivate,
+                                                         style: UserDefaults.standard.string(forKey: Self.replyStyleKey) ?? "")
+                self.updateMessage(reply.id, in: id) { message in
+                    message.missionID = mission.id
+                    // "Auto" becomes the model the server picked for this message.
+                    if let used = mission.model { message.model = used }
+                }
                 self.persist(id)
             } catch {
                 if Task.isCancelled {
@@ -951,7 +1111,8 @@ final class ChatStore {
 
     private func persist(_ id: UUID, touch: Bool = true) {
         if touch { mutate(id) { $0.updatedAt = .now } }
-        guard let conversation = conversations.first(where: { $0.id == id }), !conversation.messages.isEmpty else { return }
+        guard let conversation = conversations.first(where: { $0.id == id }), !conversation.messages.isEmpty,
+              !conversation.isPrivate else { return }
         cache.save(conversation)
     }
 }

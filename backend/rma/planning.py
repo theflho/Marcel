@@ -36,6 +36,10 @@ MARCEL_URL = os.environ.get("MARCEL_URL", "http://marcel-api:8000").rstrip("/")
 PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 HOUR = int(os.environ.get("RMA_HOUR") or 19)
 DATA = Path(os.environ.get("RMA_DATA_DIR", "/data"))
+# While the browser is open, what it shows goes to Marcel this often, so the user can watch the
+# robot work from the app. Every input is masked: no login, no password ever leaves.
+SCREEN_EVERY = 2.0
+STEP = ["Ouverture du portail"]
 # An offer's details (hours, conflict, address) are opened again only after this long.
 DETAILS_TTL = 12 * 3600
 
@@ -168,6 +172,7 @@ async def offers_text(page, seconds: int = 20) -> str:
 
 
 async def read_offers(page) -> list[dict] | None:
+    STEP[0] = "Lecture des offres"
     """The offers waiting for an answer (first tab, shown by default). No button is pressed.
     None when the page didn't show up, so the known offers aren't wiped."""
     await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
@@ -294,6 +299,7 @@ CANCEL = re.compile(r"annuler|non|fermer|retour", re.IGNORECASE)
 
 
 async def answer_offer(page, request: dict) -> tuple[bool, str]:
+    STEP[0] = f"Réponse à l'offre {request.get('store', '')}"
     """Gives the user's answer to one offer, after their "Oui" in the app (one per offer).
     Checks it is the same offer, presses its one button, confirms the portal's own confirmation if
     it asks; backs off, and says why, if the portal wants anything else (a reason…)."""
@@ -379,9 +385,45 @@ async def accept_terms_window(page) -> None:
     raise RuntimeError(f"Fenêtre des CGU : aucun bouton d'acceptation reconnu parmi {names}.")
 
 
+async def stream_screen(page) -> None:
+    """Sends what the page shows to Marcel until cancelled (best effort: a failure skips a frame)."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        while True:
+            try:
+                shot = await page.screenshot(type="jpeg", quality=45, mask=[page.locator("input")],
+                                             mask_color="#888888", timeout=5_000)
+                await client.post(f"{MARCEL_URL}/v1/robot/screen", content=shot, params={"step": STEP[0][:80]},
+                                  headers={"X-Planning-Key": PLANNING_KEY, "Content-Type": "image/jpeg"})
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(SCREEN_EVERY)
+
+
+class watched:
+    """`async with watched(page):` streams the page while the block runs, then says it's over."""
+
+    def __init__(self, page):
+        self.page = page
+
+    async def __aenter__(self):
+        self.task = asyncio.create_task(stream_screen(self.page))
+
+    async def __aexit__(self, *_):
+        self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(f"{MARCEL_URL}/v1/robot/screen/end", headers={"X-Planning-Key": PLANNING_KEY})
+        except Exception:
+            pass
+
+
 async def sign_in(page, password) -> None:
     """The portal's sign-in form: login, password, the terms box (required at each sign-in,
     the same one the user ticks), then "Valider"."""
+    STEP[0] = "Connexion au portail"
     login = page.locator("input[type=text], input[type=email], input:not([type])").first
     await login.fill(LOGIN)
     await password.first.fill(PASSWORD)
@@ -474,6 +516,9 @@ async def give_answers(requests: list[dict]) -> None:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         page = await browser.new_page(locale="fr-FR", timezone_id="Europe/Paris")
+        STEP[0] = "Ouverture du portail"
+        feed = watched(page)
+        await feed.__aenter__()
         try:
             await signed_in(page)
             for request in requests:
@@ -486,6 +531,7 @@ async def give_answers(requests: list[dict]) -> None:
                     await client.post(f"{MARCEL_URL}/v1/offers/{request['id']}/answered",
                                       json={"ok": ok, "message": message}, headers={"X-Planning-Key": PLANNING_KEY})
         finally:
+            await feed.__aexit__()
             await browser.close()
 
 
@@ -512,6 +558,9 @@ async def read(debug: bool = False) -> list[dict]:
                     path = response.url.split("?")[0].replace(PORTAL, "/")
                     exchanges.append(f"{response.request.method} {path} → {response.status}")
             page.on("response", note)
+        STEP[0] = "Ouverture du portail"
+        feed = watched(page)
+        await feed.__aenter__()
         try:
             await page.goto(MISSIONS, wait_until="networkidle", timeout=60_000)
             password = page.locator("input[type=password]")
@@ -527,6 +576,7 @@ async def read(debug: bool = False) -> list[dict]:
                 names = [await radios.nth(i).get_attribute("aria-label") or await radios.nth(i).get_attribute("value")
                          for i in range(await radios.count())]
                 print(f"Choix de vue trouvés : {names}")
+            STEP[0] = "Lecture du planning"
             missions: dict[tuple, dict] = {}
             # The portal is sometimes slow to show the missions: a second try, page reloaded.
             for attempt in range(2):
@@ -579,6 +629,7 @@ async def read(debug: bool = False) -> list[dict]:
                 print((await page.locator("body").inner_text())[:4000])
             raise
         finally:
+            await feed.__aexit__()
             await browser.close()
 
 
@@ -644,9 +695,9 @@ async def config() -> dict:
             resp = await client.get(f"{MARCEL_URL}/v1/planning/config", headers={"X-Planning-Key": PLANNING_KEY})
             resp.raise_for_status()
             data = resp.json()
-            return {"hour": int(data["hour"]), "read_now": bool(data.get("read_now"))}
+            return {"hour": int(data["hour"]), "read_now": bool(data.get("read_now")), "hands": bool(data.get("hands"))}
     except Exception:
-        return {"hour": HOUR, "read_now": False}
+        return {"hour": HOUR, "read_now": False, "hands": False}
 
 
 async def report(ok: bool, message: str = "", missions: int | None = None, offers: int | None = None) -> None:
@@ -680,12 +731,16 @@ async def forever() -> None:
     """Once at start, then every day at the hour set in the app, and at once when the app asks
     (an assistant's "Relire maintenant"). Every minute it also gives in the portal the answers to
     offers the user confirmed in the app."""
-    await run()
     settings = await config()
+    if not settings["hands"]:
+        await run()
     now = time.localtime()
     read_on = now.tm_yday if now.tm_hour >= settings["hour"] else None
     while True:
         await asyncio.sleep(60)
+        settings = await config()
+        if settings["hands"]:
+            continue  # the user took over the portal ("Je prends la main"): nothing until given back
         # Answers to offers the user confirmed in the app, then a new reading (planning updated).
         try:
             if requests := await pending_answers():

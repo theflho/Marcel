@@ -40,6 +40,46 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     var detail: String?
     /// "running", "done" or "cancelled".
     var status: String?
+    /// For what Marcel did himself (a setting, a goal…): what takes it back ("Annuler").
+    var undo: ActionUndo?
+
+    /// Something Marcel carried out at the end of his reply, shown as its result.
+    var isResult: Bool { id.hasPrefix("auto-") }
+    /// Waits for "Valider" under an "ask first" rule.
+    var awaitsApproval: Bool { id.hasPrefix("auto-ask-") && status == "cancelled" }
+}
+
+nonisolated struct RobotScreen: Decodable, Sendable {
+    let live: Bool
+    let at: Date
+    let step: String
+    /// JPEG, base64.
+    let image: String?
+    /// The user holds the portal: the robot leaves it alone.
+    let hands: Bool
+}
+
+private nonisolated struct RobotHands: Decodable, Sendable {
+    let hands: Bool
+}
+
+/// "Ask first" rules, per kind of action: "auto" (done, with "Annuler") or "ask" (waits for "Valider").
+nonisolated struct ActionRules: Decodable, Sendable {
+    var rules: [String: String]
+    let labels: [String: String]
+}
+
+/// How to take back what Marcel did himself, sent by the server with its card.
+nonisolated struct ActionUndo: Codable, Hashable, Sendable {
+    /// "reglage", "assistant", "objectif" or "routine".
+    let kind: String
+    /// The assistant, goal or routine created.
+    var id: String?
+    /// For a setting: the assistant, its values before, its mascot before, the instruction added.
+    var assistant: String?
+    var changes: [String: SettingValue]?
+    var mood: String?
+    var instruction: String?
 }
 
 /// A model the server offers (`GET /v1/models`).
@@ -211,6 +251,79 @@ nonisolated struct Idea: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// A task Marcel runs by itself at a fixed time (`/v1/routines`); its replies go to its own conversation.
+nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    var title: String
+    var prompt: String
+    /// Weekdays it runs on, 0 = Monday ("0,2,4"); empty = every day.
+    var days: String
+    /// Local time on the server's time zone, "08:00".
+    var at: String
+    /// "active" or "paused".
+    var status: String
+    let conversationID: String
+    /// "Chaque lundi à 8 h", written by the server.
+    let schedule: String
+    let lastRun: RoutineRun?
+
+    var weekdays: Set<Int> { Set(days.split(separator: ",").compactMap { Int($0) }) }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, prompt, days, at, status, schedule
+        case conversationID = "conversation_id"
+        case lastRun = "last_run"
+    }
+}
+
+/// One time a routine ran (`/v1/routines/{id}/runs`, `/v1/routine-runs`).
+nonisolated struct RoutineRun: Codable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let routineID: String
+    let missionID: String
+    let at: Date
+    /// "running", "done" or "failed".
+    let status: String
+    let error: String
+    /// Only in `/v1/routine-runs`: the routine's title and conversation, and the reply.
+    let title: String?
+    let conversationID: String?
+    let text: String?
+    let model: String?
+    let actions: [MissionAction]?
+    /// Set when an assistant relances the user: the reply goes in its conversation, as itself.
+    let assistant: String?
+    let assistantName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, at, status, error, title, text, model, actions, assistant
+        case assistantName = "assistant_name"
+        case routineID = "routine_id"
+        case missionID = "mission_id"
+        case conversationID = "conversation_id"
+    }
+}
+
+/// Fields of a routine to change; nil ones are left as they are.
+nonisolated struct RoutineChange: Encodable, Sendable {
+    var title: String?
+    var prompt: String?
+    var days: String?
+    var at: String?
+    var status: String?
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(prompt, forKey: .prompt)
+        try container.encodeIfPresent(days, forKey: .days)
+        try container.encodeIfPresent(at, forKey: .at)
+        try container.encodeIfPresent(status, forKey: .status)
+    }
+
+    private enum CodingKeys: String, CodingKey { case title, prompt, days, at, status }
+}
+
 /// How proactive Marcel is on a server (`/v1/proactive`), with today's counters.
 nonisolated struct ProactiveSettings: Decodable, Hashable, Sendable {
     /// "off", "quiet" or "normal".
@@ -301,6 +414,10 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
         /// The value as shown to the user ("10", "Oui", "Discrète"…).
         func shown(_ value: SettingValue) -> String {
             switch value {
+            // An hour of the day reads "19 h", not "19".
+            case .int(let number) where key == "hour" || label.hasPrefix("Heure"): "\(number) h"
+            case .int(let number) where help.hasPrefix("minutes"): "\(number) min"
+            case .int(let number) where help == "jours": number == 1 ? "1 jour" : "\(number) jours"
             case .int(let number): "\(number)"
             case .bool(let on): on ? "Oui" : "Non"
             case .text(let text):
@@ -402,9 +519,97 @@ nonisolated struct OfferList: Decodable, Sendable {
 /// Blocks the server carries out and the action cards already report: hidden from the text.
 nonisolated enum AutoBlocks {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: "```objectif[\\s\\S]*?```", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "```(objectif|routine|demande-code|suivi)[\\s\\S]*?```", with: "", options: .regularExpression)
+            // The follow-ups come last: hidden while they are still being written too.
+            .replacingOccurrences(of: "```suivi[\\s\\S]*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+/// The questions the user might ask next, which Marcel ends a reply with (a "suivi" block).
+nonisolated enum Followups {
+    static func find(in text: String) -> [String] {
+        guard let start = text.range(of: "```suivi") else { return [] }
+        let after = text[start.upperBound...]
+        guard let end = after.range(of: "```"),
+              let list = try? JSONDecoder().decode([String].self, from: Data(after[..<end.lowerBound].utf8)) else { return [] }
+        return list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && $0.count <= 80 }.prefix(2).map { $0 }
+    }
+}
+
+/// A big change to the app's own code Marcel wrote down for a coding agent (Claude Code or Codex);
+/// it leaves only on "Envoyer à …".
+nonisolated struct CodeRequestDraft: Codable, Hashable, Sendable {
+    let titre: String
+    let demande: String
+
+    private static let fence = "```demande-code"
+
+    /// The request in a reply, if there is a readable one (the block itself is hidden by AutoBlocks).
+    static func find(in text: String) -> CodeRequestDraft? {
+        guard let start = text.range(of: fence) else { return nil }
+        let after = text[start.upperBound...]
+        guard let end = after.range(of: "```") else { return nil }
+        let draft = try? JSONDecoder().decode(CodeRequestDraft.self, from: Data(after[..<end.lowerBound].utf8))
+        return draft.flatMap { $0.titre.isEmpty || $0.demande.isEmpty ? nil : $0 }
+    }
+}
+
+/// A code request sent to GitHub, and where it stands (`/v1/code-requests`).
+nonisolated struct CodeRequest: Decodable, Hashable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let body: String
+    let issueNumber: Int?
+    let issueURL: String
+    /// "en cours", "pr", "fusionnee", "fermee" or "inconnu". Nil right after sending.
+    let state: String?
+    let prURL: String?
+    let prTitle: String?
+    let createdAt: Date
+    /// "claude" or "codex"; nil from an older server.
+    let agent: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, body, state, agent
+        case issueNumber = "issue_number"
+        case issueURL = "issue_url"
+        case prURL = "pr_url"
+        case prTitle = "pr_title"
+        case createdAt = "created_at"
+    }
+}
+
+nonisolated struct CodeRequestList: Decodable, Sendable {
+    /// The server has a GitHub repository and key for them.
+    let configured: Bool
+    let repo: String
+    let requests: [CodeRequest]
+    /// The coding agent new requests go to, and the ones the server knows.
+    let agent: String?
+    let agents: [CodeAgent]?
+}
+
+nonisolated struct CodeAgent: Decodable, Hashable, Sendable, Identifiable {
+    let id: String
+    let name: String
+}
+
+/// One thing Marcel did to his own code: a pull request proposed or merged, a deployment, a rollback.
+nonisolated struct CodeLogEntry: Decodable, Sendable, Identifiable {
+    let at: Date
+    let action: String
+    let detail: String
+    let url: String?
+    /// The pull request it's about (merges can be undone from the app).
+    let number: Int?
+
+    var id: Date { at }
+}
+
+nonisolated struct CodeLog: Decodable, Sendable {
+    let configured: Bool
+    let entries: [CodeLogEntry]
 }
 
 /// An assistant Marcel proposed to create in a conversation ("Créer l'assistant").
@@ -624,7 +829,8 @@ nonisolated struct MarcelAPI: Sendable {
 
     /// Starts generating the reply on the server. Returns as soon as the mission exists.
     func startMission(conversationID: UUID, messages: [ChatMessage], model: String?,
-                      deviceContext: String? = nil, assistant: String? = nil) async throws -> MissionInfo {
+                      deviceContext: String? = nil, assistant: String? = nil,
+                      isPrivate: Bool = false, style: String = "") async throws -> MissionInfo {
         var request = URLRequest(url: baseURL.appending(path: "v1/missions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -637,7 +843,9 @@ nonisolated struct MarcelAPI: Sendable {
             },
             model: model,
             deviceContext: deviceContext,
-            assistant: assistant
+            assistant: assistant,
+            isPrivate: isPrivate,
+            style: style
         ))
         let (data, response) = try await Self.session.data(for: request)
         try Self.check(response, body: data)
@@ -729,6 +937,94 @@ nonisolated struct MarcelAPI: Sendable {
 
     func deleteIdea(id: String) async throws {
         let _: Idea = try await call("DELETE", "v1/ideas/\(id)")
+    }
+
+    // MARK: Code requests
+
+    func codeRequests() async throws -> CodeRequestList {
+        try await call("GET", "v1/code-requests")
+    }
+
+    func setCodeAgent(_ agent: String) async throws {
+        let _: [String: String] = try await call("PUT", "v1/code-requests/agent", body: ["agent": agent])
+    }
+
+    /// Undoes a merged pull request of Marcel's; returns what the server says.
+    func revertCode(number: Int) async throws -> String {
+        let reply: [String: String] = try await call("POST", "v1/code/revert", body: ["number": number])
+        return reply["message"] ?? ""
+    }
+
+    func codeLog() async throws -> CodeLog {
+        try await call("GET", "v1/code-log")
+    }
+
+    /// Opens the GitHub issue for the request in that reply of Marcel (read by the server from the reply).
+    func sendCodeRequest(missionID: String) async throws -> CodeRequest {
+        try await call("POST", "v1/code-requests", body: ["mission_id": missionID])
+    }
+
+    // MARK: Robot
+
+    /// What the RMA robot's browser shows right now (inputs masked by the robot).
+    func robotScreen() async throws -> RobotScreen {
+        try await call("GET", "v1/robot/screen")
+    }
+
+    /// "Je prends la main" (true) or "Je rends la main" (false).
+    func holdRobot(_ hold: Bool) async throws {
+        let _: RobotHands = try await call("POST", "v1/robot/hands", body: ["hold": hold])
+    }
+
+    // MARK: Rules
+
+    func rules() async throws -> ActionRules {
+        try await call("GET", "v1/rules")
+    }
+
+    func setRules(_ rules: [String: String]) async throws -> ActionRules {
+        try await call("PUT", "v1/rules", body: ["rules": rules])
+    }
+
+    /// "Valider" on what waited for the user's go-ahead. Returns the card, now done (with "Annuler").
+    func approve(card: String, missionID: String) async throws -> MissionAction {
+        try await call("POST", "v1/missions/\(missionID)/approve", body: ["card": card])
+    }
+
+    // MARK: Routines
+
+    func routines() async throws -> [Routine] {
+        try await call("GET", "v1/routines")
+    }
+
+    func addRoutine(_ routine: RoutineChange) async throws -> Routine {
+        try await call("POST", "v1/routines", body: routine)
+    }
+
+    func updateRoutine(id: String, _ change: RoutineChange) async throws -> Routine {
+        try await call("PATCH", "v1/routines/\(id)", body: change)
+    }
+
+    func deleteRoutine(id: String) async throws {
+        let _: Routine = try await call("DELETE", "v1/routines/\(id)")
+    }
+
+    /// Runs a routine now, whatever its hour. Returns its mission.
+    func runRoutine(id: String) async throws -> MissionInfo {
+        try await call("POST", "v1/routines/\(id)/run")
+    }
+
+    func routineRuns(id: String) async throws -> [RoutineRun] {
+        try await call("GET", "v1/routines/\(id)/runs")
+    }
+
+    /// Finished runs not yet put in their conversation on this iPhone, with their reply.
+    func pendingRoutineRuns() async throws -> [RoutineRun] {
+        try await call("GET", "v1/routine-runs")
+    }
+
+    func markRoutineRunDelivered(id: Int) async throws {
+        let _: [String: Int] = try await call("POST", "v1/routine-runs/\(id)/delivered")
     }
 
     /// Work missions from yesterday to `days` ahead.
@@ -922,11 +1218,15 @@ private nonisolated struct ChatRequest: Encodable {
     let deviceContext: String?
     /// The assistant whose conversation this is (Planning, Pointage…), if any.
     let assistant: String?
+    /// No memory read nor learnt, the reply never searched again.
+    let isPrivate: Bool
+    let style: String
 
     enum CodingKeys: String, CodingKey {
         case conversationId = "conversation_id"
         case deviceContext = "device_context"
-        case messages, model, assistant
+        case isPrivate = "private"
+        case messages, model, assistant, style
     }
 }
 

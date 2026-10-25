@@ -30,6 +30,16 @@ struct SettingsView: View {
                         ServerStatusBadge(status: store.serverStatus)
                             .font(.subheadline.weight(.medium))
                     }
+                    if store.settings.profiles.count > 1 {
+                        Picker("Serveur utilisé", selection: Binding(
+                            get: { store.settings.activeID },
+                            set: { id in
+                                if let profile = store.settings.profiles.first(where: { $0.id == id }) { store.useServer(profile) }
+                            }
+                        )) {
+                            ForEach(store.settings.profiles) { Text($0.name).tag($0.id) }
+                        }
+                    }
                     Button {
                         testing = true
                         Task {
@@ -123,6 +133,24 @@ struct SettingsView: View {
                     }
                     .disabled(store.emergencyActive)
                     NavigationLink {
+                        RoutinesView()
+                    } label: {
+                        Label("Routines", systemImage: "alarm")
+                    }
+                    .disabled(store.emergencyActive)
+                    NavigationLink {
+                        RulesView()
+                    } label: {
+                        Label("Règles « demande d'abord »", systemImage: "hand.raised")
+                    }
+                    .disabled(store.emergencyActive)
+                    NavigationLink {
+                        CodeRequestsView()
+                    } label: {
+                        Label("Code de Marcel", systemImage: "hammer")
+                    }
+                    .disabled(store.emergencyActive)
+                    NavigationLink {
                         ProactiveSettingsView()
                     } label: {
                         Label("Marcel proactif", systemImage: "lightbulb")
@@ -131,7 +159,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Mémoire")
                 } footer: {
-                    Text("Ce que Marcel retient de vous, sur le serveur actif : un noyau envoyé à chaque mission et des archives sans limite, rangés chaque nuit. Les objectifs suivis sont vérifiés automatiquement selon les réglages de Marcel proactif.")
+                    Text("Ce que Marcel retient de vous, sur le serveur actif : un noyau envoyé à chaque mission et des archives sans limite, rangés chaque nuit. Les objectifs suivis sont vérifiés automatiquement selon les réglages de Marcel proactif ; les routines partent seules à leur heure.")
                 }
 
                 Section {
@@ -175,7 +203,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Serveurs")
                 } footer: {
-                    Text("Touche un serveur pour modifier son adresse et son jeton, ou balaie vers la droite pour l'utiliser. Les conversations restent sur l'iPhone quand tu changes de serveur.")
+                    Text("Touche un serveur pour modifier son adresse et son jeton ; choisis celui qui sert dans « Connexion », en haut. Les conversations restent sur l'iPhone quand tu changes de serveur.")
                 }
 
                 Section {
@@ -389,6 +417,7 @@ private struct DeviceSection: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.openURL) private var openURL
     @AppStorage(Speaker.autoReadKey) private var readAloud = false
+    @AppStorage(ChatStore.replyStyleKey) private var replyStyle = ""
     @State private var notifications = BackgroundRefresh.isEnabled
     @State private var calendar = UserDefaults.standard.bool(forKey: Agenda.shareKey) && Agenda.isAuthorized
     @State private var workReminders = WorkReminders.isEnabled
@@ -398,6 +427,11 @@ private struct DeviceSection: View {
 
     var body: some View {
         Section {
+            Picker("Réponses", selection: $replyStyle) {
+                Text("Concises").tag("concis")
+                Text("Normales").tag("")
+                Text("Détaillées").tag("detaille")
+            }
             Toggle("Lire les réponses à voix haute", isOn: $readAloud)
             Toggle("Notifications", isOn: $notifications)
                 .onChange(of: notifications) { _, wanted in

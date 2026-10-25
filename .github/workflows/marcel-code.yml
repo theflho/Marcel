@@ -1,0 +1,52 @@
+# Demandes de code envoyées depuis l'app Marcel à Claude Code (Réglages › Code de Marcel ;
+# l'autre agent, Codex, est dans marcel-codex.yml).
+# Le serveur Marcel ouvre une issue avec l'étiquette « marcel » ; Claude Code prépare la
+# modification sur une branche claude/issue-<numéro>-… et ouvre une pull request. Rien n'est
+# fusionné : relire et fusionner restent à faire soi-même (deploy/auto-update.sh déploie ensuite).
+#
+# À régler une fois dans GitHub (Settings › Secrets and variables › Actions) :
+#   ANTHROPIC_API_KEY (ou CLAUDE_CODE_OAUTH_TOKEN avec `claude setup-token`, et la ligne
+#   claude_code_oauth_token ci-dessous à la place de anthropic_api_key).
+# Seules les issues ouvertes par le propriétaire du dépôt déclenchent le travail.
+name: Marcel — demandes de code
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: marcel-code-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  code:
+    if: github.event.label.name == 'marcel' && github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          label_trigger: marcel
+          track_progress: true
+          prompt: |
+            Tu travailles sur Marcel, une app iPhone native (Swift 6, SwiftUI, iOS 18, dossier Marcel/)
+            et son serveur FastAPI (dossier backend/). Lis le README avant de commencer.
+            Fais ce que demande l'issue #${{ github.event.issue.number }}, en respectant ses règles :
+            une seule branche, puis ouvre la pull request avec `gh pr create` (titre en français,
+            description : ce qui change, comment le vérifier, ce qui n'a pas pu être vérifié).
+            Le code Swift ne peut pas être compilé ici (pas de Xcode) : dis-le dans la pull request.
+            Côté serveur, vérifie au moins `python -m py_compile backend/app/*.py`.
+            Ne touche jamais au serveur, aux secrets, aux fichiers .env ni à ce workflow.
+          claude_args: |
+            --max-turns 60
+            --allowedTools "Edit,Write,Read,Glob,Grep,Bash(git:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*)"

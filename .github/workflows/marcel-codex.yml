@@ -1,0 +1,91 @@
+# Demandes de code envoyées depuis l'app Marcel à Codex d'OpenAI (Réglages › Code de Marcel ›
+# Agent : Codex). Le serveur Marcel ouvre une issue avec l'étiquette « marcel-codex » ; Codex
+# prépare la modification, ce workflow la pousse sur une branche codex/issue-<numéro>-… et ouvre
+# une pull request. Rien n'est fusionné : relire et fusionner restent à faire soi-même.
+#
+# À régler une fois dans GitHub (Settings › Secrets and variables › Actions) : OPENAI_API_KEY.
+# Facultatif (Variables) : MARCEL_CODEX_MODEL pour imposer un modèle.
+# Seules les issues ouvertes par le propriétaire du dépôt déclenchent le travail. Codex n'a ni la
+# clé GitHub (dépôt récupéré sans identifiants) ni celle d'OpenAI (gardée par l'action).
+name: Marcel — demandes de code (Codex)
+
+on:
+  issues:
+    types: [labeled]
+
+concurrency:
+  group: marcel-codex-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  code:
+    if: github.event.label.name == 'marcel-codex' && github.event.issue.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          model: ${{ vars.MARCEL_CODEX_MODEL }}
+          sandbox: workspace-write
+          output-file: ${{ runner.temp }}/codex-final.md
+          prompt: |
+            Tu travailles sur Marcel, une app iPhone native (Swift 6, SwiftUI, iOS 18, dossier Marcel/)
+            et son serveur FastAPI (dossier backend/). Lis le README avant de commencer.
+            Fais la demande ci-dessous en modifiant les fichiers du dépôt, sans commit ni push
+            (le workflow s'en charge). Respecte le style du dépôt. Le code Swift ne peut pas être
+            compilé ici (pas de Xcode). Côté serveur, vérifie `python3 -m py_compile backend/app/*.py`.
+            Ne touche jamais aux secrets, aux fichiers .env, à .github/, à backend/deploy/auto-update.sh
+            ni à backend/app/code_tools.py. Si la demande est floue ou risquée, ne modifie rien et
+            explique ce qu'il faut préciser.
+            Termine par un résumé en français : ce qui change, comment le vérifier, ce qui n'a pas
+            pu être vérifié.
+
+            Demande (issue #${{ github.event.issue.number }}) : ${{ github.event.issue.title }}
+
+            ${{ github.event.issue.body }}
+
+      - name: Pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          SUMMARY: ${{ runner.temp }}/codex-final.md
+        run: |
+          set -euo pipefail
+          summary=$(cat "$SUMMARY" 2>/dev/null || echo "Codex n'a pas laissé de résumé.")
+          if [ -z "$(git status --porcelain)" ]; then
+            gh issue comment "$NUMBER" --body "Codex n'a rien modifié.
+
+          $summary"
+            exit 0
+          fi
+          if git status --porcelain | cut -c4- | grep -Eq '(^|/)\.env|\.key$|\.pem$|^\.github/|^backend/deploy/auto-update\.sh$|^backend/app/code_tools\.py$'; then
+            gh issue comment "$NUMBER" --body "Codex a touché un fichier protégé : rien n'est poussé."
+            exit 1
+          fi
+          checks="Vérification serveur : OK (py_compile)."
+          python3 -m py_compile backend/app/*.py || checks="Vérification serveur : ÉCHEC (py_compile), à corriger."
+          slug=$(printf '%s' "$TITLE" | iconv -f utf-8 -t ascii//TRANSLIT | tr '[:upper:]' '[:lower:]' \
+                 | tr -cs 'a-z0-9' '-' | sed 's/^-//; s/-$//' | cut -c1-40)
+          branch="codex/issue-$NUMBER-${slug:-demande}"
+          git config user.name "Codex (Marcel)"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add -A
+          git commit -q -m "$TITLE" -m "Demande #$NUMBER, préparée par Codex."
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+            push -q origin "$branch"
+          printf '%s\n\n%s\n\nLe code Swift n'"'"'est pas compilé ici (pas de Xcode).\n\nCloses #%s\n' \
+            "$summary" "$checks" "$NUMBER" > "$RUNNER_TEMP/body.md"
+          gh pr create --head "$branch" --title "$TITLE" --body-file "$RUNNER_TEMP/body.md"

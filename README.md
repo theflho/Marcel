@@ -30,7 +30,20 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   (`/v1/models`, gardée 5 min) et les ids sont rendus lisibles (`deepseek-r1-distill-llama-70b` →
   « DeepSeek R1 Distill Llama 70B »). `MARCEL_MODELS="id=Libellé,id2=Libellé 2"` la remplace :
   séparateur virgule, espaces ignorés, pas de virgule dans un libellé, le premier est le défaut.
-  L'app n'affiche le choix du modèle que s'il y en a plusieurs.
+  L'app n'affiche le choix du modèle que s'il y en a plusieurs. **Attention** : Hermes ignore le
+  `model` d'une requête tant que `gateway.platforms.api_server.direct_model_requests: true` n'est
+  pas dans son `config.yaml` ; sans ce réglage, le choix de l'app ne change rien.
+- **Modèle renfort** (facultatif) : `MARCEL_STRONG_MODEL` (ex. `claude-sonnet-4-5`) et
+  `MARCEL_STRONG_LABEL` ajoutent à la liste ce modèle « (renfort) » et, en tête, **Auto** : le modèle
+  habituel, et le renfort quand le message le demande (document joint à étudier, message de plus de
+  1 500 caractères, ou mots comme « analyse », « contrat », « stratégie », « script », « en
+  profondeur »). Carte « Modèle renfort » avec la raison, et la réponse affiche le modèle vraiment
+  utilisé. Jamais pour les e-mails ni les réglages d'assistants ; jamais pour les vérifications ni
+  les routines. Le renfort passe par llm-guard, qui l'envoie à son fournisseur selon le nom du
+  modèle (`GUARD_ROUTES="claude-|https://api.anthropic.com/v1|<clé>|300000"` dans `guard.env` :
+  préfixe, adresse compatible OpenAI, clé, tokens par jour), avec **son propre budget** ; une fois
+  épuisé, Auto reprend le modèle habituel (carte « budget du jour atteint »). Les messages envoyés
+  au renfort quittent Scaleway : ce fournisseur les voit.
 - `POST /v1/missions` corps `{"conversation_id": "...", "messages": [{"role":"user","content":"..."}], "model": "...", "device_context": "..."}`
   (`device_context` facultatif : ce que l'iPhone partage quand l'utilisateur l'a permis, aujourd'hui
   l'agenda des 7 prochains jours, lu avec EventKit en lecture seule, ajouté à la note de la mission)
@@ -131,6 +144,147 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
   PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
 
+## Routines (tâches à heure fixe)
+
+Une **routine** est une tâche que Marcel fait seul à heure fixe, sans suivi dans le temps
+(« chaque lundi à 8 h, le point de ma semaine », « chaque soir, résume mes e-mails ») ; un objectif,
+lui, suit quelque chose jusqu'à ce qu'il aboutisse. `backend/app/routines.py`.
+- Création : Réglages › **Routines** (titre, consigne, jours, heure), ou Marcel lui-même quand
+  l'utilisateur le demande (bloc ` ```routine ` en fin de réponse, appliqué par le serveur, jamais
+  quand la réponse s'appuie sur un e-mail ou un fichier).
+- Départ : le planificateur regarde chaque minute ; heure du serveur (`MARCEL_TIMEZONE`). Une routine
+  manquée (serveur arrêté) part à son retour jusqu'à 3 h plus tard, sinon elle attend la suivante.
+  Plafond : `MARCEL_ROUTINES_MAX_PER_DAY` (10). Rien pendant l'arrêt d'urgence ni quand la part
+  « vérifications » du budget de tokens est dépensée. « Lancer » (balayage) la fait partir tout de suite.
+- **Sans outil qui agit** : la routine va au Hermes des vérifications (`hermes-checks`), sans la
+  mémoire (il lit le web) mais avec les totaux, le planning, les objectifs et le dernier compte rendu
+  du robot ; si elle parle d'e-mails, au **modèle seul** sans aucun outil (Mode protégé), mémoire
+  comprise. Elle prépare, elle n'envoie rien.
+- Résultat : chaque routine a **sa conversation** sur l'iPhone (identifiant fixe), où arrivent ses
+  réponses et où l'utilisateur peut répondre (le Marcel complet reprend alors). Notification locale
+  quand l'app est fermée.
+- Routes : `GET/POST /v1/routines`, `PATCH/DELETE /v1/routines/{id}`, `POST /v1/routines/{id}/run`,
+  `GET /v1/routines/{id}/runs`, `GET /v1/routine-runs` (passages terminés pas encore remis à
+  l'iPhone, avec le texte), `POST /v1/routine-runs/{id}/delivered`.
+
+## Marcel modifie son propre code
+
+Marcel a des outils MCP pour travailler sur le dépôt (l'app et le serveur), comme un développeur,
+dans **sa propre copie** (`/data/code/repo` du conteneur, git installé dans l'image) :
+
+| Outil | Ce qu'il fait |
+|---|---|
+| `marcel_code_commencer` | nouvelle branche `marcel/<sujet>-<date>` depuis la dernière version de main |
+| `marcel_code_reprendre` | revient sur la branche d'une de ses pull requests ouvertes |
+| `marcel_code_fichiers`, `_lire`, `_chercher` | parcourir le code (lecture avec numéros de ligne, `git grep`) |
+| `marcel_code_ecrire`, `_remplacer` | créer un fichier, remplacer un passage exact et unique |
+| `marcel_code_verifier`, `_diff` | Python compilé, shell relu, JSON lu ; diff par rapport à main |
+| `marcel_code_proposer` | commit, push, ouvre (ou met à jour) la pull request — **refusé si la vérification échoue** |
+| `marcel_code_ci` | résultat de la CI GitHub sur la PR, avec la fin du journal de ce qui a échoué |
+| `marcel_code_fusionner` | fusion *squash* dans main — **seulement ses PR `marcel/…`, et seulement au vert** |
+| `marcel_code_annuler` | défait une PR fusionnée (PR de revert fusionnée aussitôt ; le déploiement suit) |
+| `marcel_code_etat` | branche, fichiers modifiés, PR ouvertes, derniers déploiements |
+| `marcel_journaux` | dernières lignes du journal du serveur (secrets masqués) et du dernier déploiement raté |
+
+Garde-fous qui ne dépendent pas du modèle (`app/code_tools.py`) :
+- jamais sur main (seulement une branche `marcel/…`), rien hors du dépôt ni dans `.git/` ;
+- des fichiers **protégés** que seul l'utilisateur modifie : secrets (`.env`, `*.key`…), `.github/`
+  (donc la CI), `backend/deploy/auto-update.sh`, `backend/app/code_tools.py`, `llm_guard.py`
+  (budgets), `mcp.py` (accès des outils), `server_log.py` (secrets masqués), `hermes_config.py`
+  et `backend/tests/test_server.py` ;
+- dans `backend/app/main.py`, les **garde-fous** sont entre `# garde-fou : <nom>` et
+  `# fin garde-fou : <nom>` (jeton, arrêt d'urgence, mode protégé des conversations et des
+  routines, contenu extérieur jamais rendu ni appliqué, navigateur et `browser_vault`, fusion au
+  vert). Chaque bloc doit rester identique à celui de main et ce qu'il définit ne peut pas être
+  redéfini ailleurs : refusé à l'écriture et avant le push. C'est une barrière solide, pas une
+  preuve : du code nouveau ailleurs pourrait contourner un garde-fou, d'où la relecture des PR.
+La clé GitHub est passée à chaque commande git, jamais écrite dans la copie.
+
+**CI** (`.github/workflows/ci.yml`, sur chaque PR et sur main) : tests du serveur (`pytest`,
+`pyflakes`, `bash -n`) et compilation de l'app pour le simulateur (macOS, sans signature).
+`marcel_code_fusionner` lit les *check runs* de la PR et refuse tant qu'ils ne sont pas tous verts ;
+il ne fusionne que ses propres PR (`marcel/…`), jamais celles de Claude Code ou de Codex. Un
+changement d'app fusionné arrive sur l'iPhone quand on le réinstalle depuis Xcode.
+
+**Annuler** : `marcel_code_annuler`, ou le bouton **Annuler** sur une fusion dans Réglages › Code de
+Marcel (`POST /v1/code/revert {"number"}`). L'app envoie une notification pour une fusion, une
+annulation, un retour arrière ou une panne.
+
+Réglage : `MARCEL_GITHUB_REPO` (ex. `theflho/Marcel`) et `MARCEL_GITHUB_TOKEN`, clé GitHub
+*fine-grained* limitée à ce dépôt : **Contents**, **Issues** et **Pull requests** en lecture et
+écriture, **Checks** et **Actions** en lecture (résultats et journaux de la CI). Suivi : Réglages › **Code de Marcel** (PR proposées et fusionnées, déploiements, retours
+arrière ; `GET /v1/code-log`).
+
+**Déploiement automatique** (`backend/deploy/auto-update.sh`, sur le VPS, à mettre soi-même dans
+la crontab de `ubuntu`) :
+```
+*/5 * * * * cd ~/marcel/backend && ./deploy/auto-update.sh >> ~/marcel-auto-update.log 2>&1
+```
+Toutes les 5 minutes : si main a avancé, `git merge --ff-only`, `docker compose up -d --build`,
+puis `/health` pendant 2 minutes. S'il ne répond pas, retour au commit précédent, reconstruction,
+et cette version n'est **plus retentée** (`.auto-update-refused` ; la suivante l'est). Rien ne part
+pendant l'arrêt d'urgence. Chaque résultat est envoyé à `POST /v1/deploy/report`, avec la fin du
+journal du build et du serveur quand ça rate (Marcel le lit avec `marcel_journaux`). Le script
+refuse de tourner deux fois en même temps (flock).
+
+**Config de Hermes par le code** : après un déploiement réussi, le script copie les skills dans
+`~/.hermes/skills/marcel/` et fusionne `backend/deploy/hermes-overrides.yaml` dans
+`~/.hermes/config.yaml` (`app/hermes_config.py`, commentaires gardés, copie
+`config.yaml.avant-marcel`), en conteneur jetable sous l'utilisateur `ubuntu`. Si quelque chose a
+changé, Hermes redémarre (`docker restart`, conteneur `MARCEL_HERMES_CONTAINER` du `.env`, `hermes`
+par défaut) ; s'il ne répond plus, l'ancienne config revient et celle-ci n'est plus retentée
+(`.hermes-overrides-refused`). Le fichier ne fait qu'ajouter ou changer des clés ; sont refusés :
+`model`, les fournisseurs, `gateway`, tout secret en clair (seul `${MARCEL_MCP_TOKEN}` est remplacé,
+pour le serveur MCP `marcel`, qui reste sur `http://marcel-api:…`).
+
+**Gros chantier, en option : Claude Code ou Codex.** Marcel peut aussi, s'il le juge mieux,
+rédiger une demande pour un agent de code (bloc ` ```demande-code `, carte « Envoyer à … »). L'agent
+se choisit dans Réglages › **Code de Marcel** (ou `MARCEL_CODE_AGENT=claude|codex` par défaut ;
+`PUT /v1/code-requests/agent`). Le serveur relit la demande dans la réponse de Marcel elle-même,
+refuse si elle s'appuie sur un e-mail ou un fichier joint, et ouvre une issue avec l'étiquette de
+l'agent :
+- `marcel` → `.github/workflows/marcel-code.yml`, **Claude Code** (`anthropics/claude-code-action@v1`,
+  secret `ANTHROPIC_API_KEY`), branche `claude/issue-<n>-…` ;
+- `marcel-codex` → `.github/workflows/marcel-codex.yml`, **Codex d'OpenAI** (`openai/codex-action@v1`,
+  secret `OPENAI_API_KEY`, variable facultative `MARCEL_CODEX_MODEL`), branche `codex/issue-<n>-…`.
+  Codex travaille sans la clé GitHub ; le workflow refuse de pousser s'il a touché un fichier
+  protégé, lance `py_compile` et ouvre la PR avec son résumé.
+Seules les issues ouvertes par le propriétaire du dépôt lancent un agent. La PR se relit et se
+fusionne sur GitHub. Routes : `GET /v1/code-requests`, `POST /v1/code-requests` `{"mission_id"}`.
+
+## Outils et skills de Marcel pour Hermes
+
+Le Hermes principal reçoit les outils MCP de Marcel (`deploy/hermes-mcp.config.yaml`) :
+- en lecture : `marcel_resume`, `marcel_planning`, `marcel_offres`, `marcel_robot`,
+  `marcel_historique`, `marcel_reponse`, `marcel_memoire`, `marcel_objectifs`, `marcel_routines`,
+  `marcel_chercher` ;
+- qui agissent : `marcel_retenir` (mémoire), `marcel_creer_objectif`, `marcel_creer_routine`,
+  `marcel_lancer_routine`, et les outils `marcel_code_*` ci-dessus. **Aucun** ne supprime ni
+  n'épingle : ça reste à l'utilisateur, dans l'app.
+
+Et trois skills (`backend/deploy/hermes-skills/`, copiées dans `~/.hermes/skills/marcel/` par
+`update.sh` et `auto-update.sh`) : `marcel-code` (le déroulé d'une modification et quand ne pas
+fusionner), `marcel-donnees` (où chercher avant de redemander), `marcel-routines-objectifs`.
+Hermes les lit à son prochain lancement (`hermes skills list` pour vérifier).
+
+## Navigateur
+
+Le navigateur de Hermes (`browser_exec`, `browser_cdp`…, toolset `browser`, qui demande aussi
+`terminal`) clique, tape et envoie des formulaires **sans étape de confirmation**. Par défaut
+(`MARCEL_BROWSER_GUARD=0`), Marcel s'en sert seul quand la tâche le demande et dit ensuite ce qu'il
+a fait. Restent toujours :
+- `browser_vault` (identifiants et cartes enregistrés) **coupé** : la réponse s'arrête au premier
+  appel, payer et se connecter restent des gestes de l'utilisateur ;
+- les routines, vérifications, e-mails et assistants n'ont jamais le navigateur (Hermes bridé ou
+  modèle seul).
+`MARCEL_BROWSER_GUARD=1` remet l'accord préalable : la réponse est coupée dès un appel `browser*`,
+sauf si le message de l'utilisateur commence par « Vas-y », « Je valide », « Fais-le »… (c'est ce
+qu'envoie « Valider » sur une idée). C'est un garde-fou côté Marcel, qui coupe la requête vers
+Hermes : il ne garantit pas qu'une action déjà lancée soit annulée.
+Activer le navigateur du Hermes principal (sur le VPS, à faire soi-même) : `hermes tools` (choisir
+`browser` pour la plateforme de l'API), Chromium installé dans le conteneur (`hermes pm install
+chromium`), puis redémarrer Hermes. Sans ce réglage, Marcel n'a pas de navigateur du tout.
+
 ## Ce que Marcel voit de ses données
 
 Le modèle ne voit que ce qui est joint à chaque message ; Hermes, dans son conteneur, n'a pas
@@ -147,10 +301,23 @@ lendemain) :
   réponses JSON, sans session), clé propre `MARCEL_MCP_TOKEN` (vide = désactivé ; `423` pendant
   l'arrêt d'urgence). Outils : `marcel_resume`, `marcel_planning` (`du`, `au`, 120 jours max),
   `marcel_offres`, `marcel_robot`, `marcel_historique` (cherche dans toutes les réponses passées,
-  sauf celles tirées d'e-mails), `marcel_reponse`, `marcel_memoire`, `marcel_objectifs`. Lecture
-  seule. Brancher : `deploy/hermes-mcp.config.yaml` dans le `config.yaml` du Hermes principal
+  par le sens puis par les mots, sauf celles tirées d'e-mails ou de pièces jointes),
+  `marcel_reponse`, `marcel_memoire`, `marcel_objectifs`, `marcel_chercher` (mémoire, réponses
+  passées et planning d'un coup, par le sens, avec un score). Lecture seule. Brancher : `deploy/hermes-mcp.config.yaml` dans le `config.yaml` du Hermes principal
   (jamais dans `hermes-checks`), puis redémarrer Hermes. Les conversations protégées (e-mails,
   assistants) restent sans aucun outil : elles n'ont que la carte et les totaux.
+- **Recherche par le sens** (`app/semantic.py`) : « missions validées » retrouve « 45 missions
+  lues… confirmées par l'agence » sans mot commun. Les souvenirs actifs, les réponses passées
+  (365 jours, découpées en morceaux) et le planning gardé reçoivent un vecteur (embeddings
+  `/v1/embeddings` compatible OpenAI, via llm-guard, modèle `MARCEL_EMBED_MODEL`, par défaut
+  `bge-multilingual-gemma2`), rangé dans la table `vectors` de `marcel.db` et recalculé seulement
+  quand le texte change (après chaque souvenir, chaque planning, et toutes les 10 minutes).
+  À chaque message, les souvenirs proches passent avant ceux trouvés par les mots, et Marcel
+  reçoit jusqu'à 3 réponses passées d'autres conversations (encadrées comme contenu externe) et
+  les missions du planning proches de la question. Les réponses tirées d'e-mails ou de pièces
+  jointes ne sont jamais indexées. Si le modèle d'embeddings ne répond pas (8 s), la recherche
+  par les mots continue seule. Tests locaux (`MARCEL_MOCK=1`) : un substitut local (mots et
+  morceaux de mots hachés) fait tourner tout le circuit, sans les synonymes. Dépendance : numpy.
 
 ## Planning RMA et rappels de pointage
 
@@ -278,8 +445,14 @@ plus forte à la plus faible :
 Autres précautions :
 - **Sauvegardes** : `deploy/backup.sh` (base de Marcel par l'API de sauvegarde SQLite, pièces
   jointes, accès Gmail, compteur llm-guard, réglages, `~/.hermes-checks`), chiffrées avec `age`
-  pour `~/.age-recipient`, 14 gardées dans `~/backups` ; cron conseillé à 3 h 30. Restaurer :
-  `age -d -i ~/hermes-backup.key <fichier> | tar -xz`. Penser à copier `~/backups` hors du VPS.
+  pour `~/.age-recipient`, 14 gardées dans `~/backups` ; cron conseillé à 3 h 30. Chaque
+  sauvegarde est **vérifiée** avant d'être chiffrée (`python -m app.backup check` : intégrité SQLite
+  et comptes) ; un problème fait finir le script en erreur. **Copie hors du VPS** :
+  `deploy/pull-backup.sh <hôte-ssh>` depuis le Mac (Tailscale SSH ou clé, jamais de mot de passe),
+  dans `~/MarcelBackups`, 30 gardées ; cron conseillé chaque matin. **Restaurer et tester** sur le
+  Mac : `AGE_KEY=<clé privée> ./deploy/restore.sh <fichier.age>` (ouvre, vérifie et compte, sans
+  toucher au VPS), puis `MARCEL_TOKEN=essai MARCEL_MOCK=1 MARCEL_DATA_DIR=<dossier>/data
+  .venv/bin/uvicorn app.main:app --port 8001` pour voir l'app sur ces données. `brew install age`.
 - **Version de Hermes épinglée** (`HERMES_IMAGE` dans `.env`, empreinte `@sha256:` de l'image en
   service), aussi dans `~/assistant/compose.yaml` : pas de mise à jour silencieuse.
 - **iPhone perdu** : retirer l'appareil dans la console Tailscale, puis changer `MARCEL_TOKEN`.

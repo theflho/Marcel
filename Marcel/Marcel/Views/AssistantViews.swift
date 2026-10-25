@@ -1,93 +1,14 @@
 import SwiftUI
 
-/// Top of an assistant's conversation: what it does, its settings and the instructions it keeps.
-struct AssistantCard: View {
-    @Environment(ChatStore.self) private var store
-    let assistant: Assistant
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(.snappy) { expanded.toggle() }
-            } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(assistant.summary)
-                            .font(.subheadline.weight(.semibold))
-                            .multilineTextAlignment(.leading)
-                        Text(assistant.status)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
-                }
-                .contentShape(.rect)
-            }
-            .tint(.primary)
-            .accessibilityHint(expanded ? "Masque les réglages" : "Affiche les réglages")
-
-            if assistant.id == "recrutements" {
-                OffersList(offers: store.offers)
-            }
-
-            if expanded {
-                Divider()
-                ForEach(assistant.settings) { setting in
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(setting.label).font(.footnote)
-                        Spacer()
-                        Text(setting.shown(setting.value))
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-                if !assistant.instructions.isEmpty {
-                    Divider()
-                    Text("Consignes retenues").font(.footnote.weight(.semibold))
-                    ForEach(assistant.instructions) { instruction in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text("•").font(.footnote)
-                            Text(instruction.text).font(.footnote)
-                            Spacer(minLength: 0)
-                            Button("Retirer", systemImage: "xmark.circle.fill") {
-                                Task { await store.deleteInstruction(instruction, of: assistant) }
-                            }
-                            .labelStyle(.iconOnly)
-                            .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Text("Pour changer un réglage, écris-le simplement : je te propose le changement, il ne s'applique que si tu appuies sur « Appliquer ».")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        // Like one of its messages: part of the conversation, not a panel above it.
-        .background(Theme.assistantBubble, in: .rect(cornerRadius: 20))
-        .padding(.horizontal)
-        .padding(.trailing, 40)
-    }
-}
-
 /// The offers: each with its hours, what it clashes with (the portal's warning, the planning, the
 /// iPhone's calendar) and the week's load. "Accepter" / "Refuser" ask for a "Oui" first; the robot
 /// then answers in the portal within 10 minutes.
-private struct OffersList: View {
+struct OffersList: View {
     @Environment(ChatStore.self) private var store
     let offers: [Offer]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Divider()
             if offers.isEmpty {
                 Text("Aucune offre en attente.").font(.footnote).foregroundStyle(.secondary)
             }
@@ -331,7 +252,7 @@ struct NewAssistantCard: View {
                 }
             }
             Text(draft.mission).font(.footnote)
-            Text("Il aura sa conversation à lui, sans aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.")
+            Text("Tu le choisiras comme mode d'une conversation. Il n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             switch message.autoApplied("assistant") ? Optional("applied") : message.proposalDecision {
@@ -378,7 +299,7 @@ struct AssistantMoodPicker: View {
                 Label {
                     Text(mood.label)
                 } icon: {
-                    Image(mood.imageName)
+                    Image(mood.imageName + "-cutout")
                 }
                 .tag(mood)
             }

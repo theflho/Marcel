@@ -128,7 +128,7 @@ class Gmail:
                 check(r)
                 data = r.json()
                 fields = {h["name"]: h["value"] for h in data.get("payload", {}).get("headers", [])}
-                return {"from": fields.get("From", ""), "subject": fields.get("Subject", "(sans objet)"),
+                return {"id": message_id, "from": fields.get("From", ""), "subject": fields.get("Subject", "(sans objet)"),
                         "date": fields.get("Date", ""), "snippet": data.get("snippet", ""),
                         "unread": "UNREAD" in data.get("labelIds", [])}
 

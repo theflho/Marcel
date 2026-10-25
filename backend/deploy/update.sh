@@ -21,6 +21,10 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+# Les skills de Marcel pour Hermes (~/.hermes/skills/marcel/), lues au prochain lancement.
+mkdir -p "$HOME/.hermes/skills/marcel"
+cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
+
 if [[ "${1:-}" == "--try" ]]; then
   docker compose exec marcel-api python -m app.try_proactive
 fi

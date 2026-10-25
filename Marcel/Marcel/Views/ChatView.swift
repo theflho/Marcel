@@ -6,6 +6,7 @@ struct ChatView: View {
     @State private var showSettings = false
     @State private var showMissions = false
     @State private var showIdeas = false
+    @State private var showAssistants = false
     @State private var showSidebar = false
     @State private var showSplash = true
     @GestureState private var drawerDrag: CGFloat = 0
@@ -57,6 +58,9 @@ struct ChatView: View {
                 SidebarView(onClose: closeSidebar, onOpenSettings: {
                     closeSidebar()
                     showSettings = true
+                }, onOpenAssistants: {
+                    closeSidebar()
+                    showAssistants = true
                 })
                 .frame(width: width)
                 .background {
@@ -98,6 +102,9 @@ struct ChatView: View {
         .sheet(isPresented: $showMissions) {
             MissionsView()
         }
+        .sheet(isPresented: $showAssistants) {
+            AssistantsView { assistant in store.newConversation(assistant: assistant.id) }
+        }
         .sheet(isPresented: $showIdeas) {
             NavigationStack {
                 IdeasView()
@@ -116,7 +123,7 @@ struct ChatView: View {
 
     private var chat: some View {
         messages
-            .background(Theme.background.ignoresSafeArea())
+            .background(Theme.chatBackground.ignoresSafeArea())
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     header
@@ -131,8 +138,8 @@ struct ChatView: View {
                 }
                 .background {
                     // Messages fade out under the header instead of colliding with it.
-                    LinearGradient(stops: [.init(color: Theme.background, location: 0.75),
-                                           .init(color: Theme.background.opacity(0), location: 1)],
+                    LinearGradient(stops: [.init(color: Theme.chatBackground, location: 0.7),
+                                           .init(color: Theme.chatBackground.opacity(0), location: 1)],
                                    startPoint: .top, endPoint: .bottom)
                         .padding(.bottom, -16)
                         .ignoresSafeArea(edges: .top)
@@ -152,12 +159,14 @@ struct ChatView: View {
                         GoalProposalCard(goal: proposal)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
+                    SlashPalette()
                     ComposerView(focused: $composerFocused)
                 }
                 .animation(.snappy, value: store.goalProposals)
+                .animation(.snappy(duration: 0.2), value: store.slashSuggestions)
                 .background {
-                    LinearGradient(stops: [.init(color: Theme.background.opacity(0), location: 0),
-                                           .init(color: Theme.background, location: 0.35)],
+                    LinearGradient(stops: [.init(color: Theme.chatBackground.opacity(0), location: 0),
+                                           .init(color: Theme.chatBackground, location: 0.35)],
                                    startPoint: .top, endPoint: .bottom)
                         .ignoresSafeArea(edges: .bottom)
                 }
@@ -183,110 +192,135 @@ struct ChatView: View {
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
-                        .background(Theme.surface, in: .circle)
-                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                        .glass(in: .circle)
                 }
                 .tint(.primary)
                 .accessibilityLabel("Menu")
                 Spacer()
-                Button {
-                    composerFocused = false
-                    showIdeas = true
-                } label: {
-                    Image(systemName: "lightbulb")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                        .background(Theme.surface, in: .circle)
-                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-                        .overlay(alignment: .topTrailing) {
-                            let unseen = store.unseenIdeas
-                            if unseen > 0 {
-                                Text("\(unseen)")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .frame(minWidth: 18, minHeight: 18)
-                                    .background(Color.accentColor, in: .circle)
-                                    .offset(x: 2, y: -2)
-                            }
-                        }
-                }
-                .tint(.primary)
-                .accessibilityLabel(store.unseenIdeas > 0 ? "Idées, \(store.unseenIdeas) nouvelle(s)" : "Idées")
-                Button {
-                    composerFocused = false
-                    showMissions = true
-                } label: {
-                    Image(systemName: "checklist")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 44, height: 44)
-                        .background(Theme.surface, in: .circle)
-                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
-                        .overlay(alignment: .topTrailing) {
-                            let running = store.runningReplies
-                            if running > 0 {
-                                Text("\(running)")
-                                    .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
-                                    .frame(minWidth: 18, minHeight: 18)
-                                    .background(Color.accentColor, in: .circle)
-                                    .offset(x: 2, y: -2)
-                            }
-                        }
-                }
-                .tint(.primary)
-                .accessibilityLabel(store.runningReplies > 0 ? "Missions, \(store.runningReplies) en cours" : "Missions")
+                moreMenu
             }
             .padding(.horizontal)
             .padding(.top, 4)
 
             Menu {
-                // An assistant's conversation shows its mascot: picking one changes the assistant's.
-                if let assistant = store.assistant(for: store.conversation) {
-                    AssistantMoodPicker(assistant: assistant)
-                } else {
-                    MoodPicker(conversation: store.conversation)
+                // This bot, like Grok Bot: another conversation with it, or its card. Other bots are
+                // in the side menu.
+                Button("Nouvelle conversation", systemImage: "square.and.pencil") {
+                    store.newConversation(assistant: store.conversation.assistantID)
+                }
+                Button(store.mode.map { "Fiche de \($0.name)" } ?? "Tous les bots", systemImage: "person.crop.circle") {
+                    composerFocused = false
+                    showAssistants = true
                 }
             } label: {
-                VStack(spacing: -6) {
-                    MarcelAvatar(size: 60, mood: store.assistant(for: store.conversation).map { store.mood(for: $0) }
-                                 ?? store.conversation.displayMood, isThinking: store.isStreaming)
+                VStack(spacing: -4) {
+                    MarcelAvatar(size: 60, mood: store.modeMood, isThinking: store.isStreaming, cutout: true)
                     VStack(spacing: 0) {
-                        Text(store.assistant(for: store.conversation)?.name ?? "Marcel")
-                            .font(.subheadline.weight(.semibold))
+                        // Like Telegram: while Marcel replies, three dots take the name's place.
                         if store.isStreaming {
-                            TypingStatus()
-                                .transition(.opacity)
+                            TypingDots()
+                                .frame(height: 20)
+                        } else {
+                            HStack(spacing: 4) {
+                                Text(store.mode?.name ?? "Marcel")
+                                    .font(.subheadline.weight(.semibold))
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        // "en ligne" when idle; while replying, only what a running step does.
+                        if let line = store.isStreaming ? store.runningActivity : store.headerStatus?.text {
+                            Text(line)
+                                .font(.caption2)
+                                .foregroundStyle(store.isStreaming ? Color.accentColor : .secondary)
+                                .lineLimit(1)
                         }
                     }
-                    .padding(.horizontal, 12)
+                    // Same size whether it shows the name or the dots.
+                    .frame(minWidth: 64, minHeight: 34)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 5)
-                    .background(Theme.surface, in: .capsule)
-                    .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
-                    .animation(.easeInOut(duration: 0.2), value: store.isStreaming)
+                    .glass(in: .capsule)
                 }
             }
             .tint(.primary)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(store.isStreaming ? "Marcel écrit" : "Marcel")
+            .accessibilityLabel("\(store.mode?.name ?? "Marcel")\(store.headerStatus.map { ", \($0.text)" } ?? "")")
+            .accessibilityHint("Nouvelle conversation ou fiche du bot")
             .accessibilityAddTraits(.isHeader)
         }
         .padding(.bottom, 8)
+    }
+
+    /// Ideas, missions, assistants and the illustration, behind one button (a dot when something waits).
+    private var moreMenu: some View {
+        let unseen = store.unseenIdeas, running = store.runningReplies
+        return Menu {
+            Button {
+                composerFocused = false
+                showIdeas = true
+            } label: {
+                Label(unseen > 0 ? "Idées (\(unseen) nouvelle\(unseen > 1 ? "s" : ""))" : "Idées", systemImage: "lightbulb")
+            }
+            Button {
+                composerFocused = false
+                showMissions = true
+            } label: {
+                Label(running > 0 ? "Activité (\(running) en cours)" : "Activité", systemImage: "checklist")
+            }
+            Button(store.conversation.isPrivate ? "Déjà en privé" : "Conversation privée", systemImage: "lock") {
+                composerFocused = false
+                store.newPrivateConversation()
+            }
+            .disabled(store.conversation.isPrivate)
+            Button("Assistants", systemImage: "person.2") {
+                composerFocused = false
+                showAssistants = true
+            }
+            Divider()
+            Menu("Illustration", systemImage: "photo") {
+                // A conversation with an assistant shows its mascot: picking one changes the assistant's.
+                if let assistant = store.mode {
+                    AssistantMoodPicker(assistant: assistant)
+                } else {
+                    MoodPicker(conversation: store.conversation)
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 44)
+                .glass(in: .circle)
+                .overlay(alignment: .topTrailing) {
+                    if unseen + running > 0 {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 11, height: 11)
+                            .offset(x: -2, y: 2)
+                    }
+                }
+        }
+        .tint(.primary)
+        .accessibilityLabel("Plus" + (unseen > 0 ? ", \(unseen) idée(s)" : "") + (running > 0 ? ", \(running) mission(s) en cours" : ""))
     }
 
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    if let assistant = store.assistant(for: store.conversation) {
-                        AssistantCard(assistant: assistant)
-                    } else if store.conversation.messages.isEmpty {
-                        EmptyChatView()
+                    if store.conversation.messages.isEmpty {
+                        WelcomeView()
                     }
                     ForEach(store.conversation.messages) { message in
                         MessageBubble(message: message)
                             .id(message.id)
+                    }
+                    if let last = store.conversation.messages.last, last.role == .assistant, last.status == .complete,
+                       !store.isStreaming {
+                        let questions = Followups.find(in: last.content)
+                        if !questions.isEmpty { FollowupsView(questions: questions) }
                     }
                     if let error = store.lastError {
                         ErrorNotice(message: error, action: store.lastErrorAction)
@@ -303,51 +337,16 @@ struct ChatView: View {
             .onChange(of: store.conversation.messages.count) {
                 withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
             }
+            .onChange(of: store.isStreaming) {
+                // The follow-ups appear under the reply once it's finished: keep them in sight.
+                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
             .onChange(of: store.goalProposals.first?.id) {
                 // The proposal card grows the bottom inset: keep the end of the reply visible.
                 withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
         }
-    }
-}
-
-private struct EmptyChatView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image("MarcelHero")
-                .resizable()
-                .scaledToFill()
-                .frame(maxWidth: 300)
-                .frame(height: 200)
-                .clipShape(.rect(cornerRadius: 28))
-                .accessibilityHidden(true)
-                .padding(.bottom, 8)
-            Text("Bonjour, je suis Marcel.")
-                .font(.title3.weight(.semibold))
-            Text("Demande-moi quelque chose. Les missions continuent sur le serveur, même quand l'app est fermée.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 40)
-        .padding(.top, 60)
-    }
-}
-
-/// "écrit…" under Marcel's name while a reply is being written, like a messaging app.
-private struct TypingStatus: View {
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.45)) { context in
-            let dots = Int(context.date.timeIntervalSinceReferenceDate / 0.45) % 3 + 1
-            Text("écrit" + String(repeating: ".", count: dots))
-                .font(.caption2)
-                .foregroundStyle(Color.accentColor)
-                // A fixed width, so the capsule doesn't twitch as the dots change.
-                .frame(width: 44, alignment: .leading)
-        }
-        .accessibilityHidden(true)
     }
 }
 
@@ -491,4 +490,24 @@ private struct TokenBanner: View {
 
 #Preview {
     ChatView().environment(ChatStore(settings: ServerSettings()))
+}
+
+/// Three dots rising in turn, like a chat app's "typing" bubble.
+struct TypingDots: View {
+    var body: some View {
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 5) {
+                ForEach(0..<3) { i in
+                    let wave = (sin(t * 6 - Double(i) * 0.9) + 1) / 2
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 7, height: 7)
+                        .opacity(0.35 + 0.65 * wave)
+                        .offset(y: -3 * wave)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
 }

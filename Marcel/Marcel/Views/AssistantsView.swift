@@ -1,0 +1,205 @@
+import SwiftUI
+
+/// Marcel's assistants, out of the conversations: what each does, its settings and the
+/// instructions it keeps. A conversation picks one as its mode.
+struct AssistantsView: View {
+    @Environment(ChatStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    /// Opens a new conversation with the assistant, then closes the screen.
+    var onStart: (Assistant) -> Void = { _ in }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(store.assistants) { assistant in
+                        NavigationLink {
+                            AssistantDetailView(assistantID: assistant.id, onStart: start)
+                        } label: {
+                            HStack(spacing: 12) {
+                                MarcelAvatar(size: 40, mood: store.mood(for: assistant))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(assistant.name).font(.body.weight(.semibold))
+                                    Text(assistant.status.isEmpty ? assistant.summary : assistant.status)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
+                        .swipeActions(edge: .leading) {
+                            Button("Discuter", systemImage: "square.and.pencil") { start(assistant) }
+                                .tint(.accentColor)
+                        }
+                    }
+                } footer: {
+                    Text("Pour en créer un, demande-le à Marcel (« crée-moi un assistant pour… »).")
+                }
+            }
+            .overlay {
+                if store.assistants.isEmpty {
+                    ContentUnavailableView("Aucun assistant", systemImage: "person.2",
+                                           description: Text("Ils arrivent quand le serveur répond."))
+                }
+            }
+            .navigationTitle("Assistants")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("OK") { dismiss() }
+                }
+            }
+            .task { await store.refreshAssistants() }
+        }
+    }
+
+    private func start(_ assistant: Assistant) {
+        onStart(assistant)
+        dismiss()
+    }
+}
+
+private struct AssistantDetailView: View {
+    @Environment(ChatStore.self) private var store
+    let assistantID: String
+    let onStart: (Assistant) -> Void
+    @State private var confirmingDelete = false
+
+    var body: some View {
+        // Read from the store each time, so a saved setting shows at once.
+        if let assistant = store.assistants.first(where: { $0.id == assistantID }) {
+            List {
+                Section {
+                    VStack(spacing: 8) {
+                        MarcelAvatar(size: 72, mood: store.mood(for: assistant))
+                        Text(assistant.summary)
+                            .font(.subheadline)
+                            .multilineTextAlignment(.center)
+                        if !assistant.status.isEmpty {
+                            Text(assistant.status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    Button {
+                        onStart(assistant)
+                    } label: {
+                        Label("Nouvelle conversation", systemImage: "square.and.pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
+                }
+
+                if assistant.id == "recrutements" {
+                    Section("Offres en attente") {
+                        OffersList(offers: store.offers)
+                    }
+                }
+
+                if !assistant.settings.isEmpty {
+                    Section {
+                        ForEach(assistant.settings) { setting in
+                            SettingRow(assistant: assistant, setting: setting)
+                        }
+                    } header: {
+                        Text("Réglages")
+                    } footer: {
+                        Text("Tu peux aussi les changer en le disant dans une conversation avec \(assistant.name).")
+                    }
+                }
+
+                Section {
+                    if assistant.instructions.isEmpty {
+                        Text("Aucune pour l'instant : dis-lui ce qu'il doit retenir.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(assistant.instructions) { instruction in
+                        Text(instruction.text)
+                            .font(.subheadline)
+                            .swipeActions {
+                                Button("Retirer", systemImage: "trash", role: .destructive) {
+                                    Task { await store.deleteInstruction(instruction, of: assistant) }
+                                }
+                            }
+                    }
+                } header: {
+                    Text("Consignes retenues")
+                }
+
+                Section {
+                    Menu {
+                        AssistantMoodPicker(assistant: assistant)
+                    } label: {
+                        HStack {
+                            Text("Mascotte").foregroundStyle(.primary)
+                            Spacer()
+                            Text(store.mood(for: assistant).label).foregroundStyle(.secondary)
+                        }
+                    }
+                    if assistant.isCustom {
+                        Button("Supprimer l'assistant", role: .destructive) { confirmingDelete = true }
+                    }
+                }
+            }
+            .navigationTitle(assistant.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .disabled(store.emergencyActive)
+            .confirmationDialog("Supprimer \(assistant.name) ?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+                Button("Supprimer", role: .destructive) { Task { await store.deleteAssistant(assistant) } }
+            } message: {
+                Text("Ses conversations restent, avec Marcel.")
+            }
+        } else {
+            ContentUnavailableView("Assistant supprimé", systemImage: "person.slash")
+        }
+    }
+}
+
+/// One setting, changed right here: saved by the server as soon as it changes.
+private struct SettingRow: View {
+    @Environment(ChatStore.self) private var store
+    let assistant: Assistant
+    let setting: Assistant.Setting
+    @State private var text = ""
+    @FocusState private var editing: Bool
+
+    var body: some View {
+        switch (setting.kind, setting.value) {
+        case ("int", .int(let number)):
+            Stepper(value: Binding(get: { number }, set: { save(.int($0)) }), in: setting.min...max(setting.min, setting.max)) {
+                LabeledContent(setting.label, value: setting.shown(setting.value))
+            }
+        case ("bool", .bool(let on)):
+            Toggle(setting.label, isOn: Binding(get: { on }, set: { save(.bool($0)) }))
+        case ("choice", .text(let current)):
+            Picker(setting.label, selection: Binding(get: { current }, set: { save(.text($0)) })) {
+                ForEach(setting.choices, id: \.value) { Text($0.label).tag($0.value) }
+            }
+        default:
+            VStack(alignment: .leading, spacing: 4) {
+                Text(setting.label).font(.footnote).foregroundStyle(.secondary)
+                TextField(setting.help.isEmpty ? setting.label : setting.help, text: $text, axis: .vertical)
+                    .focused($editing)
+                    .submitLabel(.done)
+                    .onSubmit(saveText)
+                    .onChange(of: editing) { _, focused in if !focused { saveText() } }
+            }
+            .onAppear { if case .text(let value) = setting.value { text = value } }
+        }
+    }
+
+    private func save(_ value: SettingValue) {
+        Task { await store.updateSetting(setting.key, to: value, of: assistant) }
+    }
+
+    private func saveText() {
+        guard case .text(let value) = setting.value, text != value else { return }
+        save(.text(text))
+    }
+}

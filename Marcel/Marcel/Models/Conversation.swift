@@ -25,6 +25,8 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var actions: [MissionAction] = []
     /// What the user did with the change an assistant proposed in this reply: "applied" or "cancelled".
     var proposalDecision: String?
+    /// What Marcel did himself in this reply and the user took back ("Annuler"), by action id.
+    var undone: [String] = []
 
     init(id: UUID = UUID(), role: Role, content: String, status: Status = .complete,
          createdAt: Date = .now, attachments: [Attachment] = [], serverID: UUID? = nil, model: String? = nil) {
@@ -39,7 +41,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision
+        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision, undone
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +58,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         model = try container.decodeIfPresent(String.self, forKey: .model)
         actions = try container.decodeIfPresent([MissionAction].self, forKey: .actions) ?? []
         proposalDecision = try container.decodeIfPresent(String.self, forKey: .proposalDecision)
+        undone = try container.decodeIfPresent([String].self, forKey: .undone) ?? []
     }
 }
 
@@ -74,12 +77,14 @@ nonisolated struct Conversation: Identifiable, Codable, Hashable, Sendable {
     var projectID: UUID?
     /// Illustration chosen by the user; nil means automatic.
     var mood: MarcelMood?
-    /// Set for an assistant's own conversation (Planning, Pointage…): one per assistant, kept
-    /// out of the list of conversations.
+    /// The assistant the conversation talks to (Planning, Pointage…), its mode; nil for Marcel.
     var assistantID: String?
+    /// Private, like Grok's: never saved on the iPhone, no memory on the server, gone once left.
+    var isPrivate = false
 
     init(id: UUID = UUID(), title: String = "Nouvelle conversation", messages: [ChatMessage] = [],
-         updatedAt: Date = .now, projectID: UUID? = nil, mood: MarcelMood? = nil, assistantID: String? = nil) {
+         updatedAt: Date = .now, projectID: UUID? = nil, mood: MarcelMood? = nil, assistantID: String? = nil,
+         isPrivate: Bool = false) {
         self.id = id
         self.title = title
         self.messages = messages
@@ -87,6 +92,12 @@ nonisolated struct Conversation: Identifiable, Codable, Hashable, Sendable {
         self.projectID = projectID
         self.mood = mood
         self.assistantID = assistantID
+        self.isPrivate = isPrivate
+    }
+
+    // A private conversation is never written to disk, so `isPrivate` isn't either.
+    private enum CodingKeys: String, CodingKey {
+        case id, title, messages, updatedAt, projectID, mood, assistantID
     }
 }
 

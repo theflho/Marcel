@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "Marcel-cooking-cutout.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

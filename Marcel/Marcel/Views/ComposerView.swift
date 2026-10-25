@@ -12,6 +12,7 @@ struct ComposerView: View {
     @State private var dictation = Dictation()
     /// Text already in the field when dictation started; the transcript is appended to it.
     @State private var dictationBase = ""
+    @State private var showVoiceMode = false
 
     var body: some View {
         @Bindable var store = store
@@ -19,7 +20,7 @@ struct ComposerView: View {
             if !store.pendingAttachments.isEmpty || store.isPreparingAttachment {
                 PendingAttachmentsStrip()
             }
-            TextField(store.emergencyActive ? "Arrêt d'urgence actif" : "Écrire à Marcel…",
+            TextField(store.emergencyActive ? "Arrêt d'urgence actif" : "Demander \(store.mode?.withArticle ?? "à Marcel")…",
                       text: $store.draft, axis: .vertical)
                 .lineLimit(1...8)
                 .focused(focused)
@@ -45,8 +46,7 @@ struct ComposerView: View {
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
         }
-        .background(Theme.surface, in: .rect(cornerRadius: 24))
-        .shadow(color: .black.opacity(0.08), radius: 12, y: 3)
+        .glass(in: .rect(cornerRadius: 24), interactive: false)
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 8)
@@ -69,6 +69,9 @@ struct ComposerView: View {
                 Task { await store.addImage(data) }
             }
             .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showVoiceMode) {
+            VoiceModeView()
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result else { return }
@@ -94,6 +97,7 @@ struct ComposerView: View {
         .accessibilityLabel("Ajouter une photo ou un fichier")
     }
 
+    /// The model, a small icon: its name is in the menu (and under each reply).
     private var modelMenu: some View {
         Menu {
             Picker("Modèle", selection: Binding(
@@ -103,23 +107,12 @@ struct ComposerView: View {
                 ForEach(store.models) { Text($0.label).tag($0) }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "cpu")
-                Text(store.selectedModel?.label ?? "Modèle")
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: 150)
-                    .fixedSize(horizontal: true, vertical: false)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(Theme.assistantBubble, in: .capsule)
+            Image(systemName: "cpu")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 32)
         }
-        .tint(.primary)
+        .tint(.secondary)
         .accessibilityLabel("Modèle : \(store.selectedModel?.label ?? "par défaut")")
     }
 
@@ -157,6 +150,17 @@ struct ComposerView: View {
                 .foregroundStyle(Color(.systemBackground))
                 .frame(width: 32, height: 32)
                 .background(.primary, in: .circle)
+        } else if store.draft.isEmpty, store.pendingAttachments.isEmpty, !store.isPreparingAttachment, !store.emergencyActive {
+            // Nothing to send: talk instead, like Grok's voice mode.
+            Button("Mode vocal", systemImage: "waveform") {
+                if dictation.isRecording { dictation.stop() }
+                showVoiceMode = true
+            }
+            .labelStyle(.iconOnly)
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(Color(.systemBackground))
+            .frame(width: 32, height: 32)
+            .background(.primary, in: .circle)
         } else {
             Button("Envoyer", systemImage: "arrow.up") {
                 if dictation.isRecording { dictation.stop() }

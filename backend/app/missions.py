@@ -12,6 +12,7 @@ so no request reaches Hermes (and Scaleway) in the meantime. It survives restart
 import asyncio
 import json
 import logging
+import re
 import secrets
 import sqlite3
 import time
@@ -33,6 +34,47 @@ EMERGENCY_ERROR = "Arrêt d'urgence : la mission a été coupée."
 
 class MissionError(Exception):
     """A failure whose message is meant for the user (shown instead of the generic one)."""
+
+
+# A mission going in circles stops and asks for help instead of retrying for ever: the same step
+# (same tool, same arguments) finished this many times, or running this long.
+STUCK_REPEATS = 3
+STUCK_SECONDS = 30 * 60
+STUCK_PREFIX = "Je bloque"
+
+
+def stuck_message(step: str) -> str:
+    return (f"{STUCK_PREFIX} : {step}. Plutôt que d'insister, je m'arrête. Dis-moi comment continuer "
+            "(une autre piste, une info qui me manque) et je reprends.")
+
+
+# Before a mission is called done, what its reply claims is checked against what really ran
+# ("Completed" that wasn't, the main complaint about ChatGPT's dots). Cards Marcel adds himself
+# (memory, shields, routing…) are not steps of the agent.
+CLAIM = re.compile(
+    r"\b(c'est fait|c'est envoy[ée]|j'ai (bien )?(envoy|cr[ée]|ajout|modifi|mis à jour|r[ée]serv|fusionn|publi|"
+    r"enregistr|supprim|command|pay|programm|lanc)\w*)", re.IGNORECASE)
+OWN_CARDS = {"shield", "memory", "mail", "files", "private", "routine", "model", "verify"}
+VERIFY_ID = "verify"
+
+
+def verification(text: str, actions: list[dict], unfinished: list[str]) -> dict | None:
+    """The "Vérification" card for a finished reply, or None when there is nothing to check."""
+    steps = [a for a in actions if a.get("name") and a["id"] not in OWN_CARDS and not a["id"].startswith("auto-outside")]
+    cut = [a for a in steps if a.get("status") == "cancelled"]
+    claim = CLAIM.search(text)
+    if claim and not steps:
+        return {"id": VERIFY_ID, "name": "À vérifier", "status": "cancelled",
+                "detail": f"La réponse dit « {claim.group(0)} », mais aucune action n'a été lancée : rien ne prouve que c'est fait."}
+    if cut or unfinished:
+        names = ", ".join(dict.fromkeys([a["name"] for a in cut] + unfinished))
+        return {"id": VERIFY_ID, "name": "À vérifier", "status": "cancelled",
+                "detail": f"Pas allé au bout : {names}. Vérifie le résultat avant de t'y fier."}
+    if steps:
+        count = len(steps)
+        return {"id": VERIFY_ID, "name": "Vérifié", "status": "done",
+                "detail": f"{count} étape{'s' if count > 1 else ''} menée{'s' if count > 1 else ''} au bout, aucune coupée"}
+    return None
 
 
 # A mission source yields text, or an action dict {"id", "name", "detail", "status"}
@@ -163,10 +205,20 @@ class MissionStore:
 
     async def _run(self, mission: Mission, source: Source) -> None:
         last_save = time.monotonic()
+        finished_steps: dict[tuple[str, str], int] = {}
         try:
             async for item in source():
                 if isinstance(item, dict):
                     mission.record(item)
+                    if item.get("status") == "done" and (step := next(
+                            (a for a in mission.actions if a["id"] == item.get("id") and a.get("name")), None)):
+                        signature = (step["name"], step.get("detail", ""))
+                        finished_steps[signature] = finished_steps.get(signature, 0) + 1
+                        if finished_steps[signature] >= STUCK_REPEATS:
+                            raise MissionError(stuck_message(
+                                f"j'ai lancé {STUCK_REPEATS} fois « {step['name']} » de la même façon sans avancer"))
+                    if time.time() - mission.created_at > STUCK_SECONDS:
+                        raise MissionError(stuck_message(f"ça tourne depuis plus de {STUCK_SECONDS // 60} minutes"))
                 else:
                     mission.text += item
                 mission.notify()
@@ -187,6 +239,9 @@ class MissionStore:
             mission.error = str(error) if isinstance(error, MissionError) else "Hermes n'a pas pu répondre."
         finally:
             # Steps still marked as running didn't finish.
+            unfinished = [a["name"] for a in mission.actions if a.get("status") == "running" and a.get("name")]
+            if mission.status == DONE and (card := verification(mission.text, mission.actions, unfinished)):
+                mission.record(card)
             for action in mission.actions:
                 if action.get("status") == "running":
                     mission.record({"id": action["id"], "status": "done" if mission.status == DONE else "cancelled"})
@@ -273,6 +328,19 @@ class MissionStore:
              mission.created_at, mission.finished_at, mission.model, mission.title,
              json.dumps(mission.actions, ensure_ascii=False)),
         )
+        self._db.commit()
+
+    def save(self, mission: Mission) -> None:
+        """Stores a change made after the mission finished (an approved action)."""
+        self._save(mission)
+        mission.notify()
+
+    def forget(self, mission_id: str) -> None:
+        """Erases a finished mission (a private conversation's reply)."""
+        if (mission := self._missions.get(mission_id)) and mission.status == RUNNING:
+            return
+        self._missions.pop(mission_id, None)
+        self._db.execute("DELETE FROM missions WHERE id = ?", (mission_id,))
         self._db.commit()
 
     def _prune(self) -> None:

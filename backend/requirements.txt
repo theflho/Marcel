@@ -4,3 +4,5 @@ httpx==0.28.1
 python-multipart==0.0.20
 pypdf==6.1.1
 tzdata
+numpy==2.5.4
+ruamel.yaml==0.18.15

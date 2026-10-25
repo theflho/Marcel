@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// Side drawer: search, assistants, projects and recent conversations.
+/// Side drawer, like Grok Bot's: search, the bots (Marcel and each assistant, each with its own
+/// conversations), then every conversation by date (a badge names the bot), the projects folded
+/// underneath, Assistants and Réglages.
 struct SidebarView: View {
     @Environment(ChatStore.self) private var store
     var onClose: () -> Void
     var onOpenSettings: () -> Void
+    var onOpenAssistants: () -> Void
+    @AppStorage("projectsExpanded") private var projectsExpanded = false
 
     @State private var query = ""
     @State private var expandedProjects: Set<UUID> = []
@@ -27,13 +31,13 @@ struct SidebarView: View {
             header
             List {
                 if query.isEmpty {
-                    assistantsSection
-                    projectsSection
+                    botsSection
                     ForEach(DateBucket.group(store.listedConversations.filter { $0.projectID == nil }), id: \.bucket) { group in
                         Section(group.bucket.title) {
                             ForEach(group.conversations) { row(for: $0) }
                         }
                     }
+                    projectsSection
                 } else {
                     searchResults
                 }
@@ -61,23 +65,10 @@ struct SidebarView: View {
     // MARK: Sections
 
     private var header: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("Marcel")
-                    .font(.title2.weight(.bold))
-                Spacer()
-                Button {
-                    store.newConversation()
-                    onClose()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 18, weight: .medium))
-                        .frame(width: 40, height: 40)
-                        .background(Theme.surface, in: .circle)
-                }
-                .tint(.primary)
-                .accessibilityLabel("Nouvelle conversation")
-            }
+        VStack(spacing: 10) {
+            Text("Marcel")
+                .font(.title2.weight(.bold))
+                .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Rechercher", text: $query)
@@ -92,79 +83,70 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(Theme.surface, in: .rect(cornerRadius: 12))
+            Button {
+                store.newConversation()
+                onClose()
+            } label: {
+                Label("Nouvelle conversation", systemImage: "square.and.pencil")
+                    .font(.body.weight(.medium))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+            }
+            .tint(.primary)
         }
         .padding(.horizontal)
         .padding(.top, 8)
         .padding(.bottom, 4)
     }
 
-    /// One pinned conversation per assistant, at the top of the list and drawn like any other
-    /// conversation: Marcel, in the situation that stands for the assistant.
-    @ViewBuilder
-    private var assistantsSection: some View {
-        if !store.assistants.isEmpty {
-            Section {
-                ForEach(store.assistants) { assistant in
-                    let conversation = store.conversation(forAssistant: assistant.id)
-                    let isCurrent = conversation != nil && conversation?.id == store.currentID
-                    Button {
-                        store.openAssistant(assistant)
-                        onClose()
-                    } label: {
-                        HStack(spacing: 10) {
-                            MarcelAvatar(size: 36, mood: store.mood(for: assistant))
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 4) {
-                                    Text(assistant.name)
-                                        .font(.body.weight(isCurrent ? .semibold : .regular))
-                                    Image(systemName: "pin.fill")
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Text(preview(of: assistant, conversation))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength: 0)
-                            if let conversation, store.isStreaming(conversation.id) {
-                                ProgressView().controlSize(.small)
-                            }
-                        }
-                        .contentShape(.rect)
-                    }
-                    .tint(.primary)
-                    .listRowBackground(isCurrent ? Theme.assistantBubble : Color.clear)
-                    .contextMenu {
-                        if conversation != nil {
-                            Button("Recommencer la conversation", systemImage: "arrow.counterclockwise") {
-                                store.resetAssistantConversation(assistant)
-                                onClose()
-                            }
-                        }
-                        Menu("Mascotte", systemImage: "photo") {
-                            AssistantMoodPicker(assistant: assistant)
-                        }
-                        if assistant.isCustom {
-                            Button("Supprimer l'assistant", systemImage: "trash", role: .destructive) {
-                                Task { await store.deleteAssistant(assistant) }
-                            }
-                        }
-                    }
-                }
+    /// Marcel and the assistants, like Grok Bot's list of bots: touch one to talk to it.
+    private var botsSection: some View {
+        Section("Bots") {
+            botRow(id: nil, name: "Marcel", mood: .tree)
+            ForEach(store.assistants) { assistant in
+                botRow(id: assistant.id, name: assistant.name, mood: store.mood(for: assistant))
             }
+            Button {
+                onOpenAssistants()
+            } label: {
+                Label("Nouveau bot", systemImage: "plus")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
     }
 
-    /// Its last message once the conversation exists, else what it does.
-    private func preview(of assistant: Assistant, _ conversation: Conversation?) -> String {
-        guard let last = conversation?.messages.last(where: { !$0.content.isEmpty }),
-              conversation?.messages.count ?? 0 > 1 else { return assistant.status }
-        return Self.preview(AssistantProposal.split(last.content).text)
+    private func botRow(id: String?, name: String, mood: MarcelMood) -> some View {
+        let current = store.conversation.assistantID == id && !store.conversation.isPrivate
+        return Button {
+            store.openBot(id)
+            onClose()
+        } label: {
+            HStack(spacing: 10) {
+                MarcelAvatar(size: 36, mood: mood, cutout: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.body.weight(current ? .semibold : .regular))
+                    Text(store.lastLine(ofBot: id) ?? "Pas encore de conversation")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(.rect)
+        }
+        .tint(.primary)
+        .listRowBackground(current ? Theme.surface.opacity(0.6) : Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private var projectsSection: some View {
-        Section {
+        Section(isExpanded: $projectsExpanded) {
             ForEach(store.projects) { project in
                 let items = store.listedConversations.filter { $0.projectID == project.id }
                 let isExpanded = expandedProjects.contains(project.id)
@@ -205,7 +187,7 @@ struct SidebarView: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
         } header: {
-            Text("Projets")
+            Text(store.projects.isEmpty ? "Projets" : "Projets (\(store.projects.count))")
         }
     }
 
@@ -240,6 +222,14 @@ struct SidebarView: View {
     private var footer: some View {
         HStack(spacing: 0) {
             Button {
+                onOpenAssistants()
+            } label: {
+                Label("Assistants", systemImage: "person.2")
+                    .padding(.vertical)
+                    .padding(.leading)
+            }
+            .tint(.primary)
+            Button {
                 onOpenSettings()
             } label: {
                 Label("Réglages", systemImage: "gearshape")
@@ -269,17 +259,34 @@ struct SidebarView: View {
             store.select(conversation.id)
             onClose()
         } label: {
+            let assistant = store.assistant(for: conversation)
             HStack(spacing: 10) {
                 MarcelAvatar(size: 36, mood: conversation.displayMood)
+                    .overlay(alignment: .bottomTrailing) {
+                        // The assistant this conversation talks to, in a corner of Marcel.
+                        if let assistant {
+                            MarcelAvatar(size: 18, mood: store.mood(for: assistant))
+                                .offset(x: 4, y: 4)
+                        }
+                    }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(conversation.title)
                         .font(.body.weight(conversation.id == store.currentID ? .semibold : .regular))
                         .lineLimit(1)
-                    if let last = conversation.messages.last(where: { !$0.content.isEmpty }) {
-                        Text(Self.preview(last.content))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if let assistant {
+                            Text(assistant.name)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Theme.assistantBubble, in: .capsule)
+                        }
+                        if let last = conversation.messages.last(where: { !$0.content.isEmpty }) {
+                            Text(Self.preview(AutoBlocks.strip(last.content)))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -330,8 +337,9 @@ struct SidebarView: View {
     }
 
     private func transcript(of conversation: Conversation) -> String {
-        conversation.messages
-            .map { "\($0.role == .user ? "Moi" : "Marcel") : \($0.content)" }
+        let name = store.assistant(for: conversation)?.name ?? "Marcel"
+        return conversation.messages
+            .map { "\($0.role == .user ? "Moi" : name) : \(AutoBlocks.strip($0.content))" }
             .joined(separator: "\n\n")
     }
 }

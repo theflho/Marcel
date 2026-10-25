@@ -11,6 +11,7 @@ conversation goes to the model alone (see start_mission).
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import sqlite3
 import time
@@ -209,7 +210,17 @@ def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> A
 # Settings kept by another store (the proactive settings for Veille).
 EXTERNAL = {"veille"}
 
-PROPOSAL_PROMPT = """Tu es l'assistant « {name} » de Marcel, dans sa conversation dédiée de l'app iPhone.
+# Questions the user might ask next, shown as buttons under the reply (the app hides the block).
+FOLLOWUP_BLOCK = re.compile(r"```suivi[ \t]*\n?.*?```", re.DOTALL)
+FOLLOWUPS = """- Suites : termine chaque réponse par une ou deux questions courtes (moins de 50 caractères) que
+  l'utilisateur pourrait te poser ensuite, écrites comme s'il te les posait (« Et la semaine
+  prochaine ? »), dans ce bloc, tout à la fin, après tout autre bloc :
+  ```suivi
+  ["Et la semaine prochaine ?", "Ajoute-les à mon agenda"]
+  ```
+  L'app les affiche en boutons sous ta réponse. Pas de bloc si aucune suite n'a de sens."""
+
+PROPOSAL_PROMPT = """Tu es l'assistant « {name} » de Marcel, dans une conversation de l'app iPhone où l'utilisateur t'a choisi.
 Réponds en français, en tutoyant, court et clair.
 {role}
 
@@ -223,7 +234,7 @@ Actions que tu peux proposer (clé « actions » du bloc) :
 {actions}
 
 Quand l'utilisateur veut changer un réglage, lancer une action ou te donner une consigne durable, fais-le
-toi-même en terminant ta réponse par ce bloc (et rien après) :
+toi-même en terminant ta réponse par ce bloc (et rien après, sauf le bloc suivi) :
 ```reglage
 {{"changes": {{"cle": valeur}}, "actions": [], "consigne": "", "mascotte": "", "resume": "ce qui change, en quelques mots"}}
 ```
@@ -233,9 +244,20 @@ seulement des actions de la liste ci-dessus ; « consigne » est une phrase à r
 sport, cooking, hammock ; sinon ""). Le serveur l'applique dès ta réponse finie et l'app l'affiche :
 annonce-le au passé (« c'est fait »), sans demander d'appuyer sur quoi que ce soit. Un seul bloc par
 réponse, et seulement quand il faut changer ou lancer quelque chose. Tu ne supprimes, n'épingles et
-ne touches au serveur (VPS) jamais. Quand quelque chose ne marche pas, appuie-toi
+ne touches au serveur (VPS) jamais.
+
+Tu peux aussi relancer l'utilisateur plus tard, ici même, quand il le demande ou l'accepte
+(« rappelle-moi mardi de… », « chaque soir, fais-moi le point ») : termine alors ta réponse par
+```routine
+{{"titre": "Titre court", "consigne": "ce que tu feras ce jour-là", "jours": ["mardi"], "heure": "09:00", "une_fois": true}}
+```
+(« une_fois » : true pour une seule relance, false pour chaque semaine ; jours : noms des jours, « semaine »,
+« week-end » ou [] pour tous les jours). Tu reviendras seul dans cette conversation, avec une
+notification, sans outil qui agit. Quand quelque chose ne marche pas, appuie-toi
 sur l'état du robot ci-dessous (s'il est fourni) pour expliquer ce qui se passe, et propose ce que tu
-peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier."""
+peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier.
+
+{followups}"""
 
 # What an assistant can have done right away, on the user's "Appliquer".
 ACTIONS = {
@@ -246,7 +268,7 @@ ACTIONS = {
 OVERVIEW_PROMPT = """Les assistants de l'app, que tu règles toi-même quand l'utilisateur le demande :
 {lines}
 Pour changer le réglage d'un assistant, lancer une de ses actions, lui donner une consigne ou une
-mascotte, termine ta réponse par ce bloc, et rien après :
+mascotte, termine ta réponse par ce bloc, et rien après sauf le bloc suivi :
 ```reglage
 {{"assistant": "id", "changes": {{"cle": valeur}}, "actions": [], "consigne": "", "mascotte": "", "resume": "en quelques mots"}}
 ```
@@ -434,6 +456,6 @@ def overview(assistants: list[Assistant], values) -> str:
 def prompt(assistant: Assistant, values: dict, instructions: list[dict]) -> str:
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        name=assistant.name, role=role, actions=actions_note(assistant.id),
+        followups=FOLLOWUPS, name=assistant.name, role=role, actions=actions_note(assistant.id),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)")

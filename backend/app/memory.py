@@ -171,11 +171,14 @@ class MemoryStore:
 
     # MARK: Context for a mission
 
-    def context(self, question: str, archive_limit: int = 8) -> tuple[str, list[Fact]]:
+    def context(self, question: str, archive_limit: int = 8, close: list[str] = ()) -> tuple[str, list[Fact]]:
         """The system note sent with a mission: the whole core, plus archived facts related
-        to the question. Facts matching the question are counted as used."""
+        to the question: `close` (ids found by meaning, best first), then facts sharing words.
+        Facts sent are counted as used."""
         core = self.active(CORE)
-        related = self.search(question, limit=archive_limit + len(core))
+        by_meaning = [f for i in close if (f := self.get(i)) and f.status == ACTIVE]
+        seen = {f.id for f in by_meaning}
+        related = by_meaning + [f for f in self.search(question, limit=archive_limit + len(core)) if f.id not in seen]
         now = time.time()
         for fact in related:
             self._db.execute("UPDATE memories SET uses = uses + 1, last_used_at = ? WHERE id = ?", (now, fact.id))

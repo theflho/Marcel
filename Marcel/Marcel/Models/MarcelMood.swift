@@ -13,15 +13,15 @@ nonisolated enum MarcelMood: String, Codable, CaseIterable, Identifiable, Sendab
 
     var label: String {
         switch self {
-        case .tree: "Dans l'arbre"
+        case .tree: "Classique"
         case .sleep: "Sieste"
         case .laptop: "Au travail"
         case .coffee: "Café"
         case .reading: "Lecture"
         case .music: "Musique"
-        case .roadtrip: "En voiture"
+        case .roadtrip: "Accoudé"
         case .dog: "Avec le chien"
-        case .pool: "Piscine"
+        case .pool: "Allongé"
         case .sport: "Sport"
         case .cooking: "Cuisine"
         case .hammock: "Hamac"

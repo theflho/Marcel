@@ -1,10 +1,12 @@
 import SwiftUI
 
-/// Every mission on the active server: what's running now and what was delivered.
+/// Everything Marcel does, in one place (like the Activity tab of ChatGPT's dots): what waits for
+/// the user, what runs now, what is scheduled, and what was delivered.
 struct MissionsView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var missions: [MissionInfo] = []
+    @State private var routines: [Routine] = []
     @State private var loaded = false
     @State private var error: String?
 
@@ -15,16 +17,16 @@ struct MissionsView: View {
                     ContentUnavailableView("Arrêt d'urgence actif", systemImage: "exclamationmark.octagon",
                                            description: Text("Aucune requête n'est envoyée au serveur. Reprends depuis le bandeau ou les réglages."))
                 } else if let error, missions.isEmpty {
-                    ContentUnavailableView("Missions indisponibles", systemImage: "wifi.exclamationmark",
+                    ContentUnavailableView("Activité indisponible", systemImage: "wifi.exclamationmark",
                                            description: Text(error))
-                } else if loaded && missions.isEmpty {
-                    ContentUnavailableView("Aucune mission", systemImage: "checklist",
-                                           description: Text("Les réponses de Marcel apparaîtront ici, même quand l'app est fermée."))
+                } else if loaded && missions.isEmpty && routines.isEmpty {
+                    ContentUnavailableView("Rien pour l'instant", systemImage: "checklist",
+                                           description: Text("Ce que Marcel fait, même app fermée, et ce qu'il fera à heure fixe apparaîtront ici."))
                 } else {
                     list
                 }
             }
-            .navigationTitle("Missions")
+            .navigationTitle("Activité")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -44,15 +46,54 @@ struct MissionsView: View {
 
     private var list: some View {
         List {
+            let waiting = missions.filter { $0.status != "running" && ($0.error ?? "").hasPrefix("Je bloque") || $0.needsCheck }
             let running = missions.filter { $0.status == "running" }
-            let finished = missions.filter { $0.status != "running" }
-            if !running.isEmpty {
-                Section("En cours") {
-                    ForEach(running) { row($0) }
+            let waitingIDs = Set(waiting.map(\.id))
+            let finished = missions.filter { $0.status != "running" && !waitingIDs.contains($0.id) }
+            let scheduled = routines.filter { $0.status == "active" }
+            if !waiting.isEmpty || store.unseenIdeas > 0 {
+                Section {
+                    ForEach(waiting) { row($0) }
+                    if store.unseenIdeas > 0 {
+                        NavigationLink {
+                            IdeasView()
+                        } label: {
+                            Label("\(store.unseenIdeas) idée\(store.unseenIdeas > 1 ? "s" : "") à regarder", systemImage: "lightbulb")
+                        }
+                    }
+                } header: {
+                    Text("À voir")
+                } footer: {
+                    if !waiting.isEmpty { Text("Bloquée, ou dit « c'est fait » sans preuve : ouvre sa conversation pour voir.") }
+                }
+            }
+            Section("En cours") {
+                NavigationLink {
+                    RobotView()
+                } label: {
+                    Label("Voir le robot RMA", systemImage: "display")
+                }
+                ForEach(running) { row($0) }
+            }
+            if !scheduled.isEmpty {
+                Section("Programmé") {
+                    ForEach(scheduled) { routine in
+                        NavigationLink {
+                            RoutinesView()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(routine.title)
+                                    .font(.body.weight(.medium))
+                                Label(routine.schedule, systemImage: "alarm")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
             if !finished.isEmpty {
-                Section("Terminées") {
+                Section("Terminé") {
                     ForEach(finished) { row($0) }
                 }
             }
@@ -83,6 +124,7 @@ struct MissionsView: View {
         guard !store.emergencyActive else { return }
         do {
             missions = try await store.serverMissions()
+            if let api = store.settings.api, let routines = try? await api.routines() { self.routines = routines }
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -128,6 +170,7 @@ private struct MissionCard: View {
     private var statusLabel: some View {
         switch mission.status {
         case "running": Text("En cours").foregroundStyle(Color.accentColor)
+        case "done" where mission.needsCheck: Label("À vérifier", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
         case "done": Label("Livrée", systemImage: "checkmark").foregroundStyle(.green)
         case "stopped": Text("Arrêtée")
         case "interrupted": Text("Coupée").foregroundStyle(.orange)
@@ -140,5 +183,12 @@ private struct MissionCard: View {
         if seconds < 60 { return "\(seconds) s" }
         if seconds < 3600 { return "\(seconds / 60) min" }
         return "\(seconds / 3600) h \(seconds % 3600 / 60) min"
+    }
+}
+
+extension MissionInfo {
+    /// Done, but what the reply claims isn't backed by what ran (the server's "À vérifier").
+    var needsCheck: Bool {
+        status == "done" && (actions ?? []).contains { $0.id == "verify" && $0.status == "cancelled" }
     }
 }
