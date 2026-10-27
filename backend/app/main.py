@@ -4127,6 +4127,8 @@ class DeployReport(BaseModel):
     status: Literal["deployed", "rolled_back", "failed", "skipped"]
     commit: str = Field(default="", max_length=64)
     message: str = Field(default="", max_length=500)
+    # The end of what went wrong (auto-update.sh sends the last 20 000 characters).
+    log: str = Field(default="", max_length=20_000)
 
 
 @app.post("/v1/deploy/report", dependencies=[Depends(require_token)])

@@ -340,3 +340,9 @@ def test_hermes_reads_the_bots_and_sets_one_by_the_rules():
         client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": before}})
         client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 19}})
         assistants.set_state("read_now", False)
+
+
+def test_a_deployment_report_keeps_the_end_of_its_log():
+    sent = client.post("/v1/deploy/report", headers=AUTH,
+                       json={"status": "failed", "commit": "abc1234", "message": "test", "log": "x" * 15000})
+    assert sent.status_code == 200

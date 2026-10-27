@@ -48,8 +48,9 @@ skills() {  # Les skills de Marcel pour Hermes (~/.hermes/skills/marcel/), lues 
 hermes_container=$(grep -E '^MARCEL_HERMES_CONTAINER=' .env | cut -d= -f2- || true)
 hermes_container=${hermes_container:-hermes}
 
-config_tool() {  # apply|restore … : app/hermes_config.py, avec ~/.hermes et deploy/ montés, sous l'utilisateur ubuntu
-  docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$HOME/.hermes:/hermes" \
+config_tool() {  # apply|restore … : app/hermes_config.py, avec ~/.hermes et deploy/ montés, sous l'utilisateur de Hermes
+  # ~/.hermes appartient à l'utilisateur du conteneur Hermes (10000), pas à ubuntu.
+  docker compose run --rm --no-deps -T --user "$(stat -c %u:%g "$HOME/.hermes")" -v "$HOME/.hermes:/hermes" \
     -v "$PWD/deploy:/deploy:ro" marcel-api python -m app.hermes_config "$@"
 }
 
