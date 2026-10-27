@@ -5,7 +5,7 @@ import SwiftUI
 struct AssistantsView: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    /// Opens a new conversation with the assistant, then closes the screen.
+    /// Opens the assistant's conversation (the one that continues), then closes the screen.
     var onStart: (Assistant) -> Void = { _ in }
 
     var body: some View {
@@ -31,7 +31,7 @@ struct AssistantsView: View {
                             }
                         }
                         .swipeActions(edge: .leading) {
-                            Button("Discuter", systemImage: "square.and.pencil") { start(assistant) }
+                            Button("Discuter", systemImage: "bubble.left.and.bubble.right") { start(assistant) }
                                 .tint(.accentColor)
                         }
                     }
@@ -92,7 +92,7 @@ private struct AssistantDetailView: View {
                     Button {
                         onStart(assistant)
                     } label: {
-                        Label("Nouvelle conversation", systemImage: "square.and.pencil")
+                        Label("Ouvrir sa conversation", systemImage: "bubble.left.and.bubble.right")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -111,6 +111,8 @@ private struct AssistantDetailView: View {
                 BotTaskSection(assistant: assistant)
 
                 BotRunsSection(assistantID: assistant.id, onOpen: onOpen)
+
+                BotHistorySection(assistantID: assistant.id, onOpen: onOpen)
 
                 BotRoutinesSection(assistant: assistant) {
                     // Like Grok Bot's "Add routine": it is asked in the bot's conversation.

@@ -193,15 +193,41 @@ final class ChatStore {
         if assistantID != nil { Task { await refreshAssistants() } }
     }
 
-    /// Opens a bot, like Grok Bot: Marcel (nil) or an assistant, at its latest conversation, or a
-    /// new one when it has none yet. A conversation stays with the bot it was started with.
+    /// Opens a bot's conversation, the one that continues (its row in the menu).
     func openBot(_ assistantID: String?) {
-        if conversation.assistantID == assistantID, !conversation.isPrivate { return }
-        if let latest = listedConversations.first(where: { $0.assistantID == assistantID && $0.projectID == nil }) {
-            select(latest.id)
+        if conversation.assistantID == assistantID, !conversation.isPrivate, !isPastConversation { return }
+        if let thread = thread(ofBot: assistantID) {
+            select(thread.id)
         } else {
             newConversation(assistant: assistantID)
         }
+    }
+
+    // MARK: - One conversation per bot (like Grok Bot)
+
+    /// A bot's conversation: its latest one, which continues from one day to the next.
+    func thread(ofBot assistantID: String?) -> Conversation? {
+        listedConversations.first { $0.assistantID == assistantID }
+    }
+
+    /// A bot's earlier conversations, put aside by « Repartir de zéro », newest first.
+    func history(ofBot assistantID: String?) -> [Conversation] {
+        let all = listedConversations.filter { $0.assistantID == assistantID }
+        // Just after « Repartir de zéro », the blank conversation is the one that continues.
+        let fresh = conversation.messages.isEmpty && !conversation.isPrivate && conversation.assistantID == assistantID
+        return fresh ? all : Array(all.dropFirst())
+    }
+
+    /// The open conversation is an earlier one of its bot, read from its history.
+    var isPastConversation: Bool {
+        !conversation.isPrivate && !conversation.messages.isEmpty
+            && thread(ofBot: conversation.assistantID)?.id != conversation.id
+    }
+
+    /// « Repartir de zéro »: the bot's conversation goes to its history, a blank one takes its place.
+    func startFresh() {
+        guard !conversation.isPrivate, !conversation.messages.isEmpty, !isStreaming else { return }
+        newConversation(assistant: conversation.assistantID)
     }
 
     /// The last thing said in a bot's latest conversation, for its row in the menu.
@@ -700,7 +726,7 @@ final class ChatStore {
             replace(created)
             updateMessage(messageID, in: conversationID) { $0.proposalDecision = "applied" }
             persist(conversationID, touch: false)
-            newConversation(assistant: created.id)
+            openBot(created.id)
         } catch {
             report("Assistant non créé : \(error.localizedDescription)", action: action(for: error))
         }

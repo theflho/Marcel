@@ -1,33 +1,18 @@
 import SwiftUI
 
-/// Side drawer, like Grok Bot's: search, the bots (Marcel and each assistant, each with its own
-/// conversations), then every conversation by date (a badge names the bot), the projects folded
-/// underneath, Assistants and Réglages.
+/// Side drawer, like Grok Bot's: one row per bot, and each bot is one conversation that continues.
+/// Earlier conversations (put aside by « Repartir de zéro ») live in the bot's history and the search.
 struct SidebarView: View {
     @Environment(ChatStore.self) private var store
     var onClose: () -> Void
     var onOpenSettings: () -> Void
     var onOpenAssistants: () -> Void
-    @AppStorage("projectsExpanded") private var projectsExpanded = false
-
     @State private var query = ""
-    @State private var expandedProjects: Set<UUID> = []
-    @State private var renaming: RenameTarget?
+    @State private var renaming: UUID?
     /// Bumped when a bot is pinned or hidden, so the list reads BotPrefs again.
     @State private var botPrefsVersion = 0
     @State private var hiddenExpanded = false
     @State private var renameText = ""
-    @State private var creatingProject = false
-    @State private var newProjectName = ""
-
-    private enum RenameTarget: Identifiable {
-        case conversation(UUID), project(UUID)
-        var id: UUID {
-            switch self {
-            case .conversation(let id), .project(let id): id
-            }
-        }
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,12 +20,7 @@ struct SidebarView: View {
             List {
                 if query.isEmpty {
                     botsSection
-                    ForEach(DateBucket.group(store.listedConversations.filter { $0.projectID == nil }), id: \.bucket) { group in
-                        Section(group.bucket.title) {
-                            ForEach(group.conversations) { row(for: $0) }
-                        }
-                    }
-                    projectsSection
+                    privateSection
                 } else {
                     searchResults
                 }
@@ -52,15 +32,9 @@ struct SidebarView: View {
         .alert("Renommer", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Nom", text: $renameText)
             Button("Annuler", role: .cancel) {}
-            Button("OK") { applyRename() }
-        }
-        .alert("Nouveau projet", isPresented: $creatingProject) {
-            TextField("Nom du projet", text: $newProjectName)
-            Button("Annuler", role: .cancel) {}
-            Button("Créer") {
-                if let project = store.createProject(named: newProjectName) {
-                    withAnimation(.snappy) { _ = expandedProjects.insert(project.id) }
-                }
+            Button("OK") {
+                if let renaming { store.rename(renaming, to: renameText) }
+                renaming = nil
             }
         }
     }
@@ -74,7 +48,7 @@ struct SidebarView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Rechercher", text: $query)
+                TextField("Rechercher dans les conversations", text: $query)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 if !query.isEmpty {
@@ -86,18 +60,6 @@ struct SidebarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(Theme.surface, in: .rect(cornerRadius: 12))
-            Button {
-                store.newConversation()
-                onClose()
-            } label: {
-                Label("Nouvelle conversation", systemImage: "square.and.pencil")
-                    .font(.body.weight(.medium))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-            }
-            .tint(.primary)
         }
         .padding(.horizontal)
         .padding(.top, 8)
@@ -124,7 +86,7 @@ struct SidebarView: View {
 
     /// Marcel and the assistants, like Grok Bot's list of bots: touch one to talk to it.
     private var botsSection: some View {
-        Section("Bots") {
+        Section {
             let list = bots
             ForEach(list.shown) { bot in
                 botRow(id: bot.id, name: bot.name)
@@ -150,6 +112,39 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
             }
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        } header: {
+            Text("Tes bots")
+        } footer: {
+            Text("Un bot = une conversation qui continue d'un jour à l'autre. Pour tout reprendre à zéro, touche son nom en haut du chat : l'ancienne conversation va dans son historique.")
+                .font(.caption)
+        }
+    }
+
+    /// A conversation with Marcel that keeps nothing: no memory, not in the list.
+    private var privateSection: some View {
+        Section {
+            Button {
+                store.newPrivateConversation()
+                onClose()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "eye.slash")
+                        .frame(width: 36, height: 36)
+                        .background(Theme.surface, in: .rect(cornerRadius: 10))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Conversation privée")
+                            .font(.body.weight(store.conversation.isPrivate ? .semibold : .regular))
+                        Text("Avec Marcel, rien n'est gardé")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            }
+            .tint(.primary)
+            .listRowBackground(store.conversation.isPrivate ? Theme.surface.opacity(0.6) : Color.clear)
             .listRowSeparator(.hidden)
         }
     }
@@ -202,68 +197,6 @@ struct SidebarView: View {
         .listRowSeparator(.hidden)
     }
 
-    private var projectsSection: some View {
-        Section(isExpanded: $projectsExpanded) {
-            ForEach(store.projects) { project in
-                let items = store.listedConversations.filter { $0.projectID == project.id }
-                let isExpanded = expandedProjects.contains(project.id)
-                Button {
-                    withAnimation(.snappy) {
-                        if isExpanded { expandedProjects.remove(project.id) } else { expandedProjects.insert(project.id) }
-                    }
-                } label: {
-                    ProjectRow(project: project, count: items.filter { !$0.messages.isEmpty }.count, isExpanded: isExpanded)
-                }
-                .tint(.primary)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .contextMenu { projectMenu(project) }
-                if isExpanded {
-                    Button {
-                        store.newConversation(in: project.id)
-                        onClose()
-                    } label: {
-                        Label("Nouvelle conversation ici", systemImage: "square.and.pencil")
-                            .font(.subheadline)
-                            .padding(.leading, 28)
-                            .foregroundStyle(.secondary)
-                    }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    ForEach(items) { row(for: $0).padding(.leading, 28) }
-                }
-            }
-            Button {
-                newProjectName = ""
-                creatingProject = true
-            } label: {
-                Label("Nouveau projet", systemImage: "plus")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
-        } header: {
-            Text(store.projects.isEmpty ? "Projets" : "Projets (\(store.projects.count))")
-        }
-    }
-
-    @ViewBuilder
-    private func projectMenu(_ project: Project) -> some View {
-        Button("Nouvelle conversation ici", systemImage: "square.and.pencil") {
-            store.newConversation(in: project.id)
-            onClose()
-        }
-        Button("Renommer", systemImage: "pencil") {
-            renameText = project.name
-            renaming = .project(project.id)
-        }
-        Button("Supprimer le projet", systemImage: "trash", role: .destructive) {
-            expandedProjects.remove(project.id)
-            store.deleteProject(project.id)
-        }
-    }
-
     @ViewBuilder
     private var searchResults: some View {
         let needle = query.lowercased()
@@ -271,7 +204,7 @@ struct SidebarView: View {
             conversation.title.lowercased().contains(needle)
                 || conversation.messages.contains { $0.content.lowercased().contains(needle) }
         }
-        Section(results.isEmpty ? "Aucun résultat" : "Résultats") {
+        Section(results.isEmpty ? "Aucun résultat" : "Conversations, actuelles et passées") {
             ForEach(results) { row(for: $0) }
         }
     }
@@ -325,13 +258,13 @@ struct SidebarView: View {
                         .font(.body.weight(conversation.id == store.currentID ? .semibold : .regular))
                         .lineLimit(1)
                     HStack(spacing: 6) {
-                        if let assistant {
-                            Text(assistant.name)
+                        let name = assistant?.name ?? "Marcel"
+                        let current = store.thread(ofBot: conversation.assistantID)?.id == conversation.id
+                        Text(current ? name : "\(name) · ancienne")
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Theme.assistantBubble, in: .capsule)
-                        }
                         if let last = conversation.messages.last(where: { !$0.content.isEmpty }) {
                             Text(Self.preview(AutoBlocks.strip(last.content)))
                                 .font(.caption)
@@ -355,13 +288,7 @@ struct SidebarView: View {
         .contextMenu {
             Button("Renommer", systemImage: "pencil") {
                 renameText = conversation.title
-                renaming = .conversation(conversation.id)
-            }
-            Menu("Déplacer vers", systemImage: "folder") {
-                Button("Aucun projet") { store.move(conversation.id, to: nil) }
-                ForEach(store.projects) { project in
-                    Button(project.name) { store.move(conversation.id, to: project.id) }
-                }
+                renaming = conversation.id
             }
             ShareLink(item: transcript(of: conversation))
             Button("Supprimer", systemImage: "trash", role: .destructive) { store.delete(conversation.id) }
@@ -373,15 +300,6 @@ struct SidebarView: View {
         text.replacingOccurrences(of: "\n", with: " ")
             .filter { !"#*`>_|".contains($0) }
             .trimmingCharacters(in: .whitespaces)
-    }
-
-    private func applyRename() {
-        switch renaming {
-        case .conversation(let id): store.rename(id, to: renameText)
-        case .project(let id): store.renameProject(id, to: renameText)
-        case nil: break
-        }
-        renaming = nil
     }
 
     private func transcript(of conversation: Conversation) -> String {
@@ -406,36 +324,5 @@ private struct TokenGauge: View {
                 .frame(width: 72)
         }
         .foregroundStyle(.secondary)
-    }
-}
-
-/// Groups conversations by recency, like Messages or Mail.
-private enum DateBucket: Int, CaseIterable {
-    case today, yesterday, week, month, older
-
-    var title: String {
-        switch self {
-        case .today: "Aujourd'hui"
-        case .yesterday: "Hier"
-        case .week: "7 derniers jours"
-        case .month: "30 derniers jours"
-        case .older: "Plus ancien"
-        }
-    }
-
-    static func bucket(for date: Date, now: Date = .now, calendar: Calendar = .current) -> DateBucket {
-        if calendar.isDateInToday(date) { return .today }
-        if calendar.isDateInYesterday(date) { return .yesterday }
-        let days = calendar.dateComponents([.day], from: date, to: now).day ?? 0
-        if days < 7 { return .week }
-        if days < 30 { return .month }
-        return .older
-    }
-
-    static func group(_ conversations: [Conversation]) -> [(bucket: DateBucket, conversations: [Conversation])] {
-        let grouped = Dictionary(grouping: conversations) { bucket(for: $0.updatedAt) }
-        return allCases.compactMap { bucket in
-            grouped[bucket].map { (bucket, $0) }
-        }
     }
 }

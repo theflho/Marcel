@@ -1,7 +1,7 @@
 import SwiftUI
 
-// Marcel and each assistant are bots, like in Grok Bot: each has its own conversations, opened from
-// the menu (or "/planning"). A conversation stays with the bot it was started with.
+// Marcel and each assistant are bots, like in Grok Bot: each is one conversation that continues,
+// opened from the menu (or "/planning"). « Repartir de zéro » puts it in the bot's history.
 
 extension Assistant {
     /// The examples its welcome gives (« lis le planning à 7 h »…), as suggestions to touch. Only
@@ -38,7 +38,7 @@ extension ChatStore {
             guard let last = conversation.messages.last, last.role == .assistant else { return ("réfléchit…", true) }
             return (last.content.isEmpty ? "réfléchit…" : "écrit…", true)
         }
-        if conversation.isPrivate { return ("privée · rien n'est gardé", false) }
+        if conversation.isPrivate { return ("rien n'est gardé", false) }
         switch serverStatus {
         case .reachable: return ("en ligne", false)
         case .unreachable, .unauthorized: return ("hors ligne", false)
@@ -58,17 +58,36 @@ struct WelcomeView: View {
         Calendar.current.component(.hour, from: .now) >= 18 ? "Bonsoir !" : "Bonjour !"
     }
 
+    /// How conversations work here, said once where it matters: on the empty conversation.
+    private func threadLine(_ mode: Assistant?) -> String {
+        if store.conversation.isPrivate {
+            return "Rien de ce que tu écris ici n'est gardé, ni dans la liste, ni dans la mémoire de Marcel."
+        }
+        let name = mode?.name ?? "Marcel"
+        return store.history(ofBot: mode?.id).isEmpty
+            ? "Ta conversation avec \(name) continue d'un jour à l'autre : pas besoin d'en ouvrir une nouvelle. Touche son nom en haut pour repartir de zéro."
+            : "Nouveau départ avec \(name). Les anciennes conversations sont gardées : touche son nom en haut › Anciennes conversations."
+    }
+
     var body: some View {
         let mode = store.mode
         VStack(spacing: 16) {
             VStack(spacing: 8) {
                 MarcelAvatar(size: 56, bot: mode?.id)
-                Text("\(greeting) Ici Marcel.")
+                Text(store.conversation.isPrivate ? "Conversation privée" : "\(greeting) Ici \(mode?.name ?? "Marcel").")
                     .font(.title3.weight(.semibold))
                 Text(mode.map { "\($0.name) : \($0.summary)" } ?? "Qu'est-ce que je fais pour toi ?")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                Text(threadLine(mode))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Theme.surface, in: .rect(cornerRadius: 14))
+                    .padding(.top, 4)
                 if let mode, !mode.status.isEmpty {
                     Text(mode.status)
                         .font(.caption)

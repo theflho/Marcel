@@ -8,6 +8,8 @@ struct ChatView: View {
     @State private var showIdeas = false
     @State private var showAssistants = false
     @State private var showSidebar = false
+    @State private var showHistory = false
+    @State private var confirmingFresh = false
     @State private var showSplash = true
     @GestureState private var drawerDrag: CGFloat = 0
     /// How far the menu has been pulled out from the left edge, while the finger is down.
@@ -103,7 +105,16 @@ struct ChatView: View {
             MissionsView()
         }
         .sheet(isPresented: $showAssistants) {
-            AssistantsView { assistant in store.newConversation(assistant: assistant.id) }
+            AssistantsView { assistant in store.openBot(assistant.id) }
+        }
+        .sheet(isPresented: $showHistory) {
+            BotHistorySheet(assistantID: store.conversation.assistantID)
+        }
+        .confirmationDialog("Repartir de zéro avec \(botName) ?", isPresented: $confirmingFresh, titleVisibility: .visible) {
+            Button("Repartir de zéro") { withAnimation(.snappy) { store.startFresh() } }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("La conversation actuelle n'est pas supprimée : elle va dans l'historique de \(botName), tu pourras la relire. \(botName) garde ce qu'il a appris sur toi.")
         }
         .sheet(isPresented: $showIdeas) {
             NavigationStack {
@@ -127,6 +138,10 @@ struct ChatView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     header
+                    if store.isPastConversation {
+                        PastConversationBanner()
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     if store.emergencyActive {
                         EmergencyBanner()
                     } else {
@@ -203,14 +218,30 @@ struct ChatView: View {
             .padding(.top, 4)
 
             Menu {
-                // This bot, like Grok Bot: another conversation with it, or its card. Other bots are
-                // in the side menu.
-                Button("Nouvelle conversation", systemImage: "square.and.pencil") {
-                    store.newConversation(assistant: store.conversation.assistantID)
-                }
-                Button(store.mode == nil ? "Tous les bots" : "Fiche du bot", systemImage: "person.crop.circle") {
-                    composerFocused = false
-                    showAssistants = true
+                // This bot, like Grok Bot: one conversation that continues. Starting over puts it in
+                // the history; other bots are in the side menu.
+                if store.conversation.isPrivate {
+                    Section("Rien n'est gardé de cette conversation") {
+                        Button("Revenir à Marcel", systemImage: "bubble.left.and.bubble.right") { store.openBot(nil) }
+                    }
+                } else {
+                    Section("Une seule conversation avec \(botName)") {
+                        Button("Repartir de zéro", systemImage: "arrow.counterclockwise") {
+                            composerFocused = false
+                            confirmingFresh = true
+                        }
+                        .disabled(store.conversation.messages.isEmpty || store.isStreaming)
+                        let past = store.history(ofBot: store.conversation.assistantID).count
+                        Button(past > 0 ? "Anciennes conversations (\(past))" : "Anciennes conversations",
+                               systemImage: "clock.arrow.circlepath") {
+                            composerFocused = false
+                            showHistory = true
+                        }
+                    }
+                    Button(store.mode == nil ? "Tous les bots" : "Fiche de \(botName)", systemImage: "person.crop.circle") {
+                        composerFocused = false
+                        showAssistants = true
+                    }
                 }
             } label: {
                 VStack(spacing: -4) {
@@ -222,8 +253,8 @@ struct ChatView: View {
                                 .frame(height: 20)
                         } else {
                             HStack(spacing: 4) {
-                                // Always Marcel: a bot is one of the things he takes care of, not someone else.
-                                Text("Marcel")
+                                // The bot this conversation is with: its row in the side menu.
+                                Text(botName)
                                     .font(.subheadline.weight(.semibold))
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 9, weight: .bold))
@@ -232,7 +263,7 @@ struct ChatView: View {
                         }
                         // "en ligne" when idle; while replying, only what a running step does.
                         if let line = store.isStreaming ? store.runningActivity
-                            : ([store.mode?.name, store.headerStatus?.text].compactMap { $0 }.joined(separator: " · ")).nilIfEmpty {
+                            : store.headerStatus?.text {
                             Text(line)
                                 .font(.caption2)
                                 .foregroundStyle(store.isStreaming ? Color.accentColor : .secondary)
@@ -248,11 +279,16 @@ struct ChatView: View {
             }
             .tint(.primary)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Marcel\(store.mode.map { ", \($0.name)" } ?? "")\(store.headerStatus.map { ", \($0.text)" } ?? "")")
-            .accessibilityHint("Nouvelle conversation ou fiche du bot")
+            .accessibilityLabel("\(botName)\(store.headerStatus.map { ", \($0.text)" } ?? "")")
+            .accessibilityHint("Repartir de zéro, anciennes conversations ou fiche du bot")
             .accessibilityAddTraits(.isHeader)
         }
         .padding(.bottom, 8)
+    }
+
+    /// Who this conversation is with, as named in the side menu.
+    private var botName: String {
+        store.conversation.isPrivate ? "Conversation privée" : store.mode?.name ?? "Marcel"
     }
 
     /// Ideas, missions, assistants and the illustration, behind one button (a dot when something waits).

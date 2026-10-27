@@ -33,7 +33,7 @@ extension Assistant {
 
 extension ChatStore {
     var slashCommands: [SlashCommand] {
-        var commands = [SlashCommand(name: "nouveau", detail: "Nouvelle conversation", icon: "square.and.pencil",
+        var commands = [SlashCommand(name: "nouveau", detail: "Repartir de zéro avec ce bot", icon: "arrow.counterclockwise",
                                      kind: .newConversation),
                         SlashCommand(name: "prive", detail: "Conversation privée, rien n'est gardé", icon: "lock",
                                      kind: .privateConversation),
@@ -62,7 +62,7 @@ extension ChatStore {
         switch command.kind {
         case .newConversation:
             draft = ""
-            newConversation()
+            startFresh()
         case .privateConversation:
             draft = ""
             newPrivateConversation()
@@ -70,8 +70,8 @@ extension ChatStore {
             draft = ""
             openBot(id)
         case .skill:
-            // Skills are Marcel's: an assistant has no tool.
-            if conversation.assistantID != nil { newConversation() }
+            // Skills are Marcel's: an assistant has no tool. Back to Marcel's conversation.
+            if conversation.assistantID != nil || isPastConversation { openBot(nil) }
             draft = "/\(command.name) "
         }
     }
