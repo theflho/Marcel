@@ -193,6 +193,38 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > « page » : un petit tableau Markdown (missions de la semaine, offres en attente, objectifs)
 > recalculé par le serveur à chaque ouverture, sans modèle. Commence par Planning et Recrutements.
 
+### 7. Un bot qui travaille seul
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 7. Donne à chaque bot une tâche permanente, réglée
+> dans sa fiche (« surveille les offres et prépare ma réponse »), qui part seule sur un événement
+> (offre, planning, e-mail) ou à heure fixe, en t'appuyant sur les routines qui ont déjà un
+> `assistant`. Le modèle reste sans outil : il propose une action parmi celles du bot (`ACTIONS`),
+> et le serveur l'exécute selon Réglages › Règles (« tout seul » ou « Valider »). Le résultat arrive
+> dans la conversation du bot avec une notification ; sa fiche montre « Dernier travail » et
+> « Prochain réveil ». Toujours en mode protégé avec un e-mail. Tests dans backend/tests.
+
+### 8. « Apprends-moi une tâche »
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 8. Dans la conversation d'un bot, l'utilisateur
+> décrit une tâche une fois, étape par étape (ou Marcel la tire d'une conversation réussie). Le
+> serveur l'enregistre comme une recette, visible, modifiable et effaçable dans la fiche du bot à
+> côté de ses consignes. Le bot la rejoue sur demande ou dans sa tâche permanente (chantier 7) ;
+> chaque étape qui agit suit les règles « demande d'abord ». Rien n'est appris sans être montré.
+
+### 9. Des skills partagées entre bots
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 9. Ajoute une bibliothèque de skills de bot :
+> de courtes consignes réutilisables (« ton pour répondre à RMA », « format d'un brief »), créées
+> et modifiées dans Réglages, et cochées dans la fiche de chaque bot. Le serveur les ajoute au
+> prompt du bot (`bots.prompt`). Ce n'est que du texte : aucune skill ne donne un outil.
+
+### 10. Chaque bot sur Telegram
+
+> /code Lis docs/chantiers-grok-bot.md, chantier 10. Sur Telegram, « /planning », « /offres »… ouvrent
+> la conversation du bot correspondant, avec les mêmes lectures et les mêmes règles que dans l'app
+> (modèle seul, sans outil). Le bot Mails reste dans l'app seulement. La conversation se retrouve
+> dans l'app, sous le bot.
+
 ## Sources
 
 - [ChatGPT dots (Zapier)](https://zapier.com/blog/chatgpt-dots.md)
