@@ -1,6 +1,6 @@
 ---
 name: marcel-donnees
-description: Retrouver ce que Marcel sait et a fait (conversations passées, mémoire, planning, offres, robot RMA, objectifs, routines) avec les outils MCP marcel_*, et retenir un fait durable.
+description: Retrouver ce que Marcel sait et a fait (conversations passées, mémoire, planning, offres, robot RMA, objectifs, routines, bots, idées, règles) avec les outils MCP marcel_*, retenir un fait durable et régler un bot.
 ---
 
 # Les données de Marcel
@@ -14,6 +14,19 @@ Avant de dire « je ne sais pas » ou de redemander quelque chose à l'utilisate
 - `marcel_planning`, `marcel_offres`, `marcel_robot` : planning de travail, offres de missions,
   état du robot RMA.
 - `marcel_objectifs`, `marcel_routines` : ce que Marcel suit et fait seul.
+- `marcel_bots` : les bots, leurs réglages (avec bornes), actions, automatismes RMA et tâches permanentes.
+- `marcel_passages` : ce que les bots ont fait seuls, lu ou non, fait ou non.
+- `marcel_idees` : les idées proposées sous l'ampoule.
+- `marcel_regles` : ce que l'utilisateur te laisse faire (auto), te demande de proposer (demande
+  d'abord) ou t'interdit (bloqué). Regarde-les avant d'agir si tu as un doute.
+
+## Régler un bot
+
+`marcel_regler_bot` change un réglage (dans ses bornes), ajoute une consigne ou lance « relire » (le
+robot relit le portail RMA, en lecture seule). Il suit la règle « Changer le réglage d'un assistant » :
+si elle demande d'abord, propose le bloc ```reglage``` à la place ; si elle est bloquée, ne le fais pas.
+Confier un automatisme RMA à un autre bot, répondre à une offre ou pointer : jamais toi, l'utilisateur
+le fait dans l'app.
 
 ## Retenir
 

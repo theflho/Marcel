@@ -1018,13 +1018,13 @@ def rule(kind: str, assistant: str | None = None) -> str:
 ASK_CARD = "auto-ask-"
 
 
-def ask_first(kind: str) -> None:
+def ask_first(kind: str, assistant: str | None = None) -> None:
     """For Hermes' tools: under an "ask" rule, it proposes with a block instead of doing it; under
-    "off", it does not do it at all."""
-    if rules()[kind] == "off":
+    "off", it does not do it at all. With a bot, its own level when it has one."""
+    if rule(kind, assistant) == "off":
         raise ToolError(f"Règle « bloqué » ({RULE_KINDS[kind].lower()}) : l'utilisateur l'a interdit. "
                         "Ne le fais pas et ne le propose pas ; dis-lui qu'il peut changer ça dans Réglages › Règles.")
-    if rules()[kind] == "ask":
+    if rule(kind, assistant) == "ask":
         raise ToolError(f"Règle « demande d'abord » ({RULE_KINDS[kind].lower()}) : ne le fais pas toi-même, "
                         f"propose-le en terminant ta réponse par le bloc ```{kind}``` ; l'utilisateur le validera.")
 
@@ -3702,6 +3702,99 @@ def tool_routines(_: dict) -> str:
                      + (" (en pause)" if r.status != "active" else "")
                      + (f", dernier passage {local_time(last[0]['at'])} ({last[0]['status']})" if last else "")
                      + f"\n  {r.prompt}")
+    return "\n".join(lines)
+
+
+@mcp.tool("marcel_bots",
+          "Les bots de l'utilisateur (Marcel, Planning, Pointage, Offres, Mails, Veille et les siens) : réglages "
+          "avec leurs bornes, actions possibles, automatismes RMA portés, tâche permanente, consignes et skills.")
+def tool_bots(_: dict) -> str:
+    owners = assistants.owners()
+    blocks = []
+    for bot in assistants.all():
+        values = assistant_values(bot.id)
+        lines = [f"[{bot.id}] {bot.name}" + (" (créé par l'utilisateur)" if bot.custom else "")
+                 + f" — {assistant_status(bot.id)}"]
+        lines += ["  " + s.describe(values[s.key]) for s in bot.settings]
+        if actions := assistants.actions(bot.id):
+            lines.append("  actions : " + ", ".join(actions))
+        if carried := [a.label for a in bots.AUTOMATIONS if owners[a.key] == bot.id]:
+            lines.append("  automatismes RMA portés : " + ", ".join(carried))
+        if task := routines.task_of(bot.id):
+            lines.append(f"  tâche permanente : {task.schedule} — {task.prompt[:160]}")
+        lines += [f"  consigne : {n['text']}" for n in assistants.instructions(bot.id)]
+        if chosen := assistants.chosen_skills(bot.id):
+            lines.append("  skills : " + ", ".join(s["title"] for s in chosen))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + ("\n\nPour changer un réglage, une consigne ou relire le portail : marcel_regler_bot. "
+                                   "Confier un automatisme à un autre bot, l'utilisateur seul le fait (fiche du bot).")
+
+
+@mcp.tool("marcel_regler_bot",
+          "Change le réglage d'un bot (dans ses bornes), lui donne une consigne durable ou lance une de ses actions "
+          "(« relire » : le robot relit le portail RMA, en lecture seule). Suit la règle « Changer le réglage d'un "
+          "assistant » de l'app. Ne supprime rien, ne déplace aucun automatisme.",
+          {"bot": {"type": "string", "description": "id du bot (voir marcel_bots)"},
+           "reglages": {"type": "object", "description": "{\"cle\": valeur}, clés et bornes de marcel_bots"},
+           "consigne": {"type": "string", "description": "Une phrase à retenir pour ce bot"},
+           "actions": {"type": "array", "items": {"type": "string"}, "description": "ex. [\"relire\"]"}},
+          required=("bot",), read_only=False)
+def tool_set_bot(args: dict) -> str:
+    bot = assistants.find(str(args.get("bot", "")))
+    if not bot:
+        raise ToolError("Bot inconnu : voir marcel_bots.")
+    ask_first("reglage", bot.id)
+    changes, actions = args.get("reglages") or {}, args.get("actions") or []
+    instruction = str(args.get("consigne") or "")
+    if not isinstance(actions, list) or not (changes or actions or instruction.strip()):
+        raise ToolError("Rien à changer : donne des réglages, une consigne ou des actions.")
+    try:
+        apply_update(bot, changes, instruction, [str(a) for a in actions], None)
+    except ValueError as error:
+        raise ToolError(f"Refusé : {error}") from None
+    done = [f"{k} = {json.dumps(v, ensure_ascii=False)}" for k, v in changes.items()]
+    done += [f"consigne « {' '.join(instruction.split())} »"] if instruction.strip() else []
+    done += ["relecture du portail demandée (dans la minute)"] if "relire" in actions else []
+    log.info("Hermes règle le bot %s : %s", bot.id, ", ".join(done))
+    return f"{bot.name} : " + " ; ".join(done) + "."
+
+
+@mcp.tool("marcel_idees", "Les idées que Marcel a proposées sous l'ampoule (nouvelles, vues, faites ou écartées), "
+          "avec l'objectif suivi d'où elles viennent.",
+          {"etat": {"type": "string", "description": "Filtre facultatif : new, seen, done, dismissed…"}})
+def tool_ideas(args: dict) -> str:
+    found = ideas.list(str(args["etat"])) if args.get("etat") else ideas.list()
+    if not found:
+        return "Aucune idée."
+    return "\n".join(f"- [{i.status}] {i.title} (objectif « {i.goal_title} », {local_time(i.created_at)})"
+                     + (f"\n  {i.body[:240]}" if i.body else "") for i in found[:20])
+
+
+@mcp.tool("marcel_passages",
+          "Ce que les bots ont fait seuls (leurs routines et tâches permanentes), du plus récent au plus ancien : "
+          "statut, lu ou non par l'utilisateur, fait ou non.",
+          {"bot": {"type": "string", "description": "id d'un bot (facultatif : tous)"}})
+def tool_runs(args: dict) -> str:
+    wanted = str(args.get("bot") or "")
+    mine = {r.id: r for r in routines.list() if not wanted or (r.assistant or "") == wanted}
+    runs = routines.runs_of(list(mine), limit=20)
+    if not runs:
+        return "Aucun passage."
+    return "\n".join(f"- {local_time(run['at'])} · {mine[run['routine_id']].title} : {run['status']}"
+                     + (f" ({run['error'][:120]})" if run["error"] else "")
+                     + (" · fait" if run["done"] else " · lu" if run["seen"] else " · pas encore lu")
+                     for run in runs)
+
+
+@mcp.tool("marcel_regles",
+          "Les règles de l'utilisateur (Réglages › Règles) : pour chaque type d'action, « auto » (tu le fais), "
+          "« ask » (tu le proposes avec son bloc, il valide) ou « off » (interdit), et les niveaux propres à certains bots.")
+def tool_rules(_: dict) -> str:
+    names = {"auto": "auto", "ask": "demande d'abord", "off": "bloqué"}
+    lines = [f"- {RULE_KINDS[k]} : {names[v]}" for k, v in rules().items()]
+    for bot, levels in bot_rules().items():
+        found = assistants.find(bot)
+        lines += [f"- {found.name if found else bot}, {RULE_KINDS[k].lower()} : {names[v]}" for k, v in levels.items()]
     return "\n".join(lines)
 
 

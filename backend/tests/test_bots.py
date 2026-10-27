@@ -308,3 +308,35 @@ def test_a_bot_of_the_user_carries_the_automations_and_gives_them_back():
     assert assistants.value("pointage", "lead_minutes") == 12
     client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 19}})
     client.patch("/v1/assistants/pointage", headers=AUTH, json={"changes": {"lead_minutes": 5}})
+
+
+def test_hermes_reads_the_bots_and_sets_one_by_the_rules():
+    from app.main import assistants
+    listed = mcp_call("marcel_bots", {})
+    assert not listed["isError"] and "[planning] Planning RMA" in listed["content"][0]["text"]
+    assert "hour" in listed["content"][0]["text"] and "relire" in listed["content"][0]["text"]
+    for name in ("marcel_idees", "marcel_passages", "marcel_regles"):
+        assert not mcp_call(name, {})["isError"], name
+    before = client.get("/v1/rules", headers=AUTH).json()["rules"]["reglage"]
+    try:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": "auto"}})
+        done = mcp_call("marcel_regler_bot", {"bot": "planning", "reglages": {"hour": 8}, "actions": ["relire"]})
+        assert not done["isError"] and assistants.value("planning", "hour") == 8
+        # Same bounds as the app; nothing else than settings, instructions and the bot's actions.
+        assert mcp_call("marcel_regler_bot", {"bot": "planning", "reglages": {"hour": 2}})["isError"]
+        assert mcp_call("marcel_regler_bot", {"bot": "planning", "actions": ["supprimer"]})["isError"]
+        assert mcp_call("marcel_regler_bot", {"bot": "inconnu", "reglages": {"hour": 8}})["isError"]
+        # "Ask first" and "blocked": it doesn't do it.
+        for level, said in (("ask", "demande d'abord"), ("off", "bloqué")):
+            client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": level}})
+            refused = mcp_call("marcel_regler_bot", {"bot": "planning", "reglages": {"hour": 10}})
+            assert refused["isError"] and said in refused["content"][0]["text"]
+        assert assistants.value("planning", "hour") == 8
+        # A bot's own level wins over the general one.
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": "auto"}, "assistant": "planning"})
+        assert not mcp_call("marcel_regler_bot", {"bot": "planning", "reglages": {"hour": 9}})["isError"]
+    finally:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": ""}, "assistant": "planning"})
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"reglage": before}})
+        client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 19}})
+        assistants.set_state("read_now", False)
