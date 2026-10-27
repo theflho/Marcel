@@ -212,7 +212,7 @@ annulation, un retour arrière ou une panne.
 
 Réglage : `MARCEL_GITHUB_REPO` (ex. `theflho/Marcel`) et `MARCEL_GITHUB_TOKEN`, clé GitHub
 *fine-grained* limitée à ce dépôt : **Contents**, **Issues** et **Pull requests** en lecture et
-écriture, **Checks** et **Actions** en lecture (résultats et journaux de la CI). Suivi : Réglages › **Code de Marcel** (PR proposées et fusionnées, déploiements, retours
+écriture, **Actions** en lecture (résultats et journaux de la CI). Suivi : Réglages › **Code de Marcel** (PR proposées et fusionnées, déploiements, retours
 arrière ; `GET /v1/code-log`).
 
 **Déploiement automatique** (`backend/deploy/auto-update.sh`, sur le VPS, à mettre soi-même dans

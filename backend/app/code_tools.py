@@ -368,7 +368,8 @@ class GitHub:
         except httpx.HTTPError:
             raise CodeError("GitHub injoignable depuis le serveur.") from None
         if resp.status_code in (401, 403):
-            raise CodeError("GitHub refuse la clé du serveur : il lui faut Contents et Pull requests en écriture.")
+            raise CodeError("GitHub refuse la clé du serveur : il lui faut Contents, Pull requests et Issues en "
+                            "écriture, Actions en lecture.")
         if resp.status_code == 405:
             raise CodeError(f"GitHub refuse la fusion : {resp.json().get('message', '')}")
         if resp.status_code >= 400:
@@ -391,7 +392,14 @@ class GitHub:
 
     async def checks(self, sha: str) -> tuple[str, list[dict]]:
         """Where the CI stands on a commit: "ok", "pending", "failed" or "none", and each check."""
-        runs = (await self.call("GET", f"/commits/{sha}/check-runs", params={"per_page": 50})).get("check_runs", [])
+        # The jobs of the GitHub Actions runs on that commit (the CI is all Actions): a fine-grained key
+        # reads them with Actions in read-only, where "Checks" is often not offered.
+        workflows = (await self.call("GET", "/actions/runs", params={"head_sha": sha, "per_page": 20})).get(
+            "workflow_runs", [])
+        runs = []
+        for workflow in workflows:
+            runs += (await self.call("GET", f"/actions/runs/{workflow['id']}/jobs", params={"per_page": 50})).get(
+                "jobs", [])
         if not runs:
             return "none", []
         if any(r["status"] != "completed" for r in runs):
