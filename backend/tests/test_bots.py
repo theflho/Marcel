@@ -346,3 +346,79 @@ def test_a_deployment_report_keeps_the_end_of_its_log():
     sent = client.post("/v1/deploy/report", headers=AUTH,
                        json={"status": "failed", "commit": "abc1234", "message": "test", "log": "x" * 15000})
     assert sent.status_code == 200
+
+
+def test_a_bot_hands_to_marcel_what_it_cannot_do():
+    from app.main import assistants, bot_context, plain_reply
+    made = client.post("/v1/assistants", headers=AUTH,
+                       json={"name": "Relais test", "mission": "Aider sur le planning", "mood": "tree"}).json()
+    try:
+        told = bot_context(assistants.find(made["id"]))[0]
+        assert "```pour-marcel" in told and "Demander à Marcel" in told and "Théo doit" not in told
+        reply = 'Je ne peux pas.\n```pour-marcel\n{"demande": "Ajoute un bouton"}\n```'
+        assert "pour-marcel" not in plain_reply(reply) and "depuis l'app" in plain_reply(reply)
+    finally:
+        client.delete(f"/v1/assistants/{made['id']}", headers=AUTH)
+
+
+def test_a_hand_over_is_only_proposed_and_waits_for_the_user():
+    from app.main import APP_PROMPT, assistants, bot_context, plain_reply
+    made = client.post("/v1/assistants", headers=AUTH,
+                       json={"name": "Accord test", "mission": "Réunir le RMA", "mood": "tree"}).json()
+    try:
+        assert "```automatisme" in bot_context(assistants.find(made["id"]))[0]
+        assert "```automatisme" in APP_PROMPT
+        reply = 'Je te le propose.\n```automatisme\n{"automatisme": "pointage", "bot": "ici"}\n```'
+        assert "valider dans l'app" in plain_reply(reply)
+        # Nothing moved: only the app's « Confier » (PUT /v1/automations) does it.
+        assert assistants.owner("pointage") == "pointage"
+    finally:
+        client.delete(f"/v1/assistants/{made['id']}", headers=AUTH)
+
+
+def test_marcel_codes_big_work_himself_unless_an_agent_is_chosen():
+    from app.main import app_context, assistants
+    shown = client.get("/v1/code-requests", headers=AUTH).json()
+    assert shown["agents"][0] == {"id": "marcel", "name": "Marcel lui-même"}
+    before = assistants.state("code_agent", None)
+    try:
+        assistants.set_state("code_agent", "marcel")
+        assert "tu le fais toi-même" in app_context(False) and "si tu le juges mieux" not in app_context(False)
+        assert client.put("/v1/code-requests/agent", headers=AUTH, json={"agent": "claude"}).status_code == 200
+        assert "si tu le juges mieux" in app_context(False)
+        assert client.put("/v1/code-requests/agent", headers=AUTH, json={"agent": "marcel"}).status_code == 200
+        assert client.put("/v1/code-requests/agent", headers=AUTH, json={"agent": "autre"}).status_code == 400
+    finally:
+        assistants.set_state("code_agent", before or "marcel")
+
+
+def test_bots_get_marcels_tools_by_default_never_with_mails():
+    from app.main import assistants, bot_context, bot_tools, mail_needed
+    planning = assistants.find("planning")
+    assert bot_tools(planning) and bot_tools(assistants.find("mails"))
+    assert not bot_tools(planning, mail="un e-mail") and not bot_tools(assistants.find("mails"), mail="un e-mail")
+    # The Mails bot reads the e-mails (without tools), except for a request for tools only.
+    assert mail_needed("mails", "quoi de neuf ?") and mail_needed("mails", "un script pour trier mes mails")
+    assert not mail_needed("mails", "écris-moi un script Python") and not mail_needed("planning", "quoi de neuf ?")
+    with_tools, web = bot_context(planning, tools=True)
+    assert "les mêmes outils que Marcel" in with_tools and "```pour-marcel" not in with_tools and not web
+    assert "```pour-marcel" in bot_context(planning)[0]
+    try:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": "off"}, "assistant": "planning"})
+        assert not bot_tools(planning) and bot_tools(assistants.find("pointage"))
+    finally:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": ""}, "assistant": "planning"})
+
+
+def test_a_bot_has_its_own_memory(tmp_path):
+    from app.memory import MemoryStore
+    store = MemoryStore(tmp_path / "m.db")
+    store.add("L'utilisateur habite à Lyon")
+    store.add("Budget concerts : 80 euros maximum", owner="billets")
+    store.add("Budget concerts : 80 euros maximum par place")  # not a duplicate of the bot's own
+    note, facts = store.context("budget concerts", owner="billets")
+    assert "Ce que tu as appris toi-même" in note and any(f.owner == "billets" for f in facts)
+    marcel, _ = store.context("budget concerts")
+    assert "80 euros maximum par place" in marcel and "Ce que tu as appris toi-même" not in marcel
+    assert {f.owner for f in store.active()} == {"", "billets"}
+    assert all(f.owner == "" for f in store.active(owner="planning"))

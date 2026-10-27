@@ -634,6 +634,55 @@ final class ChatStore {
         }
     }
 
+    /// « Demander à Marcel » under a bot's reply: Marcel's conversation opens and gets the request,
+    /// said to come from that bot. Only on the user's tap: a bot reads things written by others.
+    func askMarcel(_ handoff: MarcelHandoff, from messageID: UUID) {
+        guard !isStreaming, !emergencyActive,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        let bot = assistant(for: conversation)?.name ?? "un bot"
+        updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
+        persist(conversation.id, touch: false)
+        openBot(nil)
+        sendSuggestion("De la part de \(bot) : \(handoff.demande)")
+    }
+
+    /// The bot a hand-over names: its id, its name, or "ici" (the bot of the conversation it was proposed in).
+    func bot(named name: String, in messageID: UUID) -> Assistant? {
+        let key = name.trimmingCharacters(in: .whitespaces).lowercased()
+        if key == "ici" || key.isEmpty {
+            let id = conversations.first { $0.messages.contains { $0.id == messageID } }?.assistantID
+            return assistants.first { $0.id == id }
+        }
+        return assistants.first { $0.id.lowercased() == key || $0.name.lowercased() == key }
+    }
+
+    /// « Confier » under a proposal: the user's own go-ahead, so it passes like in the bot's card.
+    func acceptHandOver(_ proposal: HandOverProposal, to bot: Assistant, from messageID: UUID) async {
+        guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        await handOver(proposal.automatisme, to: bot.id)
+        guard assistants.first(where: { $0.id == bot.id })?.carries(proposal.automatisme) == true else { return }
+        updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
+        persist(conversation.id, touch: false)
+    }
+
+    /// The bot of the conversation a message is in; nil in Marcel's.
+    func assistant(forMessage messageID: UUID) -> Assistant? {
+        conversations.first { $0.messages.contains { $0.id == messageID } }.flatMap { assistant(for: $0) }
+    }
+
+    /// « Fais-le toi-même » under a code request: Marcel's conversation gets it, and he codes it with
+    /// his own tools (branch, checks, pull request, merge when green), however big.
+    func askMarcelToCode(_ draft: CodeRequestDraft, from messageID: UUID) {
+        guard !isStreaming, !emergencyActive,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        let from = assistant(for: conversation).map { "De la part de \($0.name) : " } ?? ""
+        updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
+        persist(conversation.id, touch: false)
+        openBot(nil)
+        sendSuggestion("\(from)fais-le toi-même avec tes outils de code, même si c'est gros (en plusieurs étapes s'il "
+                       + "le faut) : « \(draft.titre) ».\n\n\(draft.demande)")
+    }
+
     func cancelProposal(_ messageID: UUID) {
         guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
         updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "cancelled" }

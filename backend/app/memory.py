@@ -31,7 +31,7 @@ DUPLICATE_SIMILARITY = 0.75
 MAX_FACT_CHARS = 300
 
 COLUMNS = ("id", "text", "tier", "importance", "pinned", "source", "created_at", "updated_at",
-           "last_used_at", "uses", "expires_at", "status")
+           "last_used_at", "uses", "expires_at", "status", "owner")
 STOPWORDS = set("""le la les un une des de du d l et ou a à au aux en dans sur pour par avec sans ce cet cette
 ces que qui quoi est sont été être avoir ai as il elle ils elles on je j tu nous vous me m te t se s
 mon ma mes ton ta tes son sa ses leur leurs ne pas plus très bien aussi mais donc car comme si y
@@ -52,6 +52,8 @@ class Fact:
     uses: int = 0
     expires_at: float | None = None
     status: str = ACTIVE
+    # The bot that learnt it ("" = Marcel's, shared by all): only that bot and Marcel's list see it.
+    owner: str = ""
 
     def public(self) -> dict:
         return {c: getattr(self, c) for c in COLUMNS}
@@ -109,6 +111,8 @@ class MemoryStore:
             );
             CREATE TABLE IF NOT EXISTS memory_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);"""
         )
+        if "owner" not in {row[1] for row in self._db.execute("PRAGMA table_info(memories)")}:
+            self._db.execute("ALTER TABLE memories ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
         self._db.commit()
 
     # MARK: Reading
@@ -117,16 +121,20 @@ class MemoryStore:
         row = self._db.execute(f"SELECT {', '.join(COLUMNS)} FROM memories WHERE id = ?", (fact_id,)).fetchone()
         return self._fact(row) if row else None
 
-    def active(self, tier: str | None = None) -> list[Fact]:
+    def active(self, tier: str | None = None, owner: str | None = None) -> list[Fact]:
+        """Active facts; with `owner`, only those that one sees: the shared ones and its own."""
         query = f"SELECT {', '.join(COLUMNS)} FROM memories WHERE status = ?"
         params: list = [ACTIVE]
         if tier:
             query += " AND tier = ?"
             params.append(tier)
+        if owner is not None:
+            query += " AND owner IN ('', ?)"
+            params.append(owner)
         rows = self._db.execute(query + " ORDER BY importance DESC, updated_at DESC", params)
         return [self._fact(row) for row in rows]
 
-    def search(self, text: str, limit: int = 10, tier: str | None = None) -> list[Fact]:
+    def search(self, text: str, limit: int = 10, tier: str | None = None, owner: str | None = None) -> list[Fact]:
         """Active facts sharing words with `text`, best matches first."""
         terms = words(text)
         if not terms:
@@ -137,7 +145,7 @@ class MemoryStore:
             (match, limit * 3),
         ).fetchall()
         facts = [f for (fact_id,) in rows if (f := self.get(fact_id)) and f.status == ACTIVE
-                 and (tier is None or f.tier == tier)]
+                 and (tier is None or f.tier == tier) and (owner is None or f.owner in ("", owner))]
         return facts[:limit]
 
     def core_chars(self) -> int:
@@ -171,14 +179,17 @@ class MemoryStore:
 
     # MARK: Context for a mission
 
-    def context(self, question: str, archive_limit: int = 8, close: list[str] = ()) -> tuple[str, list[Fact]]:
+    def context(self, question: str, archive_limit: int = 8, close: list[str] = (),
+                owner: str = "") -> tuple[str, list[Fact]]:
         """The system note sent with a mission: the whole core, plus archived facts related
         to the question: `close` (ids found by meaning, best first), then facts sharing words.
+        Only what `owner` sees (Marcel: the shared facts; a bot: those and its own).
         Facts sent are counted as used."""
-        core = self.active(CORE)
-        by_meaning = [f for i in close if (f := self.get(i)) and f.status == ACTIVE]
+        core = self.active(CORE, owner)
+        by_meaning = [f for i in close if (f := self.get(i)) and f.status == ACTIVE and f.owner in ("", owner)]
         seen = {f.id for f in by_meaning}
-        related = by_meaning + [f for f in self.search(question, limit=archive_limit + len(core)) if f.id not in seen]
+        related = by_meaning + [f for f in self.search(question, limit=archive_limit + len(core), owner=owner)
+                                if f.id not in seen]
         now = time.time()
         for fact in related:
             self._db.execute("UPDATE memories SET uses = uses + 1, last_used_at = ? WHERE id = ?", (now, fact.id))
@@ -187,19 +198,23 @@ class MemoryStore:
         if not core and not archived:
             return "", []
         lines = ["Ce que Marcel sait de l'utilisateur (à utiliser seulement si c'est utile, sans le réciter) :"]
-        lines += [f"- {f.text}" for f in core]
-        if archived:
+        lines += [f"- {f.text}" for f in core if not f.owner]
+        if own := [f for f in core + archived if f.owner]:
+            lines.append("Ce que tu as appris toi-même, dans tes conversations :")
+            lines += [f"- {f.text}" for f in own]
+        if shared := [f for f in archived if not f.owner]:
             lines.append("Souvenirs liés à cette demande :")
-            lines += [f"- {f.text}" for f in archived]
+            lines += [f"- {f.text}" for f in shared]
         return "\n".join(lines), core + archived
 
     # MARK: Writing
 
     def add(self, text: str, *, tier: str = ARCHIVE, importance: int = 3, pinned: bool = False,
-            source: str = "", expires_at: float | None = None, reason: str = "", batch: str | None = None) -> Fact:
-        """Adds a fact, or refreshes the existing one when it's a duplicate."""
+            source: str = "", expires_at: float | None = None, reason: str = "", batch: str | None = None,
+            owner: str = "") -> Fact:
+        """Adds a fact (a bot's own when `owner` is set), or refreshes the existing one when it's a duplicate."""
         text = " ".join(text.split())[:MAX_FACT_CHARS]
-        if duplicate := self.find_duplicate(text):
+        if duplicate := self.find_duplicate(text, owner):
             changes = {"text": text if len(text) >= len(duplicate.text) else duplicate.text,
                        "importance": max(duplicate.importance, importance)}
             if expires_at and (duplicate.expires_at or 0) < expires_at:
@@ -207,7 +222,8 @@ class MemoryStore:
             return self.update(duplicate.id, reason=reason or "doublon rafraîchi", batch=batch, **changes)
         now = time.time()
         fact = Fact(id=secrets.token_hex(6), text=text, tier=tier, importance=max(1, min(5, importance)),
-                    pinned=pinned, source=source, created_at=now, updated_at=now, expires_at=expires_at)
+                    pinned=pinned, source=source, created_at=now, updated_at=now, expires_at=expires_at,
+                    owner=owner)
         self._write(None, fact, "add", reason, batch)
         return fact
 
@@ -233,8 +249,8 @@ class MemoryStore:
     def delete(self, fact_id: str, reason: str = "supprimé à la main") -> Fact:
         return self.update(fact_id, status=DELETED, reason=reason)
 
-    def find_duplicate(self, text: str) -> Fact | None:
-        for candidate in self.search(text, limit=5):
+    def find_duplicate(self, text: str, owner: str = "") -> Fact | None:
+        for candidate in self.search(text, limit=5, owner=owner):
             if similarity(candidate.text, text) >= DUPLICATE_SIMILARITY:
                 return candidate
         return None
@@ -328,6 +344,8 @@ class MemoryStore:
 
     def _merge(self, facts: list[Fact], text: str, batch: str, reason: str) -> int:
         """Keeps the first fact with the merged text and marks the others merged."""
+        if len({f.owner for f in facts}) > 1:
+            return 0  # a bot's own facts are never merged into another's
         keep, *others = sorted(facts, key=lambda f: (f.tier != CORE, -f.score))
         self.update(keep.id, text=text, importance=max(f.importance for f in facts),
                     uses=sum(f.uses for f in facts), pinned=any(f.pinned for f in facts),

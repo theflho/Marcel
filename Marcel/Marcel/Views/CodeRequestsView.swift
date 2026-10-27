@@ -6,6 +6,8 @@ struct CodeRequestsView: View {
     @Environment(ChatStore.self) private var store
     /// The chosen agent's name, for the button under Marcel's requests.
     @AppStorage("codeAgentName") private var agentName = "Claude Code"
+    /// "marcel" (he codes it himself), "claude" or "codex".
+    @AppStorage("codeAgentID") private var agentID = "marcel"
     @State private var list: CodeRequestList?
     @State private var log: [CodeLogEntry] = []
     @State private var error: String?
@@ -32,9 +34,11 @@ struct CodeRequestsView: View {
                                 }
                             }
                         } header: {
-                            Text("Gros chantiers")
+                            Text("Qui fait les gros chantiers")
                         } footer: {
-                            Text("Marcel modifie son code lui-même. Pour un gros chantier, il peut préparer une demande que tu envoies à cet agent, sur GitHub. Sur le dépôt : secret ANTHROPIC_API_KEY pour Claude Code, OPENAI_API_KEY pour Codex.")
+                            Text(list.agent == "marcel"
+                                 ? "Marcel code tout lui-même, même les gros chantiers, en plusieurs pull requests s'il le faut : rien à configurer."
+                                 : "Marcel modifie son code lui-même. Pour un gros chantier, il peut préparer une demande que tu envoies à cet agent, sur GitHub. Sur le dépôt : secret ANTHROPIC_API_KEY pour Claude Code, OPENAI_API_KEY pour Codex.")
                         }
                     }
                     if list.requests.isEmpty, log.isEmpty {
@@ -93,7 +97,7 @@ struct CodeRequestsView: View {
 
     private func agentBinding(_ list: CodeRequestList) -> Binding<String> {
         Binding {
-            list.agent ?? "claude"
+            list.agent ?? "marcel"
         } set: { agent in
             guard let api = store.settings.api else { return }
             Task {
@@ -115,6 +119,7 @@ struct CodeRequestsView: View {
             if let name = list.agents?.first(where: { $0.id == list.agent })?.name {
                 agentName = name.replacingOccurrences(of: " (OpenAI)", with: "")
             }
+            agentID = list.agent ?? "marcel"
             log = (try? await api.codeLog().entries) ?? []
             error = nil
         } catch {
@@ -239,10 +244,15 @@ private struct CodeRequestRow: View {
 struct CodeRequestCard: View {
     @Environment(ChatStore.self) private var store
     @AppStorage("codeAgentName") private var agentName = "Claude Code"
+    @AppStorage("codeAgentID") private var agentID = "marcel"
     let message: ChatMessage
     let draft: CodeRequestDraft
     @State private var sending = false
     @State private var sent: CodeRequest?
+
+    /// Marcel codes it himself: the default (Réglages › Code de Marcel), and always from a bot's
+    /// conversation, which hands it to Marcel instead of GitHub.
+    private var bySelf: Bool { agentID == "marcel" || store.assistant(forMessage: message.id) != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -251,10 +261,25 @@ struct CodeRequestCard: View {
                 .foregroundStyle(Color.accentColor)
             Text(draft.titre).font(.headline)
             Text(draft.demande).font(.footnote)
-            Text("Envoyée, elle devient une issue sur GitHub : \(agentName) prépare une pull request que tu relis et fusionnes toi-même.")
+            Text(bySelf
+                 ? "Marcel le code lui-même avec ses outils (branche, vérification, pull request, fusion au vert), même si c'est gros."
+                 : "Envoyée, elle devient une issue sur GitHub : \(agentName) prépare une pull request que tu relis et fusionnes toi-même.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             switch message.proposalDecision {
+            case "applied"? where bySelf:
+                Label("Demandé à Marcel", systemImage: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            case nil where bySelf:
+                HStack {
+                    Button("Fais-le toi-même") { store.askMarcelToCode(draft, from: message.id) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isStreaming || store.emergencyActive)
+                    Button("Non merci") { store.cancelProposal(message.id) }
+                        .buttonStyle(.bordered)
+                }
+                .controlSize(.small)
             case "applied"?:
                 HStack {
                     Label("Envoyée", systemImage: "checkmark.circle.fill")
@@ -284,6 +309,107 @@ struct CodeRequestCard: View {
                         .disabled(sending)
                 }
                 .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Theme.background, in: .rect(cornerRadius: 14))
+    }
+}
+
+/// Under a bot's reply: what it can't do itself, passed to Marcel (who has the tools) on a tap.
+struct HandoffCard: View {
+    @Environment(ChatStore.self) private var store
+    let message: ChatMessage
+    let handoff: MarcelHandoff
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                MarcelAvatar(size: 26, bot: nil)
+                Text("Pour Marcel")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+            Text(handoff.demande).font(.footnote)
+            Text("Ce bot n'a pas d'outils. Marcel, lui, peut changer l'app, régler les bots, créer un objectif… La demande part dans sa conversation.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            switch message.proposalDecision {
+            case "applied"?:
+                Label("Demandé à Marcel", systemImage: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            case "cancelled"?:
+                Label("Pas demandé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
+            default:
+                HStack {
+                    Button("Demander à Marcel") { store.askMarcel(handoff, from: message.id) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isStreaming || store.emergencyActive)
+                    Button("Non merci") { store.cancelProposal(message.id) }
+                        .buttonStyle(.bordered)
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(Theme.background, in: .rect(cornerRadius: 14))
+    }
+}
+
+/// Under a reply: an RMA automation to hand to another bot (or give back). Done only on « Confier »:
+/// it is the user's own go-ahead, like in the bot's card.
+struct HandOverCard: View {
+    @Environment(ChatStore.self) private var store
+    let message: ChatMessage
+    let proposal: HandOverProposal
+    @State private var working = false
+
+    var body: some View {
+        let target = store.bot(named: proposal.bot, in: message.id)
+        // Its label and who does it now, from the bots' cards.
+        let automation = store.assistants.lazy.compactMap { $0.automations?.first { $0.key == proposal.automatisme } }.first
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Automatisme RMA", systemImage: "arrow.left.arrow.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            if let target, let automation {
+                Text("Confier « \(automation.label) » à \(target.name) ?").font(.headline)
+                Text(automation.owner == target.id
+                     ? "C'est déjà \(target.name) qui le fait."
+                     : "\(automation.ownerName) arrête de le faire, \(target.name) le fait avec les mêmes réglages. Tu pourras le reprendre dans la fiche du bot.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                switch message.proposalDecision {
+                case "applied"?:
+                    Label("Confié à \(target.name)", systemImage: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.green)
+                case "cancelled"?:
+                    Label("Pas confié", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
+                default:
+                    HStack {
+                        Button {
+                            working = true
+                            Task {
+                                await store.acceptHandOver(proposal, to: target, from: message.id)
+                                working = false
+                            }
+                        } label: {
+                            if working { ProgressView().controlSize(.small) } else { Text("Confier") }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(working || store.emergencyActive || automation.owner == target.id)
+                        Button("Non merci") { store.cancelProposal(message.id) }
+                            .buttonStyle(.bordered)
+                            .disabled(working)
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                Text("Cette proposition ne correspond à aucun bot ou automatisme connu : rien n'a changé.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(12)

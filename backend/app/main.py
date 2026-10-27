@@ -186,7 +186,10 @@ embedder = Embedder(EMBED_URL, EMBED_KEY, EMBED_MODEL if EMBED_URL else LOCAL_MO
 # key limited to it, and the coding agent big requests go to (changeable in the app).
 GITHUB_REPO = os.environ.get("MARCEL_GITHUB_REPO", "")
 GITHUB_TOKEN = os.environ.get("MARCEL_GITHUB_TOKEN", "")
-CODE_AGENT = os.environ.get("MARCEL_CODE_AGENT", DEFAULT_AGENT)
+# Who does the big changes: Marcel himself (his marcel_code_* tools) by default, or a coding agent on
+# GitHub (an issue the user sends). MARCEL_CODE_AGENT only sets the start; the app changes it.
+CODE_AGENT = os.environ.get("MARCEL_CODE_AGENT", "marcel")
+SELF_AGENT = ("marcel", "Marcel lui-même")
 code_requests = CodeRequestStore(DATA_DIR / "marcel.db", GITHUB_REPO, GITHUB_TOKEN, mock=MOCK and not GITHUB_TOKEN)
 # Marcel's own copy of the repository, where his code tools work (app/code_tools.py). For local
 # tests, MARCEL_CODE_TEST_REMOTE points at a bare git repository instead of GitHub.
@@ -426,13 +429,14 @@ async def start_mission(request: ChatRequest) -> dict:
                           "detail": "Ni mémoire lue, ni rien appris ; la réponse ne sera pas cherchée plus tard"}]
     else:
         close_facts, recalled = await semantic_recall(title, request.conversation_id)
-        note, facts = memory.context(title, close=close_facts)
+        # A bot sees the shared memory and what it learnt itself; Marcel, the shared one only.
+        note, facts = memory.context(title, close=close_facts, owner=request.assistant or "")
         note = "\n\n".join(filter(None, [note, recalled]))
         extra_private = []
     note = "\n\n".join(filter(None, [STYLES.get(request.style, ""), note]))
     # The calendar can hold invitations written by others: read as data.
     device = untrusted("AGENDA DE L'IPHONE", request.device_context) if request.device_context else ""
-    mail, extra = await mail_context(title, force=request.assistant == "mails")
+    mail, extra = await mail_context(title, force=mail_needed(request.assistant or "", title))
     model, routed = await route_model(request, model, protected=bool(mail or request.assistant))
     extra = extra_private + extra + routed
     if request.assistant:
@@ -549,6 +553,10 @@ def assistants_note(request: ChatRequest) -> str:
 
 # garde-fou : recherche web isolée
 SEARCH_BLOCK = re.compile(r"```recherche[ \t]*\n?(.*?)```", re.DOTALL)
+# A bot hands what it can't do to Marcel (who has the tools); it leaves only on the user's tap.
+HANDOFF_BLOCK = re.compile(r"```pour-marcel[ \t]*\n?(.*?)```", re.DOTALL)
+# Handing an RMA automation to another bot: proposed in a reply, done only on the user's « Confier ».
+HANDOVER_BLOCK = re.compile(r"```automatisme[ \t]*\n?(.*?)```", re.DOTALL)
 SEARCH_CARD = "auto-ask-recherche-0"  # an ASK_CARD the app turns into a message
 SEARCH_PROMPT = """Recherche web : tu n'as aucun outil, mais tu peux demander UNE recherche web en terminant ta
 réponse par ce bloc (et rien après, sauf le bloc suivi) :
@@ -732,7 +740,23 @@ def iphone_card(request: dict, level: str, outside: bool, assistant: str = "") -
     return card | {"id": "iphone-0", "status": "pending", "detail": f"{action}…"}
 
 
-def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> tuple[str, bool]:
+def bot_tools(assistant: bots.Assistant, mail: str = "") -> bool:
+    """Whether a bot answers through the full Hermes, with Marcel's tools (rule « outils », on by
+    default), the Mails bot too. Never with e-mails in front of it: strangers write them (protected mode)."""
+    return not mail and rule("outils", assistant.id) == "auto"
+
+
+# A request for tools (a script, the web…) and not about the mailbox: the Mails bot answers it with its
+# tools, without reading the e-mails (it reads them for everything else, without tools).
+TOOL_WORDS = re.compile(r"\b(scripts?|codes?|terminal|programmes?|web|internet|sites?|cherche)\b", re.IGNORECASE)
+
+
+def mail_needed(assistant: str, question: str) -> bool:
+    return assistant == "mails" and not (TOOL_WORDS.search(question) and not MAIL_WORDS.search(question))
+
+
+def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "",
+                tools: bool = False) -> tuple[str, bool]:
     """What a bot is told, in its conversations, its standing task and on Telegram: who it is (its
     role, settings, instructions, shared skills and taught tasks) and what the user lets it read
     (its card › « Ce que Marcel lit ici »), all read-only data of the server; the e-mails stay with
@@ -740,7 +764,7 @@ def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> 
     picked = reads_of(assistant)
     parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id),
                          assistants.recipes(assistant.id), assistants.chosen_skills(assistant.id),
-                         assistants.actions(assistant.id)),
+                         assistants.actions(assistant.id), tools),
              planning_note() if "planning" in picked else "",
              offers.context(open_offers()) if "offres" in picked else "",
              robot_note() if "robot" in picked else "",
@@ -748,32 +772,41 @@ def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> 
              device if "agenda" in picked else "",
              mail if assistant.id == "mails" else ""]
     # Web pages only ever reach a model without any tool (the direct one), never a Hermes.
-    web = "web" in picked and (MOCK or MEMORY_LLM_URL != HERMES_URL)
+    # With tools, the bot reads the web itself, through Hermes.
+    web = not tools and "web" in picked and (MOCK or MEMORY_LLM_URL != HERMES_URL)
     return "\n\n".join(filter(None, parts)), web
 
 
 def start_assistant_mission(request: ChatRequest, model: str, title: str, note: str, facts, device: str,
                             mail: str, extra: list[dict]) -> dict:
-    """A message in an assistant's conversation. It is there to tune the assistant: it needs no
-    tool, so it goes to the model alone (or the restricted Hermes), whatever is asked."""
+    """A message in a bot's conversation. With the rule « outils » (the default), it goes to the full
+    Hermes, like Marcel's: the bot searches, writes scripts, changes the code itself. Otherwise (and
+    always for e-mails), to the model alone (or the restricted Hermes), with no tool."""
     assistant = assistants.find(request.assistant)
-    context, web = bot_context(assistant, device, mail)
+    tools = bot_tools(assistant, mail)
+    context, web = bot_context(assistant, device, mail, tools)
     note = "\n\n".join(filter(None, [context, app_context(bool(request.device_context)), note,
                                       SEARCH_PROMPT if web else "", IPHONE_PROMPT]))
 
     def call(req: ChatRequest, text: str):
         if MOCK:
             return mock_stream(req, facts)
+        if tools:
+            # The browser as in Marcel's conversations: only once the user said go (rule « navigateur »).
+            browser = rule("navigateur", assistant.id) != "off" and (
+                approves(title) or rule("navigateur", assistant.id) == "auto")
+            return hermes_stream(req, model, text, browser=browser)
         if MEMORY_LLM_URL != HERMES_URL:
             return hermes_stream(req, MEMORY_LLM_MODEL, text, MEMORY_LLM_URL, MEMORY_LLM_KEY)
         return hermes_stream(req, CHECK_HERMES_MODEL or model, text, CHECK_HERMES_URL, CHECK_HERMES_KEY)
 
     inner = (lambda: searching(request, call, note, web)) if web or request.search else (lambda: call(request, note))
-    extra.append({"id": "shield", "name": assistant.name,
-                  "detail": "Conversation de réglage : modèle seul, sans aucun outil ; rien ne change sans « Appliquer »",
-                  "status": "done"})
-    # What the user tells an assistant becomes its instructions (shown, removable), not memories.
-    mission = missions.start(request.conversation_id, lambda: with_memory(request, inner, facts, extra, learn=False),
+    extra.append({"id": "shield", "name": assistant.name, "status": "done",
+                  "detail": "Outils de Marcel : web, terminal, code ; une action réelle attend ton accord" if tools
+                  else "Modèle seul, sans aucun outil (règle « outils » ou e-mails)"})
+    # What it learns here is its own memory (Réglages › Mémoire, under its name), not Marcel's.
+    mission = missions.start(request.conversation_id,
+                             lambda: with_memory(request, inner, facts, extra, learn=not request.private),
                              model=model, title=f"{assistant.name} : {title}")
     if request.private:
         spawn(forget_private(mission))
@@ -837,7 +870,17 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   {{"nom": "Nom court", "mission": "ce qu'il fait, en une ou deux phrases", "illustration": "coffee"}}
   ```
   illustration parmi : tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool, sport,
-  cooking, hammock. Il est créé dès ta réponse finie : dis-le au passé (« c'est fait »). Un
+  cooking, hammock. Il est créé dès ta réponse finie : dis-le au passé (« c'est fait »).
+  Confier un automatisme RMA (« lecture » : heure et relecture du portail ; « pointage » : rappels de
+  pointage ; « offres » : notifications d'offres) à l'un des bots de l'utilisateur, ou le rendre à son bot
+  d'origine, se fait seulement avec son accord : quand il le veut, termine ta réponse par ce bloc (et rien
+  après, sauf le bloc suivi) :
+  ```automatisme
+  {{"automatisme": "pointage", "bot": "id du bot qui le fera"}}
+  ```
+  L'app l'affiche avec « Confier » / « Non merci » : rien ne change avant qu'il touche « Confier ».
+  Dis-le en une phrase, sans prétendre que c'est fait.
+  Un
   assistant créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare. Tu ne
   supprimes et n'épingles jamais rien, et tu n'ouvres pas de session sur le serveur (VPS) : ça,
   c'est l'utilisateur.
@@ -851,12 +894,7 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   CI de GitHub teste le serveur et compile l'app ; tu ne fusionnes qu'au vert (marcel_code_ci), et
   tu peux annuler une fusion (marcel_code_annuler). La config de Hermes se change aussi par le code
   (deploy/hermes-overrides.yaml). Pour comprendre une panne : marcel_journaux. Tu ne retires jamais
-  un garde-fou (mode protégé, arrêt d'urgence, budgets, refus de supprimer). Pour un gros chantier, tu peux aussi, si tu le juges mieux, préparer une demande pour
-  un agent de code (Claude Code ou Codex, au choix de l'utilisateur) en terminant ta réponse par :
-  ```demande-code
-  {{"titre": "Titre court", "demande": "la demande complète, en français"}}
-  ```
-  Elle part quand l'utilisateur touche « Envoyer » sous ta réponse (Réglages › Code de Marcel).
+  un garde-fou (mode protégé, arrêt d'urgence, budgets, refus de supprimer). {big_work}
 - L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
   l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
 {followups}
@@ -902,7 +940,8 @@ def app_context(agenda_shared: bool) -> str:
                  if agenda_shared else "Agenda : non partagé (Réglages › Sur cet iPhone › Partager mon agenda).")
     level = {"off": "désactivées", "quiet": "discrètes (l'important seulement)", "normal": "normales"}
     state.append(f"Vérifications automatiques des objectifs : {level.get(ideas.settings()['level'], 'normales')}.")
-    return APP_PROMPT.format(state="\n".join(state), followups=bots.FOLLOWUPS) + "\n\n" + data_overview()
+    return APP_PROMPT.format(state="\n".join(state), followups=bots.FOLLOWUPS, big_work=big_work_note()) \
+        + "\n\n" + data_overview()
 
 
 def data_overview() -> str:
@@ -991,6 +1030,7 @@ RULE_KINDS = {
     "recette": "Retenir une tâche apprise (bots)",
     "iphone": "Lire sur l'iPhone (rappels, contacts, position, agenda)",
     "iphone_ecriture": "Ajouter un rappel sur l'iPhone",
+    "outils": "Les bots ont les outils de Marcel (web, terminal, code)",
 }
 RULE_VALUES = ("auto", "ask", "off")
 OFF_CARD = "auto-off-"
@@ -1687,7 +1727,9 @@ def mock_goals(text: str) -> list[dict]:
 
 
 async def remember(request: ChatRequest, reply: str) -> None:
-    """Learns durable facts from the last exchange (runs after the mission, in the background)."""
+    """Learns durable facts from the last exchange (runs after the mission, in the background).
+    In a bot's conversation, they are that bot's own: it changes only those, never the shared ones."""
+    owner = request.assistant or ""
     question = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
     if missions.emergency or not question.strip():
         return
@@ -1695,7 +1737,7 @@ async def remember(request: ChatRequest, reply: str) -> None:
         if MOCK:
             result = {"add": mock_facts(question), "update": [], "expire": [], "goals": mock_goals(question)}
         else:
-            known = memory.search(question + " " + reply[:1000], limit=15)
+            known = [f for f in memory.search(question + " " + reply[:1000], limit=15, owner=owner) if f.owner == owner]
             known_goals = [g.title for g in goals.list()]
             user = ("Faits déjà connus :\n" + ("\n".join(f"[{f.id}] {f.text}" for f in known) or "(aucun)")
                     + "\n\nObjectifs déjà connus :\n" + ("\n".join(f"- {t}" for t in known_goals) or "(aucun)")
@@ -1706,14 +1748,14 @@ async def remember(request: ChatRequest, reply: str) -> None:
             if isinstance(item, dict) and str(item.get("text", "")).strip():
                 days = item.get("expires_days")
                 memory.add(str(item["text"]), importance=int(item.get("importance") or 3),
-                           source=request.conversation_id, reason="appris dans une conversation",
+                           source=request.conversation_id, reason="appris dans une conversation", owner=owner,
                            expires_at=now + float(days) * DAY if isinstance(days, (int, float)) and days > 0 else None)
         for item in result.get("update") or []:
             fact = isinstance(item, dict) and memory.get(str(item.get("id")))
-            if fact and fact.status == "active" and str(item.get("text", "")).strip():
+            if fact and fact.status == "active" and fact.owner == owner and str(item.get("text", "")).strip():
                 memory.update(fact.id, text=str(item["text"]), reason="précisé dans une conversation")
         for fact_id in result.get("expire") or []:
-            if (fact := memory.get(str(fact_id))) and fact.status == "active" and not fact.pinned:
+            if (fact := memory.get(str(fact_id))) and fact.status == "active" and not fact.pinned and fact.owner == owner:
                 memory.update(fact.id, status="expired", reason="contredit dans une conversation")
         for item in result.get("goals") or []:
             if isinstance(item, dict) and str(item.get("title", "")).strip():
@@ -2116,15 +2158,34 @@ class CodeRequestSend(BaseModel):
     mission_id: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
+BIG_WORK_SELF = """Même un gros chantier, tu le fais toi-même avec tes outils marcel_code_* : découpe-le en
+  étapes (plusieurs pull requests si besoin), vérifie, fusionne au vert. Ne renvoie jamais vers Claude Code,
+  Codex ou Théo, et ne dis pas « c'est trop gros » : avance, et dis où tu en es. Seulement si l'utilisateur
+  demande lui-même Claude Code, prépare la demande avec le bloc ```demande-code```."""
+BIG_WORK_AGENT = """Pour un gros chantier, tu peux aussi, si tu le juges mieux, préparer une demande pour
+  un agent de code (Claude Code ou Codex, au choix de l'utilisateur) en terminant ta réponse par :
+  ```demande-code
+  {"titre": "Titre court", "demande": "la demande complète, en français"}
+  ```
+  Elle part quand l'utilisateur touche « Envoyer » sous ta réponse (Réglages › Code de Marcel)."""
+
+
+def big_work_note() -> str:
+    """What Marcel does with a big change, by the choice in Réglages › Code de Marcel."""
+    return BIG_WORK_SELF if code_agent() == SELF_AGENT[0] else BIG_WORK_AGENT
+
+
 def code_agent() -> str:
+    """ "marcel" (he codes everything himself), "claude" or "codex"."""
     agent = assistants.state("code_agent", CODE_AGENT)
-    return agent if agent in AGENTS else DEFAULT_AGENT
+    return agent if agent in AGENTS or agent == SELF_AGENT[0] else SELF_AGENT[0]
 
 
 @app.get("/v1/code-requests", dependencies=[Depends(require_token)])
 async def list_code_requests() -> dict:
     return {"configured": code_requests.configured, "repo": GITHUB_REPO, "requests": await code_requests.statuses(),
-            "agent": code_agent(), "agents": [{"id": key, "name": name} for key, (_, name) in AGENTS.items()]}
+            "agent": code_agent(), "agents": [{"id": SELF_AGENT[0], "name": SELF_AGENT[1]}]
+            + [{"id": key, "name": name} for key, (_, name) in AGENTS.items()]}
 
 
 class CodeAgentChoice(BaseModel):
@@ -2134,8 +2195,8 @@ class CodeAgentChoice(BaseModel):
 @app.put("/v1/code-requests/agent", dependencies=[Depends(require_token)])
 async def set_code_agent(body: CodeAgentChoice) -> dict:
     """Which coding agent big requests go to: Claude Code or OpenAI Codex (a workflow each on GitHub)."""
-    if body.agent not in AGENTS:
-        raise HTTPException(400, f"Agent inconnu : {', '.join(AGENTS)}.")
+    if body.agent not in AGENTS and body.agent != SELF_AGENT[0]:
+        raise HTTPException(400, f"Agent inconnu : {', '.join([SELF_AGENT[0], *AGENTS])}.")
     assistants.set_state("code_agent", body.agent)
     return {"agent": body.agent}
 
@@ -2164,8 +2225,10 @@ async def send_code_request(body: CodeRequestSend) -> dict:
     if not isinstance(data, dict) or len(str(data.get("titre", "")).strip()) < 3 or len(str(data.get("demande", "")).strip()) < 10:
         raise HTTPException(400, "Demande illisible dans la réponse de Marcel.")
     try:
+        # Sent on purpose although Marcel does his code himself: Claude Code takes it.
+        agent = code_agent() if code_agent() in AGENTS else DEFAULT_AGENT
         return await code_requests.send(str(data["titre"]), str(data["demande"]), mission.conversation_id, mission.id,
-                                        code_agent())
+                                        agent)
     except GitHubError as error:
         raise HTTPException(502, str(error)) from None
 
@@ -2188,7 +2251,7 @@ Routine « {title} » :
 
 
 TASK_PROMPT = """Tâche permanente de ce bot, lancée seule ({schedule}) : l'utilisateur n'est pas là pour
-répondre. Fais-la avec ce qui t'est joint, puis écris directement le résultat, court et lisible sur
+répondre. Fais-la avec ce qui t'est joint (et tes outils si tu en as), puis écris directement le résultat, court et lisible sur
 un téléphone (pas de « voici »).
 Si une action de ce bot est utile (changer un de ses réglages, une de ses actions), propose-la avec le
 bloc ```reglage``` : le serveur la fait seule ou attend « Appliquer », selon les règles de l'utilisateur.
@@ -2262,10 +2325,13 @@ async def run_routine(routine, event: str = ""):
         mail, extra = "", []
     else:
         mail, extra = await mail_context(routine.prompt, force=task)
+    # A bot's task has its tools, like its conversations (rule « outils »), unless e-mails are in front of it.
+    tools = task and bot_tools(bot, mail or (from_mail and event))
+    browser = True
     if task:
         # A bot's standing task: what that bot knows and reads, nothing more (no web search). Its
         # e-mails, if any, are added below, in protected mode.
-        parts = [bot_context(bot)[0], app_context(False)]
+        parts = [bot_context(bot, tools=tools)[0], app_context(False)]
     else:
         parts = [app_context(False), goals.context(), planning_note(), robot_note()]
     if from_mail and MEMORY_LLM_URL == HERMES_URL:
@@ -2279,6 +2345,15 @@ async def run_routine(routine, event: str = ""):
                       "detail": "E-mails lus par le modèle seul, sans aucun outil : ni web, ni envoi, ni terminal"})
         model, url, key = MEMORY_LLM_MODEL, MEMORY_LLM_URL, MEMORY_LLM_KEY
         parts += [note, mail]
+    elif tools:
+        # The full Hermes, with its memories (the shared ones and its own), as in its conversations.
+        # The browser only if the rule « navigateur » lets it go alone: nobody is there to say go.
+        note, _ = memory.context(routine.prompt, owner=bot.id)
+        model, url, key = (await base_models())[0]["id"], HERMES_URL, HERMES_API_KEY
+        browser = rule("navigateur", bot.id) == "auto"
+        parts.append(note)
+        extra.append({"id": "routine", "name": "Tâche permanente", "status": "done",
+                      "detail": f"{routine.schedule} · {bot.name}, avec les outils de Marcel ; une action réelle attend ton accord"})
     elif task and MEMORY_LLM_URL != HERMES_URL:
         # A bot's task: the model alone, with no tool at all, like its conversations.
         model, url, key = MEMORY_LLM_MODEL, MEMORY_LLM_URL, MEMORY_LLM_KEY
@@ -2300,7 +2375,7 @@ async def run_routine(routine, event: str = ""):
     async def source() -> AsyncIterator[str | dict]:
         for action in extra:
             yield action
-        inner = mock_routine_stream(routine) if MOCK else hermes_stream(request, model, note, url, key)
+        inner = mock_routine_stream(routine) if MOCK else hermes_stream(request, model, note, url, key, browser)
         async for item in inner:
             yield item
         # Written by the server, not the model: what was really in front of it.
@@ -3727,7 +3802,8 @@ def tool_bots(_: dict) -> str:
             lines.append("  skills : " + ", ".join(s["title"] for s in chosen))
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks) + ("\n\nPour changer un réglage, une consigne ou relire le portail : marcel_regler_bot. "
-                                   "Confier un automatisme à un autre bot, l'utilisateur seul le fait (fiche du bot).")
+                                   "Confier un automatisme à un autre bot : avec l'accord de l'utilisateur seulement, par le bloc "
+                                   "```automatisme``` dans ta réponse (voir tes consignes).")
 
 
 @mcp.tool("marcel_regler_bot",
@@ -3832,6 +3908,9 @@ def plain_reply(text: str) -> str:
     """A bot's reply without the blocks the app turns into cards."""
     for block in (AUTO_BLOCK, SEARCH_BLOCK, bots.FOLLOWUP_BLOCK):
         text = block.sub("", text)
+    # A request for Marcel leaves only from the app, on « Demander à Marcel ».
+    text = HANDOFF_BLOCK.sub("(Demande pour Marcel : à envoyer depuis l'app, sous ce bot.)", text)
+    text = HANDOVER_BLOCK.sub("(Automatisme à confier : à valider dans l'app.)", text)
     return text.strip()
 
 

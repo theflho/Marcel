@@ -10,7 +10,7 @@ struct RulesView: View {
     @State private var newWord = ""
 
     private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "navigateur", "recherche",
-                                "iphone", "iphone_ecriture"]
+                                "iphone", "iphone_ecriture", "outils"]
 
     var body: some View {
         List {
@@ -136,7 +136,7 @@ struct BotRulesSection: View {
     let assistantID: String
     @State private var rules: ActionRules?
 
-    private static let kinds = ["reglage", "routine", "recette", "recherche", "iphone", "iphone_ecriture"]
+    private static let kinds = ["outils", "reglage", "routine", "recette", "recherche", "iphone", "iphone_ecriture"]
 
     var body: some View {
         Section {

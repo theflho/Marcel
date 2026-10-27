@@ -55,5 +55,7 @@ de deviner la cause d'une panne.
   blocage de `browser_vault`, le refus de supprimer ou d'épingler, les budgets de llm-guard.
 - Jamais de clé, de mot de passe ou de jeton dans le code.
 - Ne touche pas à la mascotte de Marcel.
-- Si une tâche dépasse ce que tu peux faire proprement, propose plutôt une demande de code pour
-  Claude Code (bloc ```demande-code dans ta réponse), que l'utilisateur envoie d'un geste.
+- Un gros chantier se fait quand même, par toi : découpe-le en étapes et en plusieurs pull requests
+  (chacune vérifiée et fusionnée au vert), et dis à chaque fois où tu en es. Tes consignes disent si
+  l'utilisateur préfère Claude Code ou Codex (Réglages › Code de Marcel) ; sinon, ne les propose que
+  s'il les demande lui-même (bloc ```demande-code dans ta réponse).

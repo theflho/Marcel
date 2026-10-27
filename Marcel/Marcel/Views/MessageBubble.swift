@@ -47,6 +47,12 @@ struct MessageBubble: View {
                         if let request = CodeRequestDraft.find(in: message.content) {
                             CodeRequestCard(message: message, draft: request)
                         }
+                        if let handOver = HandOverProposal.find(in: message.content) {
+                            HandOverCard(message: message, proposal: handOver)
+                        }
+                        if isAssistantChat, let handoff = MarcelHandoff.find(in: message.content) {
+                            HandoffCard(message: message, handoff: handoff)
+                        }
                     }
                 }
                 if !isUser {

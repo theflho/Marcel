@@ -106,8 +106,8 @@ ASSISTANTS: tuple[Assistant, ...] = (
         "mission et ne pointe jamais) et te transmet ses missions ; l'iPhone les ajoute au calendrier "
         "« Missions RMA » quand l'utilisateur l'a activé (Réglages › Sur cet iPhone). Tu peux régler "
         "l'heure de lecture et les missions à ignorer, et retenir ses consignes. Tu ne peux pas lancer "
-        "une lecture toi-même ni lire d'autres pages du portail : si on te le demande, dis que Théo "
-        "doit l'ajouter dans le code.",
+        "une lecture toi-même ni lire d'autres pages du portail : si on te le demande, passe-le à "
+        "Marcel (bloc pour-marcel).",
         (Setting("hour", "Heure de lecture", "int", 19, 5, 23,
                  help="chaque jour à cette heure (heure de Paris)"),
          Setting("ignore", "Missions à ignorer", "text", "", max_chars=200,
@@ -195,12 +195,31 @@ BY_ID = {a.id: a for a in ASSISTANTS}
 MOODS = ("tree", "sleep", "laptop", "coffee", "reading", "music", "roadtrip", "dog", "pool", "sport", "cooking",
          "hammock")
 MAX_CUSTOM, MAX_NAME_CHARS, MAX_MISSION_CHARS = 10, 40, 600
+NO_TOOLS_NOTE = """Tu n'as aucun outil. Ce que tu ne peux pas faire toi-même mais que Marcel peut (il a les outils : changer
+le code de l'app et du serveur, régler les autres bots, créer un objectif…), tu ne le renvoies jamais vers
+Claude Code, Codex ou Théo : tu le passes à Marcel en terminant ta réponse par ce bloc (et rien après, sauf
+le bloc suivi) :
+```pour-marcel
+{"demande": "la demande complète pour Marcel, en français, avec le contexte utile"}
+```
+L'app l'affiche avec un bouton « Demander à Marcel » : la demande ne part que si l'utilisateur le touche,
+et Marcel la traite dans sa conversation. Dis-le en une phrase (« touche Demander à Marcel »), sans
+prétendre que c'est fait."""
+# Given when the bot answers through the full Hermes (rule « outils », the default): it acts itself.
+TOOLS_NOTE = """Ici tu as les mêmes outils que Marcel (ceux de son agent Hermes) : web et navigateur, terminal,
+fichiers, exécution de code, ses outils marcel_* (données, routines, objectifs, réglage des bots) et
+marcel_code_* (modifier le code de l'app et du serveur, ouvrir la pull request, fusionner au vert). Ce que
+l'utilisateur demande (un script, une recherche, une surveillance, une modification de l'app), tu le fais
+toi-même, en suivant ses règles et les skills de Marcel, au lieu de l'envoyer ailleurs : jamais vers Claude
+Code, Codex ou Théo. Ce que dit plus haut ta mission sur l'absence d'outil ne vaut pas ici. Une action
+réelle (envoyer, acheter, publier, supprimer) attend toujours son accord explicite ; tu ne remplis jamais
+un mot de passe ni une carte bancaire."""
 CUSTOM_ROLE = (
     "Ici, l'utilisateur t'a donné cette mission : {mission}\n"
     "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "
     "prépares avec ce que tu sais et ce que l'utilisateur te donne (son planning, son agenda s'il le partage). "
     "Tu peux changer ta mission (réglage « role ») et retenir ses consignes. Pour une capacité qui demande un "
-    "outil (lire un site, envoyer un message), dis que Théo doit l'ajouter dans le code.")
+    "outil (lire un site, envoyer un message, changer l'app), passe la demande à Marcel (bloc pour-marcel).")
 
 
 def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> Assistant:
@@ -305,6 +324,18 @@ Tu peux aussi relancer l'utilisateur plus tard, ici même, quand il le demande o
 notification, sans outil qui agit. Quand quelque chose ne marche pas, appuie-toi
 sur l'état du robot ci-dessous (s'il est fourni) pour expliquer ce qui se passe, et propose ce que tu
 peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier.
+
+Confier un automatisme RMA (« lecture » : heure et relecture du portail ; « pointage » : rappels de
+pointage ; « offres » : notifications d'offres) à l'un des bots de l'utilisateur, ou le rendre à son bot
+d'origine, se fait seulement avec son accord : quand il le veut, termine ta réponse par ce bloc (et rien
+après, sauf le bloc suivi) :
+```automatisme
+{{"automatisme": "pointage", "bot": "ici"}}
+```
+(« bot » : « ici » pour toi-même, sinon le nom du bot.) L'app l'affiche avec « Confier » / « Non merci » :
+rien ne change avant qu'il touche « Confier ». Dis-le en une phrase, sans prétendre que c'est fait.
+
+{tools}
 
 {followups}"""
 
@@ -748,10 +779,11 @@ def overview(assistants: list[Assistant], values, actions_of) -> str:
 
 
 def prompt(assistant: Assistant, values: dict, instructions: list[dict], recipes: list[dict] = (),
-           skills: list[dict] = (), actions: dict[str, str] | None = None) -> str:
+           skills: list[dict] = (), actions: dict[str, str] | None = None, tools: bool = False) -> str:
+    """With tools, the bot answers through the full Hermes and acts itself; without, it hands over to Marcel."""
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        followups=FOLLOWUPS, name=assistant.name, role=role,
+        followups=FOLLOWUPS, name=assistant.name, role=role, tools=TOOLS_NOTE if tools else NO_TOOLS_NOTE,
         actions=actions_note(ACTIONS.get(assistant.id, {}) if actions is None else actions),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)",

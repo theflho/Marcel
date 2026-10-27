@@ -228,8 +228,15 @@ private struct CoreGauge: View {
 }
 
 private struct FactRow: View {
+    @Environment(ChatStore.self) private var store
     let fact: MemoryFact
     let showTier: Bool
+
+    /// The bot whose own memory it is (nil: Marcel's, shared by all bots).
+    private var bot: String? {
+        guard let owner = fact.owner, !owner.isEmpty else { return nil }
+        return store.assistants.first { $0.id == owner }?.name ?? owner
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -241,6 +248,9 @@ private struct FactRow: View {
                 }
                 if showTier {
                     Text(fact.isCore ? "Noyau" : "Archives")
+                }
+                if let bot {
+                    Label(bot, systemImage: "person.crop.circle")
                 }
                 if let used = fact.lastUsedAt, fact.uses > 0 {
                     Text("Utilisé \(fact.uses) fois · \(used.formatted(.relative(presentation: .named)))")

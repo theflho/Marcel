@@ -151,11 +151,13 @@ nonisolated struct MemoryFact: Codable, Hashable, Sendable, Identifiable {
     let lastUsedAt: Date?
     let uses: Int
     let expiresAt: Date?
+    /// The bot that learnt it, only that bot sees it (nil or "" = Marcel's, shared by all).
+    let owner: String?
 
     var isCore: Bool { tier == "core" }
 
     enum CodingKeys: String, CodingKey {
-        case id, text, tier, importance, pinned, source, uses
+        case id, text, tier, importance, pinned, source, uses, owner
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case lastUsedAt = "last_used_at"
@@ -701,7 +703,7 @@ nonisolated struct OfferList: Decodable, Sendable {
 /// Blocks the server carries out and the action cards already report: hidden from the text.
 nonisolated enum AutoBlocks {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: "```(objectif|routine|recette|demande-code|suivi|recherche|iphone)[\\s\\S]*?```", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "```(objectif|routine|recette|demande-code|pour-marcel|automatisme|suivi|recherche|iphone)[\\s\\S]*?```", with: "", options: .regularExpression)
             // The follow-ups come last: hidden while they are still being written too.
             .replacingOccurrences(of: "```suivi[\\s\\S]*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -734,6 +736,40 @@ nonisolated struct CodeRequestDraft: Codable, Hashable, Sendable {
         guard let end = after.range(of: "```") else { return nil }
         let draft = try? JSONDecoder().decode(CodeRequestDraft.self, from: Data(after[..<end.lowerBound].utf8))
         return draft.flatMap { $0.titre.isEmpty || $0.demande.isEmpty ? nil : $0 }
+    }
+}
+
+/// What a bot can't do (it has no tool) and hands to Marcel, who has them: a ```pour-marcel``` block.
+/// It leaves only when the user touches « Demander à Marcel ».
+nonisolated struct MarcelHandoff: Codable, Hashable, Sendable {
+    let demande: String
+
+    private static let fence = "```pour-marcel"
+
+    static func find(in text: String) -> MarcelHandoff? {
+        guard let start = text.range(of: fence) else { return nil }
+        let after = text[start.upperBound...]
+        guard let end = after.range(of: "```") else { return nil }
+        let found = try? JSONDecoder().decode(MarcelHandoff.self, from: Data(after[..<end.lowerBound].utf8))
+        return found.flatMap { $0.demande.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    }
+}
+
+/// Handing an RMA automation to another bot (or back), proposed by Marcel or a bot in an
+/// ```automatisme``` block: it happens only when the user touches « Confier ».
+nonisolated struct HandOverProposal: Codable, Hashable, Sendable {
+    /// "lecture", "pointage" or "offres".
+    let automatisme: String
+    /// The bot's id or name; "ici" for the bot of this conversation.
+    let bot: String
+
+    private static let fence = "```automatisme"
+
+    static func find(in text: String) -> HandOverProposal? {
+        guard let start = text.range(of: fence) else { return nil }
+        let after = text[start.upperBound...]
+        guard let end = after.range(of: "```") else { return nil }
+        return try? JSONDecoder().decode(HandOverProposal.self, from: Data(after[..<end.lowerBound].utf8))
     }
 }
 
