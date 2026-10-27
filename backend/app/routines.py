@@ -45,7 +45,8 @@ def describe_trigger(trigger: str) -> str:
 
 COLUMNS = ("id", "title", "prompt", "days", "at", "status", "conversation_id", "created_at", "updated_at",
            "last_run_at", "assistant", "once", "trigger", "task")
-RUN_COLUMNS = ("id", "routine_id", "mission_id", "at", "status", "error", "delivered")
+# Like Grok Bot's tasks: a run is "read" once opened, "done" once the user dealt with it.
+RUN_COLUMNS = ("id", "routine_id", "mission_id", "at", "status", "error", "delivered", "seen", "done")
 
 
 @dataclass
@@ -213,7 +214,9 @@ class RoutineStore:
                 at REAL NOT NULL,
                 status TEXT NOT NULL,
                 error TEXT NOT NULL DEFAULT '',
-                delivered INTEGER NOT NULL DEFAULT 0
+                delivered INTEGER NOT NULL DEFAULT 0,
+                seen INTEGER NOT NULL DEFAULT 0,
+                done INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS routine_runs_routine ON routine_runs (routine_id);"""
         )
@@ -227,6 +230,11 @@ class RoutineStore:
             self._db.execute("ALTER TABLE routines ADD COLUMN trigger TEXT NOT NULL DEFAULT ''")
         if "task" not in existing:
             self._db.execute("ALTER TABLE routines ADD COLUMN task INTEGER NOT NULL DEFAULT 0")
+        # Databases from before "read / done" runs.
+        run_columns = {row[1] for row in self._db.execute("PRAGMA table_info(routine_runs)")}
+        for column in ("seen", "done"):
+            if column not in run_columns:
+                self._db.execute(f"ALTER TABLE routine_runs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
         self._db.commit()
 
     # MARK: Routines
@@ -325,6 +333,26 @@ class RoutineStore:
         self._db.commit()
         return cursor.rowcount > 0
 
+    def runs_of(self, routine_ids: list[str], limit: int = 30) -> list[dict]:
+        """The latest runs of these routines (a bot's), newest first."""
+        if not routine_ids:
+            return []
+        rows = self._db.execute(f"SELECT {', '.join(RUN_COLUMNS)} FROM routine_runs WHERE routine_id IN "
+                                f"({', '.join('?' * len(routine_ids))}) ORDER BY id DESC LIMIT ?",
+                                (*routine_ids, limit))
+        return [self._run(row) for row in rows]
+
+    def mark(self, run_id: int, seen: bool | None = None, done: bool | None = None) -> dict | None:
+        """Read or done (done is read too); None leaves it as it is."""
+        if done:
+            seen = True
+        for column, value in (("seen", seen), ("done", done)):
+            if value is not None:
+                self._db.execute(f"UPDATE routine_runs SET {column} = ? WHERE id = ?", (int(value), run_id))
+        self._db.commit()
+        row = self._db.execute(f"SELECT {', '.join(RUN_COLUMNS)} FROM routine_runs WHERE id = ?", (run_id,)).fetchone()
+        return self._run(row) if row else None
+
     def runs_today(self, now: float | None = None) -> int:
         t = time.localtime(now or time.time())
         since = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
@@ -333,7 +361,8 @@ class RoutineStore:
     @staticmethod
     def _run(row) -> dict:
         run = dict(zip(RUN_COLUMNS, row))
-        run["delivered"] = bool(run["delivered"])
+        for flag in ("delivered", "seen", "done"):
+            run[flag] = bool(run[flag])
         return run
 
     def _store(self, routine: Routine) -> None:

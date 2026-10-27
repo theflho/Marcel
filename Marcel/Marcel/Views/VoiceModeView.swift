@@ -30,7 +30,7 @@ struct VoiceModeView: View {
                     .tint(.primary)
             }
             Spacer()
-            MarcelAvatar(size: 180, mood: store.modeMood, isThinking: phase != .listening, cutout: true)
+            MarcelAvatar(size: 180, bot: store.mode?.id, state: phase == .listening ? .listening : phase == .speaking ? .writing : .thinking)
                 .scaleEffect(phase == .listening && dictation.isRecording ? 1.04 : 1)
                 .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: dictation.isRecording)
             Text(status)

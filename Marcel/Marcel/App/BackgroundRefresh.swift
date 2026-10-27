@@ -56,7 +56,7 @@ enum BackgroundRefresh {
                 // Its bot's Notifications switch is off (its card).
                 if let bot = run.assistant, !bot.isEmpty, !BotPrefs.notifies(bot) { continue }
                 if run.status == "done", (run.actions ?? []).contains(where: \.awaitsApproval)
-                    || (run.text ?? "").contains("```reglage") && !(run.actions ?? []).contains(where: { $0.id.hasPrefix("auto-reglage") }) {
+                    || (run.text ?? "").contains("```reglage") && !(run.actions ?? []).contains(where: { $0.id.hasPrefix("auto-reglage") || $0.id.hasPrefix("auto-off-reglage") }) {
                     let name = run.assistantName.flatMap { $0.isEmpty ? nil : $0 } ?? "Marcel"
                     await post(id: "routine-\(run.id)", title: "\(name) attend ton accord",
                                body: run.title ?? "Une action attend « Autoriser » dans sa conversation.")

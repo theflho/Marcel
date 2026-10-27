@@ -35,7 +35,7 @@ nonisolated struct MissionInfo: Decodable, Sendable, Identifiable {
 
 /// One step of the agent: a command, a file read, a search…
 nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
-    let id: String
+    var id: String
     var name: String?
     var detail: String?
     /// "running", "done" or "cancelled".
@@ -48,7 +48,11 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     /// Something Marcel carried out at the end of his reply, shown as its result.
     var isResult: Bool { id.hasPrefix("auto-") }
     /// Waits for "Valider" under an "ask first" rule.
-    var awaitsApproval: Bool { id.hasPrefix("auto-ask-") && status == "cancelled" }
+    /// Waits for the user: a card under « Demander », or an iPhone request the app could not do
+    /// at once (it was closed when the reply ended).
+    var awaitsApproval: Bool {
+        (id.hasPrefix("auto-ask-") && status == "cancelled") || (id == "iphone-0" && status == "pending")
+    }
     /// The rule an approval falls under ("objectif", "routine", "recette", "recherche"), for « Toujours autoriser ».
     var ruleKind: String? {
         guard awaitsApproval else { return nil }
@@ -56,6 +60,11 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     }
     /// The approval sends the question as a new message, which runs the isolated search.
     var isSearch: Bool { id.hasPrefix("auto-ask-recherche") }
+    /// The iPhone asked to read or write something (``query``), waiting for « Autoriser ».
+    var isIPhone: Bool { id.hasPrefix("auto-ask-iphone") || id == "iphone-0" }
+
+    /// Not done because the user's rules block that kind of action.
+    var isBlocked: Bool { id.hasPrefix("auto-off-") }
 }
 
 nonisolated struct RobotScreen: Decodable, Sendable {
@@ -72,25 +81,39 @@ private nonisolated struct RobotHands: Decodable, Sendable {
     let hands: Bool
 }
 
-/// "Ask first" rules, per kind of action: "auto" (done, with "Annuler") or "ask" (waits for "Valider").
+/// "Ask first" rules, per kind of action, like Grok Bot's Always allow / Needs approval / Blocked:
+/// "auto" (done, with "Annuler"), "ask" (waits for "Valider") or "off" (not done at all).
 nonisolated struct ActionRules: Decodable, Sendable {
     var rules: [String: String]
     let labels: [String: String]
+    /// A bot's own levels, where it differs from the general rule.
+    var bots: [String: [String: String]]?
     /// Words a web search question must never carry (name, town…), set by the user.
     var privateWords: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case rules, labels
+        case rules, labels, bots
         case privateWords = "private_words"
     }
+
+    /// The level a bot works under for this kind: its own, else the general one.
+    func level(_ kind: String, for assistantID: String?) -> String {
+        assistantID.flatMap { bots?[$0]?[kind] } ?? rules[kind] ?? "auto"
+    }
+}
+
+private nonisolated struct RunMarkBody: Encodable {
+    let seen: Bool?
+    let done: Bool?
 }
 
 private nonisolated struct RulesBody: Encodable {
     let rules: [String: String]
     let privateWords: [String]?
+    let assistant: String?
 
     enum CodingKeys: String, CodingKey {
-        case rules
+        case rules, assistant
         case privateWords = "private_words"
     }
 }
@@ -352,6 +375,27 @@ nonisolated struct RoutineRun: Codable, Hashable, Sendable, Identifiable {
         case assistantName = "assistant_name"
         case routineID = "routine_id"
         case missionID = "mission_id"
+        case conversationID = "conversation_id"
+    }
+}
+
+/// What a bot did on its own (one run of its routines or standing task), like Grok Bot's tasks:
+/// read once opened, done once dealt with.
+nonisolated struct BotRun: Codable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let at: Date
+    /// "running", "done" or "failed".
+    let status: String
+    let error: String
+    let title: String
+    let conversationID: String
+    /// A run of its standing task (else of a routine).
+    let task: Bool
+    var seen: Bool
+    var done: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, at, status, error, title, task, seen, done
         case conversationID = "conversation_id"
     }
 }
@@ -633,7 +677,7 @@ nonisolated struct OfferList: Decodable, Sendable {
 /// Blocks the server carries out and the action cards already report: hidden from the text.
 nonisolated enum AutoBlocks {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: "```(objectif|routine|recette|demande-code|suivi|recherche)[\\s\\S]*?```", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "```(objectif|routine|recette|demande-code|suivi|recherche|iphone)[\\s\\S]*?```", with: "", options: .regularExpression)
             // The follow-ups come last: hidden while they are still being written too.
             .replacingOccurrences(of: "```suivi[\\s\\S]*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1172,8 +1216,9 @@ nonisolated struct MarcelAPI: Sendable {
         try await call("GET", "v1/rules")
     }
 
-    func setRules(_ rules: [String: String], privateWords: [String]? = nil) async throws -> ActionRules {
-        try await call("PUT", "v1/rules", body: RulesBody(rules: rules, privateWords: privateWords))
+    /// With a bot: its own levels ("" puts the general rule back for that kind).
+    func setRules(_ rules: [String: String], privateWords: [String]? = nil, assistant: String? = nil) async throws -> ActionRules {
+        try await call("PUT", "v1/rules", body: RulesBody(rules: rules, privateWords: privateWords, assistant: assistant))
     }
 
     /// "Valider" on what waited for the user's go-ahead. Returns the card, now done (with "Annuler").
@@ -1206,6 +1251,15 @@ nonisolated struct MarcelAPI: Sendable {
 
     func routineRuns(id: String) async throws -> [RoutineRun] {
         try await call("GET", "v1/routines/\(id)/runs")
+    }
+
+    func botRuns(assistantID: String) async throws -> [BotRun] {
+        try await call("GET", "v1/assistants/\(assistantID)/runs")
+    }
+
+    /// Read or done; nil leaves it as it is (done is read too).
+    func markRun(id: Int, seen: Bool? = nil, done: Bool? = nil) async throws -> BotRun {
+        try await call("POST", "v1/routine-runs/\(id)/mark", body: RunMarkBody(seen: seen, done: done))
     }
 
     /// Finished runs not yet put in their conversation on this iPhone, with their reply.

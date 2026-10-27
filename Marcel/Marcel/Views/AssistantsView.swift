@@ -14,10 +14,13 @@ struct AssistantsView: View {
                 Section {
                     ForEach(store.assistants) { assistant in
                         NavigationLink {
-                            AssistantDetailView(assistantID: assistant.id, onStart: start)
+                            AssistantDetailView(assistantID: assistant.id, onStart: start) { id in
+                                store.select(id)
+                                dismiss()
+                            }
                         } label: {
                             HStack(spacing: 12) {
-                                MarcelAvatar(size: 40, mood: store.mood(for: assistant))
+                                MarcelAvatar(size: 40, bot: assistant.id, state: store.face(ofBot: assistant.id))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(assistant.name).font(.body.weight(.semibold))
                                     Text(assistant.status.isEmpty ? assistant.summary : assistant.status)
@@ -63,6 +66,8 @@ private struct AssistantDetailView: View {
     @Environment(ChatStore.self) private var store
     let assistantID: String
     let onStart: (Assistant) -> Void
+    /// Opens one of its conversations, then closes the screen.
+    let onOpen: (UUID) -> Void
     @State private var confirmingDelete = false
 
     var body: some View {
@@ -71,7 +76,7 @@ private struct AssistantDetailView: View {
             List {
                 Section {
                     VStack(spacing: 8) {
-                        MarcelAvatar(size: 72, mood: store.mood(for: assistant))
+                        MarcelAvatar(size: 72, bot: assistant.id, state: store.face(ofBot: assistant.id))
                         Text(assistant.summary)
                             .font(.subheadline)
                             .multilineTextAlignment(.center)
@@ -105,6 +110,8 @@ private struct AssistantDetailView: View {
 
                 BotTaskSection(assistant: assistant)
 
+                BotRunsSection(assistantID: assistant.id, onOpen: onOpen)
+
                 BotRoutinesSection(assistant: assistant) {
                     // Like Grok Bot's "Add routine": it is asked in the bot's conversation.
                     onStart(assistant)
@@ -112,6 +119,8 @@ private struct AssistantDetailView: View {
                 }
 
                 BotNotificationsSection(assistantID: assistant.id)
+
+                BotRulesSection(assistantID: assistant.id)
 
                 if let reads = assistant.reads, !reads.isEmpty {
                     Section {
@@ -162,17 +171,8 @@ private struct AssistantDetailView: View {
 
                 BotSkillsSection(assistant: assistant)
 
-                Section {
-                    Menu {
-                        AssistantMoodPicker(assistant: assistant)
-                    } label: {
-                        HStack {
-                            Text("Mascotte").foregroundStyle(.primary)
-                            Spacer()
-                            Text(store.mood(for: assistant).label).foregroundStyle(.secondary)
-                        }
-                    }
-                    if assistant.isCustom {
+                if assistant.isCustom {
+                    Section {
                         Button("Supprimer le bot", role: .destructive) { confirmingDelete = true }
                     }
                 }

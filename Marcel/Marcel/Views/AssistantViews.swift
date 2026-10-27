@@ -175,7 +175,7 @@ struct ProposalCard: View {
         VStack(alignment: .leading, spacing: 8) {
             if proposal.assistant != nil, let assistant {
                 HStack(spacing: 8) {
-                    MarcelAvatar(size: 28, mood: store.mood(for: assistant))
+                    MarcelAvatar(size: 28, bot: assistant.id)
                     Text(assistant.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 }
             }
@@ -204,10 +204,13 @@ struct ProposalCard: View {
                 Text("Consigne à retenir : « \(consigne) »").font(.footnote)
             }
             // Marcel applied it himself once his reply was complete: no button left to press.
-            switch message.autoApplied("reglage") ? Optional("applied") : message.proposalDecision {
+            switch message.autoApplied("reglage") ? Optional("applied")
+                : message.blocked("reglage") ? "blocked" : message.proposalDecision {
             case "applied"?:
                 Label(message.autoApplied("reglage") ? "Fait par Marcel" : "Appliqué",
                       systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
+            case "blocked"?:
+                Label("Bloqué par tes règles", systemImage: "nosign").font(.footnote).foregroundStyle(.secondary)
             case "cancelled"?:
                 Label("Refusé", systemImage: "hand.raised.slash").font(.footnote).foregroundStyle(.secondary)
             default:
@@ -224,16 +227,14 @@ struct ProposalCard: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(applying || store.emergencyActive)
                     // Like Grok Bot's "Always allow": settings changes then go to "Tout seul".
-                    Button("Toujours") {
+                    AlwaysButton(inBot: store.bot(of: message.id) != nil) { onlyThisBot in
                         applying = true
                         Task {
-                            await store.applyProposalAlways(message.id)
+                            await store.applyProposalAlways(message.id, onlyThisBot: onlyThisBot)
                             applying = false
                         }
                     }
-                    .buttonStyle(.bordered)
                     .disabled(applying || store.emergencyActive)
-                    .accessibilityLabel("Toujours autoriser")
                     Button("Refuser", role: .destructive) { store.cancelProposal(message.id) }
                         .buttonStyle(.bordered)
                         .disabled(applying)
@@ -256,7 +257,7 @@ struct NewAssistantCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                MarcelAvatar(size: 44, mood: draft.mood)
+                MarcelAvatar(size: 44, bot: draft.nom)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Nouvel assistant").font(.caption).foregroundStyle(.secondary)
                     Text(draft.nom).font(.headline)
@@ -266,9 +267,12 @@ struct NewAssistantCard: View {
             Text("Tu le choisiras comme mode d'une conversation. Il n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            switch message.autoApplied("assistant") ? Optional("applied") : message.proposalDecision {
+            switch message.autoApplied("assistant") ? Optional("applied")
+                : message.blocked("assistant") ? "blocked" : message.proposalDecision {
             case "applied"?:
                 Label("Assistant créé", systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
+            case "blocked"?:
+                Label("Bloqué par tes règles", systemImage: "nosign").font(.footnote).foregroundStyle(.secondary)
             case "cancelled"?:
                 Label("Pas créé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
             default:
@@ -293,27 +297,5 @@ struct NewAssistantCard: View {
         }
         .padding(12)
         .background(Theme.background, in: .rect(cornerRadius: 14))
-    }
-}
-
-/// Menu items to choose the illustration of Marcel that stands for an assistant.
-struct AssistantMoodPicker: View {
-    @Environment(ChatStore.self) private var store
-    let assistant: Assistant
-
-    var body: some View {
-        Picker("Mascotte", selection: Binding(
-            get: { store.mood(for: assistant) },
-            set: { mood in Task { await store.setMood(mood, for: assistant) } }
-        )) {
-            ForEach(MarcelMood.allCases) { mood in
-                Label {
-                    Text(mood.label)
-                } icon: {
-                    Image(mood.imageName + "-cutout")
-                }
-                .tag(mood)
-            }
-        }
     }
 }

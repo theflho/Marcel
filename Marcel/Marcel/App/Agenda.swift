@@ -32,6 +32,22 @@ enum Agenda {
             .map { "\($0.startDate.formatted(date: .omitted, time: .shortened)) \($0.title ?? "Sans titre")" }
     }
 
+    /// The coming days as lines, for a bot that asked the iPhone (the missions calendar left out).
+    static func events(days: Int, now: Date = .now) -> [String] {
+        guard isAuthorized, let end = Calendar.current.date(byAdding: .day, value: days, to: now) else { return [] }
+        let missions = UserDefaults.standard.string(forKey: MissionCalendar.calendarKey)
+        return store.events(matching: store.predicateForEvents(withStart: now, end: end, calendars: nil))
+            .filter { $0.calendar.calendarIdentifier != missions }
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(maxEvents)
+            .map { event in
+                let when = event.isAllDay
+                    ? event.startDate.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)) + " (journée)"
+                    : event.startDate.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+                return "- \(when) : \(event.title ?? "Sans titre")\(event.location.map { " · \($0)" } ?? "")"
+            }
+    }
+
     /// The coming days as short lines, or nil when sharing is off or not allowed.
     static func upcoming(now: Date = .now) -> String? {
         guard UserDefaults.standard.bool(forKey: shareKey), isAuthorized,

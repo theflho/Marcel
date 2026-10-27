@@ -498,7 +498,7 @@ struct BotRoutinesSection: View {
             ForEach(routines) { routine in
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle(isOn: Binding(get: { routine.status == "active" }, set: { active in
-                        Task { await change(routine) { try await $0.updateRoutine(id: routine.id,
+                        Task { await change(routine) { _ = try await $0.updateRoutine(id: routine.id,
                                                                                    RoutineChange(status: active ? "active" : "paused")) } }
                     })) {
                         Text(routine.title).font(.subheadline.weight(.medium))
@@ -585,6 +585,105 @@ private struct RoutineHistoryView: View {
         .task {
             guard let api = store.settings.api else { return }
             runs = (try? await api.routineRuns(id: routine.id)) ?? []
+        }
+    }
+}
+
+/// What the bot did on its own, newest first, like Grok Bot's task list: a dot until it is read,
+/// « Fait » once dealt with. Touching one opens its conversation, where the reply is.
+struct BotRunsSection: View {
+    @Environment(ChatStore.self) private var store
+    let assistantID: String
+    let onOpen: (UUID) -> Void
+    @State private var runs: [BotRun] = []
+    @State private var showsDone = false
+
+    private var shown: [BotRun] { showsDone ? runs : runs.filter { !$0.done } }
+
+    var body: some View {
+        Section {
+            if runs.isEmpty {
+                Text("Pas encore passé tout seul.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(shown.prefix(10)) { run in
+                    Button {
+                        open(run)
+                    } label: {
+                        row(run)
+                    }
+                    .tint(.primary)
+                    .swipeActions {
+                        Button(run.done ? "À refaire" : "Fait", systemImage: run.done ? "arrow.uturn.backward" : "checkmark") {
+                            mark(run, done: !run.done)
+                        }
+                        .tint(run.done ? .gray : .green)
+                    }
+                    .swipeActions(edge: .leading) {
+                        if !run.done {
+                            Button(run.seen ? "Non lu" : "Lu", systemImage: run.seen ? "circle.fill" : "envelope.open") {
+                                mark(run, seen: !run.seen)
+                            }
+                            .tint(.accentColor)
+                        }
+                    }
+                }
+            if runs.contains(where: \.done) {
+                Toggle("Montrer ce qui est fait", isOn: $showsDone).font(.subheadline)
+            }
+        } header: {
+            let unread = runs.filter { !$0.seen }.count
+            Text(unread == 0 ? "Ce qu'il a fait" : "Ce qu'il a fait · \(unread) à lire")
+        } footer: {
+            Text("Ses passages tout seul (routines, tâche permanente). Glisse vers la gauche pour « Fait ».")
+        }
+        .task { await load() }
+    }
+
+    private func row(_ run: BotRun) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(run.seen ? Color.clear : Color.accentColor)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(run.title)
+                    .font(.subheadline.weight(run.seen ? .regular : .semibold))
+                    .strikethrough(run.done)
+                Text(run.status == "failed" ? "Échec · \(run.error)" : run.status == "running" ? "En cours" : run.task ? "Tâche permanente" : "Routine")
+                    .font(.caption)
+                    .foregroundStyle(run.status == "failed" ? .red : .secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(run.at, format: .relative(presentation: .named))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .opacity(run.done ? 0.5 : 1)
+    }
+
+    private func load() async {
+        guard let api = store.settings.api else { return }
+        runs = (try? await api.botRuns(assistantID: assistantID)) ?? runs
+    }
+
+    private func open(_ run: BotRun) {
+        if !run.seen { mark(run, seen: true) }
+        if let id = UUID(uuidString: run.conversationID) { onOpen(id) }
+    }
+
+    private func mark(_ run: BotRun, seen: Bool? = nil, done: Bool? = nil) {
+        guard let index = runs.firstIndex(where: { $0.id == run.id }) else { return }
+        if let seen { runs[index].seen = seen }
+        if let done {
+            runs[index].done = done
+            if done { runs[index].seen = true }
+        }
+        Task {
+            guard let api = store.settings.api else { return }
+            if let saved = try? await api.markRun(id: run.id, seen: seen, done: done),
+               let index = runs.firstIndex(where: { $0.id == saved.id }) {
+                runs[index] = saved
+            }
         }
     }
 }

@@ -7,6 +7,13 @@
 	<!-- Marcel reads upcoming events, and writes only in its own "Missions RMA" calendar. -->
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Marcel lit ton agenda pour en tenir compte et, si tu l'actives, ajoute tes missions dans son propre calendrier « Missions RMA ». Il ne modifie jamais tes autres calendriers.</string>
+	<!-- The iPhone as the bots' hands: read only when a bot asks and the user's rules let it. -->
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Quand un bot le demande et que tes règles le permettent, Marcel lit tes rappels ou en ajoute un.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Quand un bot le demande et que tes règles le permettent, Marcel cherche quelqu'un dans tes contacts (téléphone, e-mail).</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Quand un bot le demande et que tes règles le permettent, Marcel lit où tu es, par exemple pour les missions proches.</string>
 	<!-- iOS wakes the app now and then to look for new ideas and finished replies (local notifications). -->
 	<key>UIBackgroundModes</key>
 	<array>

@@ -73,6 +73,11 @@ extension ChatMessage {
     func autoApplied(_ kind: String) -> Bool {
         actions.contains { $0.id.hasPrefix("auto-\(kind)-") && $0.status == "done" }
     }
+
+    /// The user's rules block this kind: no button to press under the proposal.
+    func blocked(_ kind: String) -> Bool {
+        actions.contains { $0.id.hasPrefix("auto-off-\(kind)-") }
+    }
 }
 
 nonisolated struct Conversation: Identifiable, Codable, Hashable, Sendable {

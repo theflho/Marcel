@@ -133,7 +133,7 @@ struct SlashPalette: View {
     @ViewBuilder
     private func icon(for command: SlashCommand) -> some View {
         if case .mode(let id?) = command.kind, let assistant = store.assistants.first(where: { $0.id == id }) {
-            MarcelAvatar(size: 26, mood: store.mood(for: assistant), framed: false)
+            MarcelAvatar(size: 26, bot: assistant.id, tile: false)
         } else {
             Image(systemName: command.icon)
                 .font(.system(size: 15, weight: .medium))

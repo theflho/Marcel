@@ -366,8 +366,11 @@ def untrusted(label: str, text: str) -> str:
 def hermes_content(message: Message) -> str | list[dict]:
     """OpenAI-style content: plain text, or parts when attachments are present.
 
-    Photos go as images (the model must support vision); documents go as extracted text.
+    Photos go as images (the model must support vision); documents go as extracted text. What the
+    iPhone read for a bot (contacts, invitations…) can be written by others: it goes as data.
     """
+    if is_iphone_answer(message):
+        return untrusted("LU SUR L'IPHONE", message.content.removeprefix(IPHONE_ANSWER))
     if not message.attachments:
         return message.content
     parts: list[dict] = [{"type": "text", "text": message.content}] if message.content else []
@@ -437,7 +440,8 @@ async def start_mission(request: ChatRequest) -> dict:
             raise HTTPException(404, "Assistant introuvable (supprimé ?)")
         return start_assistant_mission(request, model, title, note, facts, device, mail, extra)
     note = "\n\n".join(filter(None, [app_context(bool(request.device_context)), note, goals.context(),
-                                      planning_note(), assistants_note(request), slash_note(title), device, mail]))
+                                      planning_note(), assistants_note(request), slash_note(title), device, mail,
+                                      IPHONE_PROMPT]))
     if MOCK:
         inner = lambda: mock_stream(request, facts)  # noqa: E731
     elif mail and MEMORY_LLM_URL != HERMES_URL:
@@ -456,7 +460,8 @@ async def start_mission(request: ChatRequest) -> dict:
                                       CHECK_HERMES_URL, CHECK_HERMES_KEY)
     else:
         # The full Hermes may have a browser, which can submit forms: only once the user said go.
-        browser = approves(title) or rules()["navigateur"] == "auto"
+        # Blocked: never, even when the message says go.
+        browser = rules()["navigateur"] != "off" and (approves(title) or rules()["navigateur"] == "auto")
         inner = lambda: hermes_stream(request, model, note, browser=browser)  # noqa: E731
     mission = missions.start(request.conversation_id,
                              lambda: with_memory(request, inner, facts, extra, learn=not request.private),
@@ -578,6 +583,9 @@ def search_cards(question: str, rule: str) -> tuple[dict, bool]:
     if found := websearch.leaks(question, private_words()):
         return {"id": "search", "name": "Recherche web", "status": "cancelled",
                 "detail": f"Bloquée : la question contient {', '.join(found)}. Reformule sans."}, False
+    if rule == "off":
+        return {"id": "search", "name": "Recherche web", "status": "cancelled",
+                "detail": f"« {question} » — bloquée par tes règles (Réglages › Règles)"}, False
     if rule == "ask":
         return {"id": SEARCH_CARD, "name": "Recherche web", "status": "cancelled", "query": question,
                 "detail": f"« {question} » — attend ton accord : touche « Valider »"}, False
@@ -609,7 +617,7 @@ async def searching(request: ChatRequest, call, note: str, web: bool) -> AsyncIt
     question = search_question("".join(reply))
     if not question:
         return
-    card, now = search_cards(question, rules()["recherche"])
+    card, now = search_cards(question, rule("recherche", request.assistant))
     yield card
     if now:
         follow = request.model_copy(update={"messages": [*request.messages,
@@ -651,6 +659,79 @@ async def answer_with_results(request: ChatRequest, call, note: str, question: s
 # fin garde-fou : recherche web isolée
 
 
+# The iPhone as the bots' hands, like Grok Bot's local tools: the model asks with a block at the end of
+# its reply; the app reads (or writes) on the iPhone, under the user's rules, and sends back what it
+# found as a new message. Nothing of the iPhone reaches the server unless a block asked for it.
+# The app sends what it read as the next message, starting with this.
+IPHONE_ANSWER = "📱 "
+IPHONE_BLOCK = re.compile(r"```iphone[ \t]*\n?(.*?)```", re.DOTALL)
+IPHONE_READS = {"rappels": "tes rappels", "contacts": "tes contacts", "position": "ta position",
+                "agenda": "ton agenda"}
+IPHONE_PROMPT = """iPhone : tu peux demander à l'iPhone de l'utilisateur de lire ses rappels, ses contacts, sa position
+ou son agenda, ou d'ajouter un rappel, en terminant ta réponse par ce bloc (et rien après, sauf le bloc suivi) :
+```iphone
+{"lire": "contacts", "chercher": "Paul"}
+```
+« lire » : "rappels", "contacts" (avec « chercher » : un nom), "position" ou "agenda" (« jours » : 1 à 14).
+Pour un rappel : {"ajouter_rappel": {"titre": "Appeler Paul", "quand": "2026-10-28T09:00"}} (« quand » facultatif).
+Une seule demande par réponse, seulement quand il faut une information que tu n'as pas. Ses règles décident :
+l'iPhone le fait seul, demande d'abord, ou refuse. La réponse arrive dans le message suivant."""
+
+
+def is_iphone_answer(message: Message) -> bool:
+    return message.role == "user" and message.content.startswith(IPHONE_ANSWER)
+
+
+def iphone_request(text: str) -> dict | None:
+    """The last ```iphone``` block of a reply, checked: a read or a reminder, or None."""
+    found = IPHONE_BLOCK.findall(text)
+    if not found:
+        return None
+    try:
+        data = json.loads(found[-1])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("lire") in IPHONE_READS:
+        request = {"lire": data["lire"]}
+        if data["lire"] == "contacts":
+            name = " ".join(str(data.get("chercher") or "").split())[:60]
+            if len(name) < 2:
+                return None
+            request["chercher"] = name
+        if data["lire"] == "agenda":
+            days = data.get("jours")
+            request["jours"] = max(1, min(14, days)) if isinstance(days, int) else 7
+        return request
+    reminder = data.get("ajouter_rappel")
+    if isinstance(reminder, dict) and len(title := " ".join(str(reminder.get("titre") or "").split())[:120]) >= 2:
+        when = str(reminder.get("quand") or "")[:25]
+        return {"ajouter_rappel": {"titre": title} | ({"quand": when} if when else {})}
+    return None
+
+
+def iphone_card(request: dict, level: str, outside: bool, assistant: str = "") -> dict:
+    """The card the app acts on: "iphone-0" to do now, an ASK_CARD to wait for « Autoriser », or
+    blocked. From a reply built on an e-mail or a file, never by itself."""
+    if "lire" in request:
+        kind, what = "iphone", IPHONE_READS[request["lire"]]
+        if request.get("chercher"):
+            what += f" (« {request['chercher']} »)"
+        action = f"Lire {what}"
+    else:
+        kind, action = "iphone_ecriture", f"Ajouter le rappel « {request['ajouter_rappel']['titre']} »"
+    card = {"name": "iPhone", "query": json.dumps(request, ensure_ascii=False), "assistant": assistant}
+    if level == "off":
+        return card | {"id": f"{OFF_CARD}{kind}-0", "status": "cancelled",
+                       "detail": f"{action} : bloqué par tes règles (Réglages › Règles)"}
+    if level == "ask" or outside:
+        return card | {"id": f"{ASK_CARD}{kind}-0", "status": "cancelled",
+                       "detail": f"{action} — attend ton accord"}
+    # "pending", not "running": a mission marks its running steps done when it ends.
+    return card | {"id": "iphone-0", "status": "pending", "detail": f"{action}…"}
+
+
 def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> tuple[str, bool]:
     """What a bot is told, in its conversations, its standing task and on Telegram: who it is (its
     role, settings, instructions, shared skills and taught tasks) and what the user lets it read
@@ -677,7 +758,7 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
     assistant = assistants.find(request.assistant)
     context, web = bot_context(assistant, device, mail)
     note = "\n\n".join(filter(None, [context, app_context(bool(request.device_context)), note,
-                                      SEARCH_PROMPT if web else ""]))
+                                      SEARCH_PROMPT if web else "", IPHONE_PROMPT]))
 
     def call(req: ChatRequest, text: str):
         if MOCK:
@@ -893,8 +974,10 @@ async def mail_context(question: str, force: bool = False) -> tuple[str, list[di
 # Blocks Marcel (or an assistant) ends a reply with, carried out by the server once it's complete.
 AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif|routine|recette)[ \t]*\n?(.*?)```", re.DOTALL)
 
-# "Ask first" rules, set per kind of action in Réglages › Règles (like ChatGPT's dots, loosened one
-# kind at a time). "auto": Marcel does it and shows "Annuler"; "ask": it waits for "Valider".
+# "Ask first" rules, set per kind of action in Réglages › Règles (like Grok Bot's Always allow /
+# Needs approval / Blocked, loosened one kind at a time). "auto": Marcel does it and shows "Annuler";
+# "ask": it waits for "Valider"; "off": it is not done at all. A bot may have its own level for a kind
+# (Grok Bot's "Always allow for this Bot"), else the general one applies.
 # What stays fixed whatever the rules: never delete nor pin, never the password vault, and
 # never on his own when an e-mail or a file is involved.
 RULE_KINDS = {
@@ -905,22 +988,41 @@ RULE_KINDS = {
     "navigateur": "Agir sur un site (navigateur)",
     "recherche": "Chercher sur le web (bots)",
     "recette": "Retenir une tâche apprise (bots)",
+    "iphone": "Lire sur l'iPhone (rappels, contacts, position, agenda)",
+    "iphone_ecriture": "Ajouter un rappel sur l'iPhone",
 }
-RULE_VALUES = ("auto", "ask")
+RULE_VALUES = ("auto", "ask", "off")
+OFF_CARD = "auto-off-"
 
 
 def rules() -> dict[str, str]:
     saved = assistants.state("rules", {}) or {}
     defaults = {kind: "auto" for kind in RULE_KINDS} | {"navigateur": "ask" if BROWSER_GUARD else "auto",
-                                                         "recherche": "ask"}
+                                                         "recherche": "ask", "iphone": "ask", "iphone_ecriture": "ask"}
     return defaults | {k: v for k, v in saved.items() if k in RULE_KINDS and v in RULE_VALUES}
+
+
+def bot_rules() -> dict[str, dict[str, str]]:
+    """Each bot's own levels, only for the kinds where it differs from the general rule."""
+    saved = assistants.state("bot_rules", {}) or {}
+    return {bot: {k: v for k, v in levels.items() if k in RULE_KINDS and v in RULE_VALUES}
+            for bot, levels in saved.items() if isinstance(levels, dict) and assistants.find(bot)}
+
+
+def rule(kind: str, assistant: str | None = None) -> str:
+    """The level for this kind of action, in this bot's conversation (or Marcel's)."""
+    return bot_rules().get(assistant or "", {}).get(kind) or rules()[kind]
 
 
 ASK_CARD = "auto-ask-"
 
 
 def ask_first(kind: str) -> None:
-    """For Hermes' tools: under an "ask" rule, it proposes with a block instead of doing it."""
+    """For Hermes' tools: under an "ask" rule, it proposes with a block instead of doing it; under
+    "off", it does not do it at all."""
+    if rules()[kind] == "off":
+        raise ToolError(f"Règle « bloqué » ({RULE_KINDS[kind].lower()}) : l'utilisateur l'a interdit. "
+                        "Ne le fais pas et ne le propose pas ; dis-lui qu'il peut changer ça dans Réglages › Règles.")
     if rules()[kind] == "ask":
         raise ToolError(f"Règle « demande d'abord » ({RULE_KINDS[kind].lower()}) : ne le fais pas toi-même, "
                         f"propose-le en terminant ta réponse par le bloc ```{kind}``` ; l'utilisateur le validera.")
@@ -1027,19 +1129,29 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
     # Only reached when the mission completed: a stopped reply teaches nothing.
     # A reply built on outside content (e-mails, attached files) could repeat what a stranger
     # wrote: only the user's own message is learnt from, so it can't plant lasting "facts".
-    outside = any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
+    outside = (any(a["id"] == "mail" for a in extra) or bool(request.messages[-1].attachments)
+               or is_iphone_answer(request.messages[-1]))
     text = bots.FOLLOWUP_BLOCK.sub("", "".join(reply)).strip()
+    if not request.private and (asked := iphone_request(text)):
+        kind = "iphone" if "lire" in asked else "iphone_ecriture"
+        yield iphone_card(asked, rule(kind, request.assistant), outside, request.assistant or "")
     if AUTO_BLOCK.search(text):
         if outside:
             # A stranger's e-mail or file could have asked for it: the user decides.
             yield {"id": "auto-outside", "name": "Réglage", "status": "cancelled",
                    "detail": "Pas appliqué tout seul : la réponse s'appuie sur un e-mail ou un fichier. Valide-le toi-même."}
         else:
-            for card in apply_blocks(request, text, only=lambda kind: rules()[kind] == "auto"):
+            level = lambda kind: rule(kind, request.assistant)  # noqa: E731
+            for card in apply_blocks(request, text, only=lambda kind: level(kind) == "auto"):
                 yield card
             for index, (kind, _) in enumerate(AUTO_BLOCK.findall(text)):
+                if level(kind) == "off":
+                    # Blocked: no button to press, the app shows why (its proposal card too).
+                    yield {"id": f"{OFF_CARD}{kind}-{index}", "name": RULE_KINDS[kind], "status": "cancelled",
+                           "detail": "Bloqué par tes règles (Réglages › Règles) : rien n'est fait",
+                           "assistant": request.assistant or ""}
                 # A setting or a new assistant already has its own card to approve in the app.
-                if rules()[kind] == "ask" and kind in ("objectif", "routine", "recette"):
+                elif level(kind) == "ask" and kind in ("objectif", "routine", "recette"):
                     yield {"id": f"{ASK_CARD}{kind}-{index}", "name": RULE_KINDS[kind], "status": "cancelled",
                            "detail": "Attend ton accord (Réglages › Règles) : touche « Valider »",
                            "assistant": request.assistant or ""}
@@ -1050,11 +1162,15 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
 
 @app.get("/v1/rules", dependencies=[Depends(require_token)])
 async def get_rules() -> dict:
-    return {"rules": rules(), "labels": RULE_KINDS, "private_words": assistants.state("private_words", [])}
+    return {"rules": rules(), "labels": RULE_KINDS, "bots": bot_rules(),
+            "private_words": assistants.state("private_words", [])}
 
 
 class RulesUpdate(BaseModel):
-    rules: dict[str, Literal["auto", "ask"]] = Field(default_factory=dict)
+    # "" for a bot: back to the general rule.
+    rules: dict[str, Literal["auto", "ask", "off", ""]] = Field(default_factory=dict)
+    # The bot whose own levels change; none for the general rules.
+    assistant: str | None = None
     # Words a web search question must never carry (name, town, employer…), set by the user.
     private_words: list[str] | None = Field(default=None, max_length=50)
 
@@ -1064,7 +1180,17 @@ async def put_rules(body: RulesUpdate) -> dict:
     unknown = set(body.rules) - set(RULE_KINDS)
     if unknown:
         raise HTTPException(400, f"Règle inconnue : {', '.join(sorted(unknown))}")
-    assistants.set_state("rules", rules() | body.rules)
+    if body.assistant:
+        if not assistants.find(body.assistant):
+            raise HTTPException(404, "Bot inconnu")
+        every = bot_rules()
+        mine = every.get(body.assistant, {}) | body.rules
+        every[body.assistant] = {k: v for k, v in mine.items() if v}
+        assistants.set_state("bot_rules", {bot: levels for bot, levels in every.items() if levels})
+    elif "" in body.rules.values():
+        raise HTTPException(400, "Une règle générale ne peut pas être vide")
+    else:
+        assistants.set_state("rules", rules() | body.rules)
     if body.private_words is not None:
         words = sorted({" ".join(w.split())[:60] for w in body.private_words if len(w.strip()) >= 3})
         assistants.set_state("private_words", words)
@@ -1091,6 +1217,8 @@ async def approve_block(mission_id: str, body: BlockApproval) -> dict:
     if not waiting:
         raise HTTPException(404, "Rien n'attend ton accord ici (déjà validé ?)")
     kind, index = body.card.removeprefix(ASK_CARD).rsplit("-", 1)
+    if rule(kind, waiting.get("assistant") or None) == "off":
+        raise HTTPException(403, "Bloqué par tes règles (Réglages › Règles)")
     request = ChatRequest(conversation_id=mission.conversation_id, assistant=waiting.get("assistant") or None,
                           messages=[Message(role="user", content="Valider")])
     cards = apply_blocks(request, mission.text, only=lambda k: k == kind, at=int(index))
@@ -1183,46 +1311,91 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
     tools: dict[int, dict] = {}
 
     def finish_tools() -> list[dict]:
-        done = [{"id": t["id"], "status": "done"} for t in tools.values() if t["status"] == "running"]
+        done = [{"id": t["id"], "detail": t["detail"], "status": "done"} for t in tools.values()
+                if t["status"] == "running"]
         for tool in tools.values():
             tool["status"] = "done"
         return done
 
+    # A tool call's arguments come in many small pieces: the app gets the step when its name is
+    # known, then a few updates as its detail grows, not one per piece.
+    shown: dict[int, tuple[str, int]] = {}
+
+    def worth_showing(index: int, tool: dict) -> bool:
+        name, length = shown.get(index, ("", -100))
+        if tool["name"] != name or len(tool["detail"]) - length >= 60:
+            shown[index] = (tool["name"], len(tool["detail"]))
+            return True
+        return False
+
     timeout = httpx.Timeout(connect=10, read=300, write=30, pool=10)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", f"{url}/v1/chat/completions", json=body, headers=headers) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                chunk = json.loads(data)
-                for choice in chunk.get("choices", []):
-                    delta = choice.get("delta") or {}
-                    for call in delta.get("tool_calls") or []:
-                        index = call.get("index", 0)
-                        function = call.get("function") or {}
-                        tool = tools.setdefault(index, {"id": call.get("id") or f"tool-{index}", "name": "",
-                                                        "detail": "", "status": "running"})
-                        tool["name"] += function.get("name") or ""
-                        tool["detail"] = (tool["detail"] + (function.get("arguments") or ""))[:300]
-                        # garde-fou : navigateur coupé
-                        if BROWSER_TOOL.match(tool["name"]) and (not browser or "vault" in tool["name"]):
-                            yield tool | {"status": "cancelled", "detail": "coupé par Marcel avant d'agir"}
-                            raise MissionError(BROWSER_STOP if "vault" not in tool["name"] else
-                                               "Navigateur arrêté : Marcel ne remplit jamais tes mots de passe ni "
-                                               "tes cartes. Ce geste-là reste le tien.")
-                        # fin garde-fou : navigateur coupé
-                        yield dict(tool)
-                    if text := delta.get("content"):
-                        for update in finish_tools():
-                            yield update
-                        yield text
-                    if choice.get("finish_reason"):
-                        for update in finish_tools():
-                            yield update
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("POST", f"{url}/v1/chat/completions", json=body, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    raise MissionError(hermes_refusal(resp.status_code, resp.text))
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        log.warning("unreadable chunk from Hermes: %s", data[:200])
+                        continue
+                    if error := chunk.get("error"):
+                        detail = error.get("message") if isinstance(error, dict) else str(error)
+                        raise MissionError(f"Hermes s'est arrêté : {str(detail)[:200]}")
+                    for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser):
+                        yield item
+    except httpx.ConnectError as error:
+        raise MissionError("Hermes est injoignable : son serveur ne répond pas (redémarrage en cours ?).") from error
+    except httpx.ReadTimeout as error:
+        raise MissionError("Hermes n'a rien envoyé pendant 5 minutes : la réponse est abandonnée.") from error
+
+
+def hermes_refusal(status: int, body: str) -> str:
+    """What to tell the user when Hermes (or the model behind it) refuses the request."""
+    try:
+        detail = json.loads(body).get("error", {})
+        detail = detail.get("message", "") if isinstance(detail, dict) else str(detail)
+    except (ValueError, AttributeError):
+        detail = body
+    detail = " ".join(str(detail).split())[:160]
+    reason = {401: "clé refusée (HERMES_API_KEY)", 403: "accès refusé", 404: "modèle ou adresse inconnus",
+              413: "conversation trop longue pour le modèle", 429: "quota du modèle atteint, réessaie plus tard"}
+    said = reason.get(status) or ("Hermes a planté" if status >= 500 else f"erreur {status}")
+    return f"Hermes n'a pas pu répondre : {said}" + (f" ({detail})" if detail else "") + "."
+
+
+def hermes_chunk(chunk: dict, tools: dict[int, dict], finish_tools, worth_showing, browser: bool):
+    """The text and steps of one piece of Hermes' stream."""
+    for choice in chunk.get("choices", []):
+        delta = choice.get("delta") or {}
+        for call in delta.get("tool_calls") or []:
+            index = call.get("index", 0)
+            function = call.get("function") or {}
+            tool = tools.setdefault(index, {"id": call.get("id") or f"tool-{index}", "name": "",
+                                            "detail": "", "status": "running"})
+            tool["name"] += function.get("name") or ""
+            tool["detail"] = (tool["detail"] + (function.get("arguments") or ""))[:300]
+            # garde-fou : navigateur coupé
+            if BROWSER_TOOL.match(tool["name"]) and (not browser or "vault" in tool["name"]):
+                yield tool | {"status": "cancelled", "detail": "coupé par Marcel avant d'agir"}
+                raise MissionError(BROWSER_STOP if "vault" not in tool["name"] else
+                                   "Navigateur arrêté : Marcel ne remplit jamais tes mots de passe ni "
+                                   "tes cartes. Ce geste-là reste le tien.")
+            # fin garde-fou : navigateur coupé
+            if worth_showing(index, tool):
+                yield dict(tool)
+        if text := delta.get("content"):
+            yield from finish_tools()
+            yield text
+        if choice.get("finish_reason"):
+            yield from finish_tools()
 
 
 async def mock_stream(request: ChatRequest, facts=()) -> AsyncIterator[str | dict]:
@@ -2204,7 +2377,7 @@ def task_cards(routine, text: str) -> list[dict]:
     if routine.trigger.startswith("email") or routine.assistant == "mails":
         return [{"id": "auto-outside", "name": "Réglage", "status": "cancelled",
                  "detail": "Pas appliqué tout seul : la tâche a lu des e-mails. Appuie sur « Appliquer » si tu veux."}]
-    if rules()["reglage"] != "auto":
+    if rule("reglage", routine.assistant) != "auto":
         return []
     request = ChatRequest(conversation_id=routine.conversation_id, assistant=routine.assistant,
                           messages=[Message(role="user", content=routine.prompt)])
@@ -2343,6 +2516,31 @@ async def run_routine_now(routine_id: str) -> dict:
 async def routine_runs(routine_id: str) -> list[dict]:
     find_routine(routine_id)
     return routines.runs(routine_id)
+
+
+@app.get("/v1/assistants/{assistant_id}/runs", dependencies=[Depends(require_token)])
+async def bot_runs(assistant_id: str) -> list[dict]:
+    """What a bot did on its own (its routines and standing task), newest first, each read or not and
+    done or not, like Grok Bot's task list."""
+    if not assistants.find(assistant_id):
+        raise HTTPException(404, "Bot inconnu")
+    mine = {r.id: r for r in routines.list() if r.assistant == assistant_id}
+    return [run | {"title": mine[run["routine_id"]].title, "conversation_id": mine[run["routine_id"]].conversation_id,
+                   "task": mine[run["routine_id"]].task}
+            for run in routines.runs_of(list(mine))]
+
+
+class RunMark(BaseModel):
+    seen: bool | None = None
+    done: bool | None = None
+
+
+@app.post("/v1/routine-runs/{run_id}/mark", dependencies=[Depends(require_token)])
+async def mark_routine_run(run_id: int, body: RunMark) -> dict:
+    run = routines.mark(run_id, body.seen, body.done)
+    if not run:
+        raise HTTPException(404, "Passage introuvable")
+    return run
 
 
 @app.get("/v1/routine-runs", dependencies=[Depends(require_token)])
@@ -3563,7 +3761,12 @@ async def tool_bot(args: dict) -> str:
             lines.append(f"✅ {card['detail']} (Annuler dans l'app)")
         elif card["id"].startswith(ASK_CARD) and card.get("status") == "cancelled":
             lines.append(f"⏳ {card.get('name', 'Action')} : à valider dans l'app, sous {bot.name}")
-    if re.search(r"```reglage", mission.text) and not any(c["id"].startswith("auto-reglage") for c in mission.actions):
+        elif card["id"].startswith(OFF_CARD):
+            lines.append(f"⛔ {card.get('name', 'Action')} : bloqué par tes règles")
+        elif card["id"] == "iphone-0":
+            lines.append(f"📱 {card.get('detail', 'Demande à l’iPhone')} : ouvre l'app, sous {bot.name}")
+    if re.search(r"```reglage", mission.text) and not any(c["id"].startswith(("auto-reglage", f"{OFF_CARD}reglage"))
+                                                         for c in mission.actions):
         lines.append(f"⏳ Réglage proposé : à appliquer dans l'app, sous {bot.name}")
     return "\n\n".join(filter(None, lines))
 

@@ -108,15 +108,14 @@ struct SidebarView: View {
     private struct BotItem: Identifiable {
         let id: String?
         let name: String
-        let mood: MarcelMood
         var key: String { BotPrefs.key(id) }
     }
 
     /// Marcel then the assistants, pinned ones first (like Grok Bot's Pin), hidden ones apart.
     private var bots: (shown: [BotItem], hidden: [BotItem]) {
         _ = botPrefsVersion
-        let every = [BotItem(id: nil, name: "Marcel", mood: .tree)]
-            + store.assistants.map { BotItem(id: $0.id, name: $0.name, mood: store.mood(for: $0)) }
+        let every = [BotItem(id: nil, name: "Marcel")]
+            + store.assistants.map { BotItem(id: $0.id, name: $0.name) }
         let pinned = BotPrefs.list(BotPrefs.pinnedKey), hidden = Set(BotPrefs.list(BotPrefs.hiddenKey))
         let shown = every.filter { !hidden.contains($0.key) }
         let first = pinned.compactMap { key in shown.first { $0.key == key } }
@@ -128,13 +127,13 @@ struct SidebarView: View {
         Section("Bots") {
             let list = bots
             ForEach(list.shown) { bot in
-                botRow(id: bot.id, name: bot.name, mood: bot.mood)
+                botRow(id: bot.id, name: bot.name)
                     .contextMenu { botMenu(bot) }
             }
             if !list.hidden.isEmpty {
                 DisclosureGroup("Bots masqués (\(list.hidden.count))", isExpanded: $hiddenExpanded) {
                     ForEach(list.hidden) { bot in
-                        botRow(id: bot.id, name: bot.name, mood: bot.mood)
+                        botRow(id: bot.id, name: bot.name)
                             .contextMenu { botMenu(bot) }
                     }
                 }
@@ -172,14 +171,14 @@ struct SidebarView: View {
         }
     }
 
-    private func botRow(id: String?, name: String, mood: MarcelMood) -> some View {
+    private func botRow(id: String?, name: String) -> some View {
         let current = store.conversation.assistantID == id && !store.conversation.isPrivate
         return Button {
             store.openBot(id)
             onClose()
         } label: {
             HStack(spacing: 10) {
-                MarcelAvatar(size: 36, mood: mood, cutout: true)
+                MarcelAvatar(size: 36, bot: id, state: store.face(ofBot: id))
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 4) {
                         Text(name)
@@ -319,14 +318,8 @@ struct SidebarView: View {
         } label: {
             let assistant = store.assistant(for: conversation)
             HStack(spacing: 10) {
-                MarcelAvatar(size: 36, mood: conversation.displayMood)
-                    .overlay(alignment: .bottomTrailing) {
-                        // The assistant this conversation talks to, in a corner of Marcel.
-                        if let assistant {
-                            MarcelAvatar(size: 18, mood: store.mood(for: assistant))
-                                .offset(x: 4, y: 4)
-                        }
-                    }
+                // The face of the bot this conversation talks to, and what it is doing there.
+                MarcelAvatar(size: 36, bot: assistant?.id, state: store.face(of: conversation))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(conversation.title)
                         .font(.body.weight(conversation.id == store.currentID ? .semibold : .regular))
@@ -369,9 +362,6 @@ struct SidebarView: View {
                 ForEach(store.projects) { project in
                     Button(project.name) { store.move(conversation.id, to: project.id) }
                 }
-            }
-            Menu("Illustration", systemImage: "photo") {
-                MoodPicker(conversation: conversation)
             }
             ShareLink(item: transcript(of: conversation))
             Button("Supprimer", systemImage: "trash", role: .destructive) { store.delete(conversation.id) }

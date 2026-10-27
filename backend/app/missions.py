@@ -62,7 +62,10 @@ VERIFY_ID = "verify"
 
 def verification(text: str, actions: list[dict], unfinished: list[str]) -> dict | None:
     """The "Vérification" card for a finished reply, or None when there is nothing to check."""
-    steps = [a for a in actions if a.get("name") and a["id"] not in OWN_CARDS and not a["id"].startswith("auto-outside")]
+    # Steps and what Marcel did himself; not the cards that say why they wait or stopped (« Autoriser »,
+    # blocked by the rules, outside content, the web search, the iPhone).
+    steps = [a for a in actions if a.get("name") and a["id"] not in OWN_CARDS
+             and not a["id"].startswith(("auto-ask-", "auto-off-", "auto-outside", "iphone-", "search"))]
     cut = [a for a in steps if a.get("status") == "cancelled"]
     claim = CLAIM.search(text)
     if claim and not steps:

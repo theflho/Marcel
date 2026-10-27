@@ -22,10 +22,6 @@ extension ChatStore {
     /// The assistant the open conversation talks to; nil for Marcel.
     var mode: Assistant? { assistant(for: conversation) }
 
-    var modeMood: MarcelMood {
-        mode.map { mood(for: $0) } ?? conversation.displayMood
-    }
-
     /// Under the name in the header, like a messaging app: what the reply is doing, else whether
     /// the server answers.
     /// What the reply is doing while a step runs ("lit tes e-mails…"), nil otherwise.
@@ -66,7 +62,7 @@ struct WelcomeView: View {
         let mode = store.mode
         VStack(spacing: 16) {
             VStack(spacing: 8) {
-                MarcelAvatar(size: 56, mood: store.modeMood, cutout: true)
+                MarcelAvatar(size: 56, bot: mode?.id)
                 Text("\(greeting) Ici Marcel.")
                     .font(.title3.weight(.semibold))
                 Text(mode.map { "\($0.name) : \($0.summary)" } ?? "Qu'est-ce que je fais pour toi ?")

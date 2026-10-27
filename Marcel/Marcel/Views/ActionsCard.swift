@@ -131,6 +131,7 @@ private struct ActionDetail: View {
     private var statusLabel: String {
         switch action.status {
         case "running": "En cours"
+        case "pending": "En attente"
         case "cancelled": "Annulée ou refusée"
         default: "Terminée"
         }
@@ -165,6 +166,8 @@ private struct ActionRow: View {
         switch action.status {
         case "running":
             ProgressView().controlSize(.mini)
+        case "pending":
+            Image(systemName: "hourglass").foregroundStyle(.secondary).font(.caption)
         case "cancelled":
             Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).font(.caption)
         default:
@@ -294,11 +297,9 @@ struct ResultRow: View {
                     }
                     .buttonStyle(.borderedProminent)
                     if action.ruleKind != nil {
-                        Button("Toujours") {
-                            answer { await store.approveAlways(action, in: message.id) }
+                        AlwaysButton(inBot: store.bot(of: message.id) != nil) { onlyThisBot in
+                            answer { await store.approveAlways(action, in: message.id, onlyThisBot: onlyThisBot) }
                         }
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel("Toujours autoriser")
                     }
                     Button("Refuser", role: .destructive) {
                         store.decline(action, in: message.id)
@@ -333,5 +334,27 @@ struct ResultRow: View {
             await work()
             undoing = false
         }
+    }
+}
+
+/// « Toujours », like Grok Bot's "Always allow": in a bot's conversation, for this bot only or for
+/// every bot; in Marcel's, everywhere.
+struct AlwaysButton: View {
+    let inBot: Bool
+    let allow: (_ onlyThisBot: Bool) -> Void
+
+    var body: some View {
+        Group {
+            if inBot {
+                Menu("Toujours") {
+                    Button("Pour ce bot", systemImage: "person.crop.circle") { allow(true) }
+                    Button("Pour tous les bots", systemImage: "person.2") { allow(false) }
+                }
+            } else {
+                Button("Toujours") { allow(false) }
+            }
+        }
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Toujours autoriser")
     }
 }

@@ -726,6 +726,9 @@ final class ChatStore {
         if action.isSearch {
             return approveSearch(action, in: messageID)
         }
+        if action.isIPhone {
+            return await runOnIPhone(action, in: messageID)
+        }
         guard !emergencyActive,
               let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }),
               let reply = message(messageID, in: conversation.id), let missionID = reply.missionID,
@@ -743,10 +746,11 @@ final class ChatStore {
 
     /// « Toujours autoriser », like Grok Bot's "Always allow": this kind of action goes to "Tout
     /// seul" in Réglages › Règles, then this one is done now. The fixed limits stay whatever the rule.
-    func approveAlways(_ action: MissionAction, in messageID: UUID) async {
+    /// « Toujours »: for this bot only (Grok Bot's "Always allow for this Bot"), or everywhere.
+    func approveAlways(_ action: MissionAction, in messageID: UUID, onlyThisBot: Bool = false) async {
         guard let kind = action.ruleKind, !emergencyActive, let api = settings.api else { return }
         do {
-            _ = try await api.setRules([kind: "auto"])
+            _ = try await api.setRules([kind: "auto"], assistant: onlyThisBot ? bot(of: messageID) : nil)
         } catch {
             return report("Règle non changée : \(error.localizedDescription)", action: self.action(for: error))
         }
@@ -754,14 +758,19 @@ final class ChatStore {
     }
 
     /// « Toujours autoriser » on a change of settings proposed by a bot: the rule, then « Appliquer ».
-    func applyProposalAlways(_ messageID: UUID) async {
+    func applyProposalAlways(_ messageID: UUID, onlyThisBot: Bool = false) async {
         guard !emergencyActive, let api = settings.api else { return }
         do {
-            _ = try await api.setRules(["reglage": "auto"])
+            _ = try await api.setRules(["reglage": "auto"], assistant: onlyThisBot ? bot(of: messageID) : nil)
         } catch {
             return report("Règle non changée : \(error.localizedDescription)", action: self.action(for: error))
         }
         await applyProposal(messageID)
+    }
+
+    /// The bot whose conversation holds this message; nil for Marcel's.
+    func bot(of messageID: UUID) -> String? {
+        conversations.first { $0.messages.contains { $0.id == messageID } }?.assistantID
     }
 
     /// « Refuser »: what waited is left undone, and the card says so.
@@ -1198,6 +1207,7 @@ final class ChatStore {
                     case .delta: break
                     case .done:
                         finish(replyID, in: conversationID, .complete)
+                        Task { await self.iPhoneAsked(replyID, in: conversationID) }
                         if conversationID == currentID, UserDefaults.standard.bool(forKey: Speaker.autoReadKey),
                            let finished = message(replyID, in: conversationID) {
                             speaker.speak(finished)
@@ -1247,6 +1257,55 @@ final class ChatStore {
         } else {
             report(error, action: action)
         }
+    }
+
+    // MARK: - The iPhone as the bots' hands
+
+    /// A reply ended with an ```iphone``` block the rules let through: done now. Not twice in a row
+    /// though: after an iPhone answer, the next request waits for « Autoriser ».
+    private func iPhoneAsked(_ replyID: UUID, in conversationID: UUID) async {
+        guard let reply = message(replyID, in: conversationID),
+              let action = reply.actions.first(where: { $0.id == "iphone-0" && $0.status == "pending" }),
+              let conversation = conversations.first(where: { $0.id == conversationID }) else { return }
+        let lastUser = conversation.messages.last { $0.role == .user }
+        if lastUser?.via == "iPhone" {
+            let kind = (action.detail ?? "").hasPrefix("Ajouter") ? "iphone_ecriture" : "iphone"
+            updateMessage(replyID, in: conversationID) { message in
+                guard let index = message.actions.firstIndex(where: { $0.id == action.id }) else { return }
+                message.actions[index].id = "auto-ask-\(kind)-0"
+                message.actions[index].status = "cancelled"
+                message.actions[index].detail = (action.detail ?? "").replacingOccurrences(of: "…", with: "") + " — attend ton accord"
+            }
+            persist(conversationID, touch: false)
+            return
+        }
+        await runOnIPhone(action, in: replyID)
+    }
+
+    /// Reads or writes on the iPhone, shows it on the card, then sends what it found to the bot as
+    /// the next message (marked « via iPhone »), which answers with it.
+    func runOnIPhone(_ action: MissionAction, in messageID: UUID) async {
+        guard !emergencyActive, let query = action.query,
+              let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        let id = conversation.id
+        updateMessage(messageID, in: id) { message in
+            guard let index = message.actions.firstIndex(where: { $0.id == action.id }) else { return }
+            message.actions[index].status = "running"
+        }
+        let result = await IPhoneHands.run(query)
+        updateMessage(messageID, in: id) { message in
+            guard let index = message.actions.firstIndex(where: { $0.id == action.id }) else { return }
+            message.actions[index].status = "done"
+            message.actions[index].detail = result.summary
+        }
+        persist(id, touch: false)
+        // The reply that asked has finished streaming by now; wait for it if not.
+        while isStreaming(id) { try? await Task.sleep(for: .milliseconds(200)) }
+        guard let api = settings.api else { return }
+        let answer = ChatMessage(role: .user, content: "📱 " + result.text)
+        mutate(id) { $0.messages.append(answer) }
+        updateMessage(answer.id, in: id) { $0.via = "iPhone" }
+        startReply(in: id, after: answer.id, using: api)
     }
 
     private func api(forServer serverID: UUID?) -> MarcelAPI? {

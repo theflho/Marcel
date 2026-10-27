@@ -145,3 +145,120 @@ def test_a_routine_says_when_it_runs_next():
     paused = client.patch(f"/v1/routines/{made['id']}", headers=AUTH, json={"status": "paused"}).json()
     assert paused["next"] == "En pause" and paused["next_run"] is None
     client.delete(f"/v1/routines/{made['id']}", headers=AUTH)
+
+
+def test_rules_have_three_levels_and_a_bot_can_have_its_own():
+    from app.main import ChatRequest, Message, rule
+
+    general = client.put("/v1/rules", headers=AUTH, json={"rules": {"routine": "off"}}).json()
+    try:
+        check_levels(general, rule, ChatRequest, Message)
+    finally:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"routine": "auto"}})
+        client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"routine": ""}})
+
+
+def check_levels(general, rule, ChatRequest, Message):
+    assert general["rules"]["routine"] == "off"
+    assert client.put("/v1/rules", headers=AUTH, json={"rules": {"routine": ""}}).status_code == 400
+
+    # Planning may do it by itself; the others stay blocked.
+    mine = client.put("/v1/rules", headers=AUTH,
+                      json={"assistant": "planning", "rules": {"routine": "auto"}}).json()
+    assert mine["bots"]["planning"] == {"routine": "auto"}
+    assert rule("routine", "planning") == "auto" and rule("routine", "pointage") == "off"
+    assert client.put("/v1/rules", headers=AUTH,
+                      json={"assistant": "inconnu", "rules": {"routine": "auto"}}).status_code == 404
+
+    # Blocked: the block gives a card saying so, nothing is created.
+    from app import main
+    request = ChatRequest(conversation_id=CONVERSATION, assistant="pointage",
+                          messages=[Message(role="user", content="relance-moi")])
+    before = len(main.routines.list())
+    text = 'Ok.\n```routine\n{"titre": "Relance", "consigne": "x", "une_fois": true}\n```'
+
+    async def run():
+        cards = []
+
+        async def reply(*_):
+            yield text
+
+        async for item in main.with_memory(request, reply, [], [], learn=False):
+            if isinstance(item, dict):
+                cards.append(item)
+        return cards
+
+    import asyncio
+    cards = asyncio.run(run())
+    assert any(c["id"] == "auto-off-routine-0" and "Bloqué" in c["detail"] for c in cards)
+    assert len(main.routines.list()) == before
+
+    client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"routine": ""}})
+    assert "planning" not in client.get("/v1/rules", headers=AUTH).json()["bots"]
+
+
+def test_a_bot_asks_the_iphone_under_the_rules():
+    from app.main import iphone_card, iphone_request
+
+    asked = iphone_request('Je regarde.\n```iphone\n{"lire": "contacts", "chercher": "Paul  Martin"}\n```')
+    assert asked == {"lire": "contacts", "chercher": "Paul Martin"}
+    assert iphone_request('```iphone\n{"lire": "contacts"}\n```') is None
+    assert iphone_request('```iphone\n{"lire": "photos"}\n```') is None
+    assert iphone_request('```iphone\n{"lire": "agenda", "jours": 90}\n```') == {"lire": "agenda", "jours": 14}
+    reminder = iphone_request('```iphone\n{"ajouter_rappel": {"titre": "Appeler Paul", "quand": "2026-10-28T09:00"}}\n```')
+    assert reminder == {"ajouter_rappel": {"titre": "Appeler Paul", "quand": "2026-10-28T09:00"}}
+
+    assert iphone_card(asked, "auto", outside=False)["id"] == "iphone-0"
+    assert iphone_card(asked, "ask", outside=False)["id"] == "auto-ask-iphone-0"
+    # Built on an e-mail: never by itself.
+    assert iphone_card(asked, "auto", outside=True)["id"] == "auto-ask-iphone-0"
+    assert iphone_card(reminder, "off", outside=False)["id"] == "auto-off-iphone_ecriture-0"
+
+
+def test_a_bots_runs_are_read_then_done():
+    from app.main import routines
+
+    routine = routines.add("Point offres", "Fais le point.", assistant="recrutements",
+                           conversation_id=CONVERSATION, task=True)
+    run_id = routines.start_run(routine.id, "")
+    routines.finish_run(run_id, "done")
+    listed = client.get("/v1/assistants/recrutements/runs", headers=AUTH).json()
+    run = next(r for r in listed if r["id"] == run_id)
+    assert run["title"] == "Point offres" and run["task"] and not run["seen"] and not run["done"]
+    seen = client.post(f"/v1/routine-runs/{run_id}/mark", headers=AUTH, json={"seen": True}).json()
+    assert seen["seen"] and not seen["done"]
+    done = client.post(f"/v1/routine-runs/{run_id}/mark", headers=AUTH, json={"done": True}).json()
+    assert done["seen"] and done["done"]
+    assert client.post("/v1/routine-runs/999999/mark", headers=AUTH, json={"seen": True}).status_code == 404
+    assert client.get("/v1/assistants/inconnu/runs", headers=AUTH).status_code == 404
+    routines.delete(routine.id)
+
+
+def test_hermes_stream_shows_a_tool_call_a_few_times_and_says_clear_errors():
+    from app.main import hermes_chunk, hermes_refusal
+    from app.missions import verification
+
+    tools, shown = {}, {}
+
+    def worth(index, tool):
+        name, length = shown.get(index, ("", -100))
+        if tool["name"] != name or len(tool["detail"]) - length >= 60:
+            shown[index] = (tool["name"], len(tool["detail"]))
+            return True
+        return False
+
+    pieces = [{"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call-1",
+                                                      "function": {"name": "terminal", "arguments": ""}}]}}]}]
+    pieces += [{"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "x" * 5}}]}}]}] * 40
+    updates = [item for chunk in pieces for item in hermes_chunk(chunk, tools, lambda: [], worth, True)]
+    assert 1 < len(updates) <= 5 and updates[0]["name"] == "terminal"
+
+    assert "quota" in hermes_refusal(429, '{"error": {"message": "rate limited"}}')
+    assert "clé refusée" in hermes_refusal(401, "")
+    assert "planté" in hermes_refusal(502, "<html>")
+
+    # Marcel's own cards are no unfinished step.
+    cards = [{"id": "auto-ask-routine-0", "name": "Créer une routine", "status": "cancelled"},
+             {"id": "iphone-0", "name": "iPhone", "status": "pending"},
+             {"id": "search", "name": "Recherche web", "status": "cancelled"}]
+    assert verification("Voilà.", cards, []) is None

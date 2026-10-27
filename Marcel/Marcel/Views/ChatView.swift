@@ -214,7 +214,7 @@ struct ChatView: View {
                 }
             } label: {
                 VStack(spacing: -4) {
-                    MarcelAvatar(size: 60, mood: store.modeMood, isThinking: store.isStreaming, cutout: true)
+                    MarcelAvatar(size: 60, bot: store.mode?.id, state: store.face(of: store.conversation))
                     VStack(spacing: 0) {
                         // Like Telegram: while Marcel replies, three dots take the name's place.
                         if store.isStreaming {
@@ -232,7 +232,7 @@ struct ChatView: View {
                         }
                         // "en ligne" when idle; while replying, only what a running step does.
                         if let line = store.isStreaming ? store.runningActivity
-                            : [store.mode?.name, store.headerStatus?.text].compactMap { $0 }.joined(separator: " · ").nilIfEmpty {
+                            : ([store.mode?.name, store.headerStatus?.text].compactMap { $0 }.joined(separator: " · ")).nilIfEmpty {
                             Text(line)
                                 .font(.caption2)
                                 .foregroundStyle(store.isStreaming ? Color.accentColor : .secondary)
@@ -279,15 +279,6 @@ struct ChatView: View {
             Button("Assistants", systemImage: "person.2") {
                 composerFocused = false
                 showAssistants = true
-            }
-            Divider()
-            Menu("Illustration", systemImage: "photo") {
-                // A conversation with an assistant shows its mascot: picking one changes the assistant's.
-                if let assistant = store.mode {
-                    AssistantMoodPicker(assistant: assistant)
-                } else {
-                    MoodPicker(conversation: store.conversation)
-                }
             }
         } label: {
             Image(systemName: "ellipsis")

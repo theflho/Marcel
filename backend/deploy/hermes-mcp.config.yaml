@@ -9,8 +9,10 @@
 # Les outils de lecture (marcel_resume, marcel_planning, marcel_offres, marcel_robot,
 # marcel_historique, marcel_reponse, marcel_memoire, marcel_objectifs, marcel_routines,
 # marcel_chercher) et ceux qui agissent : marcel_retenir, marcel_creer_objectif,
-# marcel_creer_routine, marcel_lancer_routine et les outils de code marcel_code_* (voir README,
-# « Marcel modifie son propre code »). Aucun ne supprime ni n'épingle. Les réponses passées tirées
+# marcel_creer_routine, marcel_lancer_routine, marcel_bot (les bots sur Telegram), marcel_journaux
+# (journaux du serveur) et les outils de code marcel_code_* (voir README, « Marcel modifie son propre
+# code »). Créer un objectif ou une routine suit les règles de l'app (Réglages › Règles) : « Demander »
+# le fait proposer, « Bloqué » le refuse. Aucun ne supprime ni n'épingle. Les réponses passées tirées
 # d'e-mails ou de pièces jointes ne sont jamais renvoyées. Les skills qui vont avec sont dans
 # deploy/hermes-skills/ (copiées dans ~/.hermes/skills/marcel/ par update.sh).
 mcp_servers:
