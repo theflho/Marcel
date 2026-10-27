@@ -49,6 +49,11 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     var isResult: Bool { id.hasPrefix("auto-") }
     /// Waits for "Valider" under an "ask first" rule.
     var awaitsApproval: Bool { id.hasPrefix("auto-ask-") && status == "cancelled" }
+    /// The rule an approval falls under ("objectif", "routine", "recette", "recherche"), for « Toujours autoriser ».
+    var ruleKind: String? {
+        guard awaitsApproval else { return nil }
+        return id.dropFirst("auto-ask-".count).split(separator: "-").first.map(String.init)
+    }
     /// The approval sends the question as a new message, which runs the isolated search.
     var isSearch: Bool { id.hasPrefix("auto-ask-recherche") }
 }
@@ -289,13 +294,19 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
     /// "Chaque lundi à 8 h", written by the server.
     let schedule: String
     let lastRun: RoutineRun?
+    /// The bot it belongs to (a relance, or its standing task); "" for the user's own routines.
+    let assistant: String
+    let isTask: Bool
+    /// When it runs next ("lun. 03/11 à 08:00", "À chaque nouvelle offre", "En pause").
+    let next: String?
 
     var weekdays: Set<Int> { Set(days.split(separator: ",").compactMap { Int($0) }) }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, prompt, days, at, status, schedule, trigger
+        case id, title, prompt, days, at, status, schedule, trigger, assistant, next
         case conversationID = "conversation_id"
         case lastRun = "last_run"
+        case isTask = "task"
     }
 
     init(from decoder: Decoder) throws {
@@ -311,6 +322,9 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
         conversationID = try container.decode(String.self, forKey: .conversationID)
         schedule = try container.decode(String.self, forKey: .schedule)
         lastRun = try container.decodeIfPresent(RoutineRun.self, forKey: .lastRun)
+        assistant = try container.decodeIfPresent(String.self, forKey: .assistant) ?? ""
+        isTask = try container.decodeIfPresent(Bool.self, forKey: .isTask) ?? false
+        next = try container.decodeIfPresent(String.self, forKey: .next)
     }
 }
 

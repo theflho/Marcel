@@ -164,6 +164,29 @@ Ce qui manque encore : pas de notification sur l'iPhone pour un échange Telegra
 était sur Telegram), et une tâche permanente ne fait pas de recherche web (elle demanderait
 « Valider » à quelqu'un d'absent).
 
+### L'interface de Grok Bot, reprise le 27 octobre 2026
+
+Ce que les guides décrivent de l'interface (docs xAI et Cursor, guides iPhone, articles de fond,
+lus en octobre 2026), et ce que Marcel en a pris :
+
+| Grok Bot | Marcel |
+| --- | --- |
+| Cartes d'accord **Allow once / Always allow / Deny**, avec l'action et ses valeurs | « Autoriser une fois », « Toujours » (passe ce type d'action à « Tout seul » dans Règles), « Refuser » ; même chose sur la carte d'un réglage proposé |
+| Profil du bot : interrupteur **Notifications** « quand il a fini ou qu'il t'attend » ; **Open Settings** si l'iPhone les coupe | Fiche › Notifications › « Me prévenir », bouton « Ouvrir Réglages » ; la notification dit « … attend ton accord » quand une carte attend |
+| Profil : ses **routines**, chacune avec **Active**, prochain passage, consigne et **Run history** (réussie, en cours, échec et raison) ; balayer pour supprimer ; **Add routine** ouvre un message | Fiche › Relances : interrupteur, « Prochain », consigne, « Historique » ; balayer pour supprimer ; « Ajouter une relance » ouvre sa conversation avec « Relance-moi » |
+| Barre latérale : **Pin**, **Hide from sidebar**, **Hidden Bots** avec **Show in sidebar** | Appui long sur un bot : « Épingler » (en tête, avec une punaise), « Masquer du menu » ; section « Bots masqués » |
+| Nom du bot en haut du chat → son profil | Déjà là : le nom en haut › « Fiche du bot » |
+| **Stop now**, **Take over**, voix | Déjà là : arrêt, « Je prends la main » (robot RMA), mode vocal |
+
+Pas repris : les chats de groupe entre bots (les guides les disent bruyants et sans cartes d'accord),
+l'ordinateur dans le cloud par bot, et les modèles de bots partagés en équipe.
+
+Sources : [Work with Grok Bot (Cursor)](https://cursor.com/docs/grok-bot/work),
+[Skills and routines (xAI)](https://docs.x.ai/grok-bot/skills-routines-and-automations),
+[Grok Bot on iPhone (Learn Cursor)](https://www.learncursor.dev/learn/cursor-agents/grok-bot-ios),
+[A deep dive into Grok Bot (Flavio Copes)](https://flaviocopes.com/grok-bot/),
+[Grok Bot sur Google Play](https://play.google.com/store/apps/details?id=ai.x.grok.bot&hl=en_US).
+
 ## Chantiers que Marcel peut faire lui-même
 
 Chacun se lance en envoyant le message tel quel à Marcel (mode Marcel). Il suit sa skill

@@ -135,3 +135,13 @@ def test_a_bot_answers_on_telegram_and_the_app_gets_the_exchange(monkeypatch):
     refused = mcp_call("marcel_bot", {"bot": "mails", "message": "quoi de neuf ?"})
     assert refused["isError"] and "reste dans l'app" in refused["content"][0]["text"]
     assert mcp_call("marcel_bot", {"bot": "/inconnu", "message": "?"})["isError"]
+
+
+def test_a_routine_says_when_it_runs_next():
+    made = client.post("/v1/routines", headers=AUTH, json={"title": "Point", "prompt": "Fais le point.",
+                                                           "days": "0", "at": "08:00"}).json()
+    listed = next(r for r in client.get("/v1/routines", headers=AUTH).json() if r["id"] == made["id"])
+    assert listed["next"].startswith("lun.") and listed["next_run"] and listed["task"] is False
+    paused = client.patch(f"/v1/routines/{made['id']}", headers=AUTH, json={"status": "paused"}).json()
+    assert paused["next"] == "En pause" and paused["next_run"] is None
+    client.delete(f"/v1/routines/{made['id']}", headers=AUTH)

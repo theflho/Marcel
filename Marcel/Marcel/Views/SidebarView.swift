@@ -13,6 +13,9 @@ struct SidebarView: View {
     @State private var query = ""
     @State private var expandedProjects: Set<UUID> = []
     @State private var renaming: RenameTarget?
+    /// Bumped when a bot is pinned or hidden, so the list reads BotPrefs again.
+    @State private var botPrefsVersion = 0
+    @State private var hiddenExpanded = false
     @State private var renameText = ""
     @State private var creatingProject = false
     @State private var newProjectName = ""
@@ -101,12 +104,44 @@ struct SidebarView: View {
         .padding(.bottom, 4)
     }
 
+    /// One bot of the menu: Marcel (nil id) or an assistant.
+    private struct BotItem: Identifiable {
+        let id: String?
+        let name: String
+        let mood: MarcelMood
+        var key: String { BotPrefs.key(id) }
+    }
+
+    /// Marcel then the assistants, pinned ones first (like Grok Bot's Pin), hidden ones apart.
+    private var bots: (shown: [BotItem], hidden: [BotItem]) {
+        _ = botPrefsVersion
+        let every = [BotItem(id: nil, name: "Marcel", mood: .tree)]
+            + store.assistants.map { BotItem(id: $0.id, name: $0.name, mood: store.mood(for: $0)) }
+        let pinned = BotPrefs.list(BotPrefs.pinnedKey), hidden = Set(BotPrefs.list(BotPrefs.hiddenKey))
+        let shown = every.filter { !hidden.contains($0.key) }
+        let first = pinned.compactMap { key in shown.first { $0.key == key } }
+        return (first + shown.filter { !pinned.contains($0.key) }, every.filter { hidden.contains($0.key) })
+    }
+
     /// Marcel and the assistants, like Grok Bot's list of bots: touch one to talk to it.
     private var botsSection: some View {
         Section("Bots") {
-            botRow(id: nil, name: "Marcel", mood: .tree)
-            ForEach(store.assistants) { assistant in
-                botRow(id: assistant.id, name: assistant.name, mood: store.mood(for: assistant))
+            let list = bots
+            ForEach(list.shown) { bot in
+                botRow(id: bot.id, name: bot.name, mood: bot.mood)
+                    .contextMenu { botMenu(bot) }
+            }
+            if !list.hidden.isEmpty {
+                DisclosureGroup("Bots masqués (\(list.hidden.count))", isExpanded: $hiddenExpanded) {
+                    ForEach(list.hidden) { bot in
+                        botRow(id: bot.id, name: bot.name, mood: bot.mood)
+                            .contextMenu { botMenu(bot) }
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
             Button {
                 onOpenAssistants()
@@ -120,6 +155,23 @@ struct SidebarView: View {
         }
     }
 
+    @ViewBuilder
+    private func botMenu(_ bot: BotItem) -> some View {
+        let pinned = BotPrefs.contains(BotPrefs.pinnedKey, bot.id)
+        let hidden = BotPrefs.contains(BotPrefs.hiddenKey, bot.id)
+        if !hidden {
+            Button(pinned ? "Désépingler" : "Épingler", systemImage: pinned ? "pin.slash" : "pin") {
+                BotPrefs.set(BotPrefs.pinnedKey, bot.id, !pinned)
+                botPrefsVersion += 1
+            }
+        }
+        Button(hidden ? "Afficher dans le menu" : "Masquer du menu", systemImage: hidden ? "eye" : "eye.slash") {
+            BotPrefs.set(BotPrefs.hiddenKey, bot.id, !hidden)
+            if !hidden { BotPrefs.set(BotPrefs.pinnedKey, bot.id, false) }
+            botPrefsVersion += 1
+        }
+    }
+
     private func botRow(id: String?, name: String, mood: MarcelMood) -> some View {
         let current = store.conversation.assistantID == id && !store.conversation.isPrivate
         return Button {
@@ -129,8 +181,14 @@ struct SidebarView: View {
             HStack(spacing: 10) {
                 MarcelAvatar(size: 36, mood: mood, cutout: true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.body.weight(current ? .semibold : .regular))
+                    HStack(spacing: 4) {
+                        Text(name)
+                            .font(.body.weight(current ? .semibold : .regular))
+                        if BotPrefs.contains(BotPrefs.pinnedKey, id) {
+                            Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary)
+                                .accessibilityLabel("épinglé")
+                        }
+                    }
                     Text(store.lastLine(ofBot: id) ?? "Pas encore de conversation")
                         .font(.caption)
                         .foregroundStyle(.secondary)

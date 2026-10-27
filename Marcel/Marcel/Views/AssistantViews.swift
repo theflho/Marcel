@@ -209,7 +209,7 @@ struct ProposalCard: View {
                 Label(message.autoApplied("reglage") ? "Fait par Marcel" : "Appliqué",
                       systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
             case "cancelled"?:
-                Label("Annulé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
+                Label("Refusé", systemImage: "hand.raised.slash").font(.footnote).foregroundStyle(.secondary)
             default:
                 HStack {
                     Button {
@@ -223,7 +223,18 @@ struct ProposalCard: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(applying || store.emergencyActive)
-                    Button("Annuler") { store.cancelProposal(message.id) }
+                    // Like Grok Bot's "Always allow": settings changes then go to "Tout seul".
+                    Button("Toujours") {
+                        applying = true
+                        Task {
+                            await store.applyProposalAlways(message.id)
+                            applying = false
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(applying || store.emergencyActive)
+                    .accessibilityLabel("Toujours autoriser")
+                    Button("Refuser", role: .destructive) { store.cancelProposal(message.id) }
                         .buttonStyle(.bordered)
                         .disabled(applying)
                 }

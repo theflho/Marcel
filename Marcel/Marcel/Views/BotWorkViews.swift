@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 // What a bot does without being asked, like a Grok Bot: its standing task, the tasks the user
 // taught it, and the skills shared between bots. The model still has no tool: the server runs
@@ -442,6 +443,148 @@ private struct SkillEditor: View {
                 title = skill?.title ?? ""
                 text = skill?.text ?? ""
             }
+        }
+    }
+}
+
+/// Its Notifications switch, like a Grok Bot's profile: "when it has finished or is waiting for you".
+/// It needs the iPhone's permission too; without it, a way to Réglages.
+struct BotNotificationsSection: View {
+    let assistantID: String?
+    @State private var on = true
+    @State private var allowed = true
+
+    var body: some View {
+        Section {
+            Toggle("Me prévenir", isOn: Binding(get: { on }, set: { value in
+                on = value
+                BotPrefs.set(BotPrefs.mutedKey, assistantID, !value)
+            }))
+            if !allowed {
+                Button("Ouvrir Réglages", systemImage: "gear") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+        } header: {
+            Text("Notifications")
+        } footer: {
+            Text(allowed ? "Quand il a fini ou qu'il attend ton accord."
+                 : "Les notifications de Marcel sont coupées sur cet iPhone.")
+        }
+        .task {
+            on = BotPrefs.notifies(assistantID)
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            allowed = settings.authorizationStatus != .denied
+        }
+    }
+}
+
+/// The relances it was asked for, like the routines in a Grok Bot's profile: Active, next run,
+/// instruction and run history; swipe to delete. A new one is asked in its conversation.
+struct BotRoutinesSection: View {
+    @Environment(ChatStore.self) private var store
+    let assistant: Assistant
+    let onAdd: () -> Void
+    @State private var routines: [Routine] = []
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            if routines.isEmpty {
+                Text("Aucune pour l'instant.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(routines) { routine in
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle(isOn: Binding(get: { routine.status == "active" }, set: { active in
+                        Task { await change(routine) { try await $0.updateRoutine(id: routine.id,
+                                                                                   RoutineChange(status: active ? "active" : "paused")) } }
+                    })) {
+                        Text(routine.title).font(.subheadline.weight(.medium))
+                    }
+                    Text(routine.prompt).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    HStack {
+                        Label(routine.next ?? routine.schedule, systemImage: "clock")
+                        Spacer()
+                        NavigationLink("Historique") { RoutineHistoryView(routine: routine) }
+                            .fixedSize()
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .swipeActions {
+                    Button("Supprimer", systemImage: "trash", role: .destructive) {
+                        Task { await change(routine) { try await $0.deleteRoutine(id: routine.id) } }
+                    }
+                }
+            }
+            Button("Ajouter une relance", systemImage: "plus", action: onAdd)
+            if let error {
+                Text(error).font(.footnote).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Relances")
+        } footer: {
+            Text("Une relance se demande dans sa conversation : « relance-moi chaque lundi à 9 h pour… ».")
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !store.emergencyActive, let api = store.settings.api else { return }
+        do {
+            routines = try await api.routines().filter { $0.assistant == assistant.id && !$0.isTask }
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func change(_ routine: Routine, _ work: (MarcelAPI) async throws -> Void) async {
+        guard !store.emergencyActive, let api = store.settings.api else { return }
+        do {
+            try await work(api)
+            await load()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// A routine's last runs: done, running or failed, with the reason.
+private struct RoutineHistoryView: View {
+    @Environment(ChatStore.self) private var store
+    let routine: Routine
+    @State private var runs: [RoutineRun] = []
+
+    var body: some View {
+        List {
+            if runs.isEmpty {
+                Text("Pas encore passée.").font(.footnote).foregroundStyle(.secondary)
+            }
+            ForEach(runs) { run in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Label(run.status == "done" ? "Réussie" : run.status == "running" ? "En cours" : "Échec",
+                              systemImage: run.status == "done" ? "checkmark.circle.fill"
+                                : run.status == "running" ? "hourglass" : "exclamationmark.circle")
+                            .foregroundStyle(run.status == "failed" ? .red : .primary)
+                        Spacer()
+                        Text(run.at, format: .dateTime.day().month().hour().minute()).foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                    if !run.error.isEmpty {
+                        Text(run.error).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle(routine.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard let api = store.settings.api else { return }
+            runs = (try? await api.routineRuns(id: routine.id)) ?? []
         }
     }
 }

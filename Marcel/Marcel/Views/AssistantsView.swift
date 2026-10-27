@@ -105,6 +105,14 @@ private struct AssistantDetailView: View {
 
                 BotTaskSection(assistant: assistant)
 
+                BotRoutinesSection(assistant: assistant) {
+                    // Like Grok Bot's "Add routine": it is asked in the bot's conversation.
+                    onStart(assistant)
+                    store.draft = "Relance-moi "
+                }
+
+                BotNotificationsSection(assistantID: assistant.id)
+
                 if let reads = assistant.reads, !reads.isEmpty {
                     Section {
                         ForEach(reads) { read in

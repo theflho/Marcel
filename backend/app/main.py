@@ -2287,8 +2287,12 @@ async def mock_routine_stream(routine) -> AsyncIterator[str | dict]:
 
 
 def routine_public(routine) -> dict:
+    """With its next run, said like Grok Bot's routine rows ("Next run")."""
     runs = routines.runs(routine.id, limit=1)
-    return routine.public() | {"last_run": runs[0] if runs else None}
+    upcoming = next_slot(routine, time.time(), USER_TZ)
+    return routine.public() | {"last_run": runs[0] if runs else None, "next_run": upcoming,
+                               "next": local_time(upcoming) if upcoming else
+                               routine.schedule if routine.status == "active" else "En pause"}
 
 
 @app.get("/v1/routines", dependencies=[Depends(require_token)])

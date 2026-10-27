@@ -741,6 +741,36 @@ final class ChatStore {
         }
     }
 
+    /// « Toujours autoriser », like Grok Bot's "Always allow": this kind of action goes to "Tout
+    /// seul" in Réglages › Règles, then this one is done now. The fixed limits stay whatever the rule.
+    func approveAlways(_ action: MissionAction, in messageID: UUID) async {
+        guard let kind = action.ruleKind, !emergencyActive, let api = settings.api else { return }
+        do {
+            _ = try await api.setRules([kind: "auto"])
+        } catch {
+            return report("Règle non changée : \(error.localizedDescription)", action: self.action(for: error))
+        }
+        await approve(action, in: messageID)
+    }
+
+    /// « Toujours autoriser » on a change of settings proposed by a bot: the rule, then « Appliquer ».
+    func applyProposalAlways(_ messageID: UUID) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            _ = try await api.setRules(["reglage": "auto"])
+        } catch {
+            return report("Règle non changée : \(error.localizedDescription)", action: self.action(for: error))
+        }
+        await applyProposal(messageID)
+    }
+
+    /// « Refuser »: what waited is left undone, and the card says so.
+    func decline(_ action: MissionAction, in messageID: UUID) {
+        guard let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
+        updateMessage(messageID, in: conversation.id) { $0.declined.append(action.id) }
+        persist(conversation.id, touch: false)
+    }
+
     /// The user took back what Marcel did himself at the end of a reply ("Annuler" on its result).
     func undo(_ action: MissionAction, in messageID: UUID) async {
         guard let undo = action.undo, !emergencyActive,

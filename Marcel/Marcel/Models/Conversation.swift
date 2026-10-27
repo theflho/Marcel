@@ -29,6 +29,8 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var undone: [String] = []
     /// Where the user wrote it when not in the app ("Telegram"), said under the message.
     var via: String?
+    /// What waited for the user's go-ahead and was refused (« Refuser »), by action id.
+    var declined: [String] = []
 
     init(id: UUID = UUID(), role: Role, content: String, status: Status = .complete,
          createdAt: Date = .now, attachments: [Attachment] = [], serverID: UUID? = nil, model: String? = nil) {
@@ -43,7 +45,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision, undone, via
+        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision, undone, via, declined
     }
 
     init(from decoder: Decoder) throws {
@@ -62,6 +64,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         proposalDecision = try container.decodeIfPresent(String.self, forKey: .proposalDecision)
         undone = try container.decodeIfPresent([String].self, forKey: .undone) ?? []
         via = try container.decodeIfPresent(String.self, forKey: .via)
+        declined = try container.decodeIfPresent([String].self, forKey: .declined) ?? []
     }
 }
 

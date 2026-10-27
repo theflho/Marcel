@@ -238,7 +238,8 @@ struct StepsLine: View {
 }
 
 /// What Marcel did himself at the end of his reply ("✓ 3 missions ajoutées"), with "Annuler"
-/// when it can be taken back.
+/// when it can be taken back. What waits for the user gets Grok Bot's three answers: once, always
+/// (this kind of action goes to "Tout seul" in Règles), or refuse.
 struct ResultRow: View {
     @Environment(ChatStore.self) private var store
     let action: MissionAction
@@ -247,48 +248,64 @@ struct ResultRow: View {
     @State private var undoing = false
 
     private var undone: Bool { message.undone.contains(action.id) }
+    private var declined: Bool { message.declined.contains(action.id) }
+    private var waiting: Bool { action.awaitsApproval && !declined }
     private var done: Bool { action.status == "done" }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: undone ? "arrow.uturn.backward.circle" : done ? "checkmark.circle.fill"
-                  : action.awaitsApproval ? "hand.raised.circle" : "xmark.circle")
-                .foregroundStyle(undone ? Color.secondary : done ? Color.green : action.awaitsApproval ? Color.accentColor : Color.orange)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(action.detail?.isEmpty == false ? action.detail! : (action.name ?? "Fait"))
-                    .font(.footnote.weight(.medium))
-                    .strikethrough(undone)
-                    .foregroundStyle(undone ? .secondary : .primary)
-                if undone {
-                    Text("Annulé").font(.caption2).foregroundStyle(.secondary)
-                } else if let name = action.name {
-                    Text(name).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-            if action.awaitsApproval {
-                Button {
-                    undoing = true
-                    Task {
-                        await store.approve(action, in: message.id)
-                        undoing = false
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: undone ? "arrow.uturn.backward.circle" : done ? "checkmark.circle.fill"
+                      : declined ? "hand.raised.slash" : waiting ? "hand.raised.circle" : "xmark.circle")
+                    .foregroundStyle(undone || declined ? Color.secondary : done ? Color.green
+                                     : waiting ? Color.accentColor : Color.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(action.detail?.isEmpty == false ? action.detail! : (action.name ?? "Fait"))
+                        .font(.footnote.weight(.medium))
+                        .strikethrough(undone || declined)
+                        .foregroundStyle(undone || declined ? .secondary : .primary)
+                    if undone {
+                        Text("Annulé").font(.caption2).foregroundStyle(.secondary)
+                    } else if declined {
+                        Text("Refusé").font(.caption2).foregroundStyle(.secondary)
+                    } else if let name = action.name {
+                        Text(name).font(.caption2).foregroundStyle(.secondary)
                     }
-                } label: {
-                    if undoing { ProgressView().controlSize(.mini) } else { Text("Valider") }
                 }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(undoing || store.emergencyActive)
+                Spacer(minLength: 0)
+                if done, !undone, action.undo != nil {
+                    Button {
+                        confirming = true
+                    } label: {
+                        if undoing { ProgressView().controlSize(.mini) } else { Text("Annuler") }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(undoing || store.emergencyActive)
+                }
             }
-            if done, !undone, action.undo != nil {
-                Button {
-                    confirming = true
-                } label: {
-                    if undoing { ProgressView().controlSize(.mini) } else { Text("Annuler") }
+            if waiting {
+                HStack(spacing: 6) {
+                    Button {
+                        answer { await store.approve(action, in: message.id) }
+                    } label: {
+                        if undoing { ProgressView().controlSize(.mini) } else { Text("Autoriser une fois") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    if action.ruleKind != nil {
+                        Button("Toujours") {
+                            answer { await store.approveAlways(action, in: message.id) }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Toujours autoriser")
+                    }
+                    Button("Refuser", role: .destructive) {
+                        store.decline(action, in: message.id)
+                    }
+                    .buttonStyle(.bordered)
                 }
                 .font(.caption.weight(.semibold))
-                .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(undoing || store.emergencyActive)
             }
@@ -307,6 +324,14 @@ struct ResultRow: View {
             Button("Non", role: .cancel) {}
         } message: {
             Text(action.detail ?? "")
+        }
+    }
+
+    private func answer(_ work: @escaping () async -> Void) {
+        undoing = true
+        Task {
+            await work()
+            undoing = false
         }
     }
 }
