@@ -122,6 +122,8 @@ private struct AssistantDetailView: View {
 
                 BotNotificationsSection(assistantID: assistant.id)
 
+                BotAutomationsSection(assistant: assistant)
+
                 BotRulesSection(assistantID: assistant.id)
 
                 if let reads = assistant.reads, !reads.isEmpty {

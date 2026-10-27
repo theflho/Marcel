@@ -593,8 +593,10 @@ final class ChatStore {
     }
 
     /// Pointage's settings are carried out by the iPhone: reminders are scheduled again when they change.
+    /// Read from the bot that carries them (Pointage RMA, or one of the user's bots they were handed to).
     private func applyLocalSettings() {
-        guard let pointage = assistants.first(where: { $0.id == "pointage" }) else { return }
+        guard let pointage = assistants.first(where: { $0.carries("pointage") })
+                ?? assistants.first(where: { $0.id == "pointage" }) else { return }
         if WorkReminders.apply(pointage) { Task { await syncPlanning(force: true) } }
     }
 
@@ -733,6 +735,17 @@ final class ChatStore {
     }
 
     /// Deletes an assistant the user made; its conversations stay, back with Marcel.
+    /// Hands an automation to a bot (one of the user's, or its system bot to take it back).
+    func handOver(_ automation: String, to assistantID: String) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            assistants = try await api.handOver(automation: automation, to: assistantID)
+            applyLocalSettings()
+        } catch {
+            report("Automatisme non déplacé : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
     func deleteAssistant(_ assistant: Assistant) async {
         guard assistant.isCustom, !emergencyActive, let api = settings.api else { return }
         do {
@@ -742,6 +755,8 @@ final class ChatStore {
                 mutate(conversation.id) { $0.assistantID = nil }
                 persist(conversation.id, touch: false)
             }
+            // What it carried went back to the system bots.
+            if assistant.automations?.contains(where: \.carried) == true { await refreshAssistants() }
         } catch {
             report("Assistant non supprimé : \(error.localizedDescription)", action: action(for: error))
         }

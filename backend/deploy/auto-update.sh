@@ -37,8 +37,12 @@ healthy() {
 }
 
 skills() {  # Les skills de Marcel pour Hermes (~/.hermes/skills/marcel/), lues au prochain lancement.
-  mkdir -p "$HOME/.hermes/skills/marcel"
-  cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
+  # ~/.hermes appartient à l'utilisateur du conteneur Hermes (10000) : copie avec sudo, puis à lui.
+  local owner
+  owner=$(stat -c %u:%g "$HOME/.hermes")
+  sudo mkdir -p "$HOME/.hermes/skills/marcel"
+  sudo cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
+  sudo chown -R "$owner" "$HOME/.hermes/skills/marcel"
 }
 
 hermes_container=$(grep -E '^MARCEL_HERMES_CONTAINER=' .env | cut -d= -f2- || true)

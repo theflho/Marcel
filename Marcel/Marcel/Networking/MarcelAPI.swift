@@ -557,6 +557,27 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     let skills: [SkillChoice]?
     /// What it does alone, at its hour or on its event; nil when it has none.
     let task: BotTask?
+    /// The RMA automations it carries or could carry (a server not updated yet sends none).
+    let automations: [Automation]?
+
+    /// An automation of a system bot (reading the portal, pointage reminders, offer notifications),
+    /// which the user can hand to one of their bots and take back. One bot carries it at a time.
+    struct Automation: Decodable, Hashable, Sendable, Identifiable {
+        let key: String
+        let label: String
+        let origin: String
+        let originName: String
+        let owner: String
+        let ownerName: String
+        let carried: Bool
+        var id: String { key }
+
+        enum CodingKeys: String, CodingKey {
+            case key, label, origin, owner, carried
+            case originName = "origin_name"
+            case ownerName = "owner_name"
+        }
+    }
 
     /// A task taught once (« Apprends-moi une tâche »): a title and its steps.
     struct Recipe: Decodable, Hashable, Sendable, Identifiable {
@@ -615,6 +636,9 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
         }
     }
     var isCustom: Bool { custom ?? false }
+    func carries(_ automation: String) -> Bool {
+        automations?.first { $0.key == automation }?.carried ?? false
+    }
 }
 
 /// A recruitment offer from the RMA portal, waiting for the user's answer (`/v1/offers`).
@@ -1343,6 +1367,11 @@ nonisolated struct MarcelAPI: Sendable {
     func createAssistant(_ draft: AssistantDraft) async throws -> Assistant {
         try await call("POST", "v1/assistants",
                        body: AssistantCreate(name: draft.nom, mission: draft.mission, mood: draft.mood.rawValue))
+    }
+
+    /// Hands an automation to one of the user's bots, or back to its system bot. Returns every bot.
+    func handOver(automation: String, to assistantID: String) async throws -> [Assistant] {
+        try await call("PUT", "v1/automations/\(automation)", body: ["assistant": assistantID])
     }
 
     func deleteAssistant(id: String) async throws {

@@ -262,3 +262,49 @@ def test_hermes_stream_shows_a_tool_call_a_few_times_and_says_clear_errors():
              {"id": "iphone-0", "name": "iPhone", "status": "pending"},
              {"id": "search", "name": "Recherche web", "status": "cancelled"}]
     assert verification("Voilà.", cards, []) is None
+
+
+def test_a_bot_of_the_user_carries_the_automations_and_gives_them_back():
+    from app.main import assistants, bot_context
+    made = client.post("/v1/assistants", headers=AUTH,
+                       json={"name": "Cockpit test", "mission": "Réunir planning, pointage et offres", "mood": "tree"}).json()
+    cockpit = made["id"]
+    try:
+        client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 7}})
+        client.patch("/v1/assistants/pointage", headers=AUTH, json={"changes": {"lead_minutes": 12}})
+        # Only from the app, and only to one of the user's bots (or back to its own).
+        assert client.put("/v1/automations/lecture", headers=AUTH, json={"assistant": "mails"}).status_code == 400
+        assert client.put("/v1/automations/inconnu", headers=AUTH, json={"assistant": cockpit}).status_code == 400
+        for key in ("lecture", "pointage", "offres"):
+            assert client.put(f"/v1/automations/{key}", headers=AUTH, json={"assistant": cockpit}).status_code == 200
+
+        bots_now = {b["id"]: b for b in client.get("/v1/assistants", headers=AUTH).json()}
+        mine = {s["key"]: s["value"] for s in bots_now[cockpit]["settings"]}
+        # Same values as before the move: nothing changes but who carries it.
+        assert mine["hour"] == 7 and mine["lead_minutes"] == 12 and mine["notify"] is True and "role" in mine
+        assert all(a["carried"] for a in bots_now[cockpit]["automations"])
+        # The system bots lost them: no second reading, no double notification.
+        assert "hour" not in {s["key"] for s in bots_now["planning"]["settings"]}
+        assert not {s["key"] for s in bots_now["pointage"]["settings"]} & {"lead_minutes", "start_text"}
+        assert "notify" not in {s["key"] for s in bots_now["recrutements"]["settings"]}
+        assert bots_now["planning"]["automations"][0]["owner"] == cockpit
+        assert assistants.actions("planning") == {} and "relire" in assistants.actions(cockpit)
+        assert client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 9}}).status_code == 400
+
+        # Same bounds as the system bots, and the robot reads the hour from the bot that carries it.
+        assert client.patch(f"/v1/assistants/{cockpit}", headers=AUTH, json={"changes": {"hour": 3}}).status_code == 400
+        client.patch(f"/v1/assistants/{cockpit}", headers=AUTH, json={"changes": {"hour": 8}, "actions": ["relire"]})
+        assert assistants.automation_value("hour") == 8
+        assert "Lecture du portail RMA" in bot_context(assistants.find(cockpit))[0]
+        assert "ne le règles plus" in bot_context(assistants.find("planning"))[0]
+
+        # Taken back with the values it had in the meantime.
+        assert client.put("/v1/automations/lecture", headers=AUTH, json={"assistant": "planning"}).status_code == 200
+        assert assistants.value("planning", "hour") == 8 and "relire" in assistants.actions("planning")
+    finally:
+        client.delete(f"/v1/assistants/{cockpit}", headers=AUTH)
+    # Deleting the bot gives back what it carried.
+    assert assistants.owners() == {"lecture": "planning", "pointage": "pointage", "offres": "recrutements"}
+    assert assistants.value("pointage", "lead_minutes") == 12
+    client.patch("/v1/assistants/planning", headers=AUTH, json={"changes": {"hour": 19}})
+    client.patch("/v1/assistants/pointage", headers=AUTH, json={"changes": {"lead_minutes": 5}})

@@ -215,6 +215,33 @@ def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> A
 # Settings kept by another store (the proactive settings for Veille).
 EXTERNAL = {"veille"}
 
+
+@dataclass(frozen=True)
+class Automation:
+    """Something a system bot carries (its settings and actions), which the user may hand to one of
+    their own bots, like a « Cockpit RMA » gathering planning, pointage and offers. One bot carries
+    it at a time: the other one loses its settings, so the portal isn't read twice and nothing is
+    notified twice. Handing it over, or back, is done only by the user, in the bot's card."""
+    key: str
+    label: str
+    origin: str  # the system bot that carries it by default
+    settings: tuple[str, ...]
+    actions: tuple[str, ...] = ()
+
+
+AUTOMATIONS: tuple[Automation, ...] = (
+    Automation("lecture", "Lecture du portail RMA", "planning", ("hour",), ("relire",)),
+    Automation("pointage", "Rappels de pointage", "pointage",
+               ("lead_minutes", "start_reminder", "end_reminder", "start_text", "end_text")),
+    Automation("offres", "Notifications d'offres", "recrutements", ("notify",), ("relire",)),
+)
+AUTOMATION_BY_KEY = {a.key: a for a in AUTOMATIONS}
+CARRIED_ROLE = (
+    "\nL'utilisateur t'a confié ces automatismes, que tu règles comme le bot d'origine, avec les mêmes bornes "
+    "(le robot lit le portail RMA en lecture seule : il ne répond à aucune offre et ne pointe jamais) :\n{lines}")
+GIVEN_ROLE = ("\nL'utilisateur a confié « {label} » à son bot « {name} » : ici, tu ne le règles plus. "
+              "Si on te le demande, dis-le, et qu'il peut le reprendre dans ta fiche.")
+
 # Questions the user might ask next, shown as buttons under the reply (the app hides the block).
 FOLLOWUP_BLOCK = re.compile(r"```suivi[ \t]*\n?.*?```", re.DOTALL)
 FOLLOWUPS = """- Suites : termine chaque réponse par une ou deux questions courtes (moins de 50 caractères) que
@@ -379,14 +406,87 @@ class AssistantStore:
         return [custom_assistant(*row) for row in rows]
 
     def all(self) -> list[Assistant]:
-        return list(ASSISTANTS) + self.custom()
+        return [self._carrying(a) for a in list(ASSISTANTS) + self.custom()]
 
     def find(self, assistant_id: str) -> Assistant | None:
         if assistant_id in BY_ID:
-            return BY_ID[assistant_id]
+            return self._carrying(BY_ID[assistant_id])
         row = self._db.execute("SELECT id, name, mood, mission FROM custom_assistants WHERE id = ?",
                                (assistant_id,)).fetchone()
-        return custom_assistant(*row) if row else None
+        return self._carrying(custom_assistant(*row)) if row else None
+
+    # MARK: Automations handed to the user's own bots
+
+    def owners(self) -> dict[str, str]:
+        """Which bot carries each automation: its system bot, unless the user handed it to one of theirs."""
+        saved = self.state("automation_owners", {})
+        custom = {row[0] for row in self._db.execute("SELECT id FROM custom_assistants")}
+        return {a.key: saved[a.key] if saved.get(a.key) in custom else a.origin for a in AUTOMATIONS}
+
+    def owner(self, automation: str) -> str:
+        return self.owners()[automation]
+
+    def carried(self, assistant_id: str) -> list[Automation]:
+        return [a for a in AUTOMATIONS if self.owner(a.key) == assistant_id]
+
+    def automation_value(self, key: str):
+        """A setting of an automation, read from the bot that carries it now (« hour », « notify »…)."""
+        automation = next(a for a in AUTOMATIONS if key in a.settings)
+        return self.value(self.owner(automation.key), key)
+
+    def actions(self, assistant_id: str) -> dict[str, str]:
+        """What it can have done right away: its own actions and those of what it carries, less those it gave."""
+        own = dict(ACTIONS.get(assistant_id, {}))
+        for automation in AUTOMATIONS:
+            if automation.origin == assistant_id and self.owner(automation.key) != assistant_id:
+                for key in automation.actions:
+                    own.pop(key, None)
+        for automation in self.carried(assistant_id):
+            own.update({key: ACTIONS[automation.origin][key] for key in automation.actions})
+        return own
+
+    def hand_over(self, automation: str, assistant_id: str) -> None:
+        """Hands an automation to a bot of the user's, or back to its system bot, with its current values,
+        so nothing changes but who carries it. ValueError for anything else."""
+        found = AUTOMATION_BY_KEY.get(automation)
+        if not found:
+            raise ValueError(f"Automatisme inconnu : {automation}.")
+        target = self.find(assistant_id)
+        if not target or not (target.custom or assistant_id == found.origin):
+            raise ValueError(f"« {found.label} » ne peut aller qu'à l'un de tes bots, ou revenir à son bot d'origine.")
+        current = self.owner(automation)
+        if current == assistant_id:
+            return
+        values = {key: self.automation_value(key) for key in found.settings}
+        self.save(assistant_id, values)
+        saved = self.state("automation_owners", {})
+        if assistant_id == found.origin:
+            saved.pop(automation, None)
+        else:
+            saved[automation] = assistant_id
+        self.set_state("automation_owners", saved)
+
+    def _carrying(self, assistant: Assistant) -> Assistant:
+        """The bot as it is now: with the settings of what it carries, without those it handed over."""
+        owners = self.owners()
+        given = [a for a in AUTOMATIONS if a.origin == assistant.id and owners[a.key] != assistant.id]
+        taken = [a for a in AUTOMATIONS if owners[a.key] == assistant.id and a.origin != assistant.id]
+        if not given and not taken:
+            return assistant
+        dropped = {key for a in given for key in a.settings}
+        added = tuple(BY_ID[a.origin].setting(key) for a in taken for key in a.settings)
+        role = assistant.role
+        if taken:
+            role += CARRIED_ROLE.format(lines="\n".join(f"- {a.label} (repris de « {BY_ID[a.origin].name} »)"
+                                                         for a in taken))
+        for a in given:
+            row = self._db.execute("SELECT name FROM custom_assistants WHERE id = ?", (owners[a.key],)).fetchone()
+            role += GIVEN_ROLE.format(label=a.label, name=row[0] if row else owners[a.key])
+        # The custom role is formatted with its mission later: keep its braces for that only.
+        if assistant.custom:
+            role = assistant.role + role[len(assistant.role):].replace("{", "{{").replace("}", "}}")
+        return replace(assistant, role=role,
+                       settings=tuple(s for s in assistant.settings if s.key not in dropped) + added)
 
     def create(self, name: str, mission: str, mood: str) -> Assistant:
         name, mission = " ".join(name.split()), " ".join(mission.split())
@@ -407,6 +507,10 @@ class AssistantStore:
         return self.find(assistant_id)
 
     def delete(self, assistant_id: str) -> bool:
+        # What it carried goes back to its system bot, with the values it had.
+        for automation in self.carried(assistant_id):
+            if automation.origin != assistant_id:
+                self.hand_over(automation.key, automation.origin)
         cursor = self._db.execute("DELETE FROM custom_assistants WHERE id = ?", (assistant_id,))
         self._db.execute("DELETE FROM assistant_settings WHERE assistant = ?", (assistant_id,))
         self._db.execute("DELETE FROM assistant_instructions WHERE assistant = ?", (assistant_id,))
@@ -624,11 +728,11 @@ def words(raw: str) -> list[str]:
     return [w.strip().lower() for w in raw.split(",") if w.strip()]
 
 
-def actions_note(assistant_id: str) -> str:
-    return "\n".join(f"- {key} : {label}" for key, label in ACTIONS.get(assistant_id, {}).items()) or "(aucune)"
+def actions_note(actions: dict[str, str]) -> str:
+    return "\n".join(f"- {key} : {label}" for key, label in actions.items()) or "(aucune)"
 
 
-def overview(assistants: list[Assistant], values) -> str:
+def overview(assistants: list[Assistant], values, actions_of) -> str:
     """Every assistant with its settings, for Marcel's own conversations."""
     lines = []
     for assistant in assistants:
@@ -637,17 +741,18 @@ def overview(assistants: list[Assistant], values) -> str:
                               + (f" ({s.minimum}-{s.maximum})" if s.kind == "int" else "")
                               + (f" ({'/'.join(v for v, _ in s.choices)})" if s.kind == "choice" else "")
                               for s in assistant.settings)
-        actions = ", ".join(ACTIONS.get(assistant.id, {}))
+        actions = ", ".join(actions_of(assistant.id))
         lines.append(f"- {assistant.id} ({assistant.name}) : {settings or 'aucun réglage'}"
                      + (f" ; actions : {actions}" if actions else ""))
     return OVERVIEW_PROMPT.format(lines="\n".join(lines))
 
 
 def prompt(assistant: Assistant, values: dict, instructions: list[dict], recipes: list[dict] = (),
-           skills: list[dict] = ()) -> str:
+           skills: list[dict] = (), actions: dict[str, str] | None = None) -> str:
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        followups=FOLLOWUPS, name=assistant.name, role=role, actions=actions_note(assistant.id),
+        followups=FOLLOWUPS, name=assistant.name, role=role,
+        actions=actions_note(ACTIONS.get(assistant.id, {}) if actions is None else actions),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)",
         skills="\n\n".join(f"« {s['title']} » :\n{s['text']}" for s in skills) or "(aucune)",

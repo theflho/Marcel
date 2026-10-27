@@ -22,8 +22,11 @@ for _ in $(seq 1 30); do
 done
 
 # Les skills de Marcel pour Hermes (~/.hermes/skills/marcel/), lues au prochain lancement.
-mkdir -p "$HOME/.hermes/skills/marcel"
-cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
+# ~/.hermes appartient à l'utilisateur du conteneur Hermes (10000) : copie avec sudo, puis à lui.
+owner=$(stat -c %u:%g "$HOME/.hermes")
+sudo mkdir -p "$HOME/.hermes/skills/marcel"
+sudo cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
+sudo chown -R "$owner" "$HOME/.hermes/skills/marcel"
 
 if [[ "${1:-}" == "--try" ]]; then
   docker compose exec marcel-api python -m app.try_proactive

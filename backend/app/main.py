@@ -544,7 +544,7 @@ def assistants_note(request: ChatRequest) -> str:
     recent = " ".join(m.content for m in request.messages[-6:] if m.role == "user")
     if not BOT_WORDS.search(recent):
         return ""
-    return bots.overview(assistants.all(), assistant_values)
+    return bots.overview(assistants.all(), assistant_values, assistants.actions)
 
 
 # garde-fou : recherche web isolée
@@ -739,7 +739,8 @@ def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> 
     the Mails bot alone. Also whether it may ask for an isolated web search."""
     picked = reads_of(assistant)
     parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id),
-                         assistants.recipes(assistant.id), assistants.chosen_skills(assistant.id)),
+                         assistants.recipes(assistant.id), assistants.chosen_skills(assistant.id),
+                         assistants.actions(assistant.id)),
              planning_note() if "planning" in picked else "",
              offers.context(open_offers()) if "offres" in picked else "",
              robot_note() if "robot" in picked else "",
@@ -2615,7 +2616,7 @@ async def planning_config(x_planning_key: str = Header(default="")) -> dict:
     """For the rma robot: when to read (the Planning assistant's setting)."""
     if not PLANNING_KEY or not secrets.compare_digest(x_planning_key, PLANNING_KEY):
         raise HTTPException(401, "Invalid key")
-    return {"hour": assistants.value("planning", "hour"), "read_now": bool(assistants.state("read_now", False)),
+    return {"hour": assistants.automation_value("hour"), "read_now": bool(assistants.state("read_now", False)),
             "hands": bool(assistants.state("hands", False))}
 
 
@@ -2871,7 +2872,7 @@ async def offer_answered(offer_id: str, body: OfferAnswered, x_planning_key: str
 @app.get("/v1/offers", dependencies=[Depends(require_token)])
 async def get_offers() -> dict:
     """Waiting offers (days in seconds since 1970) and whether the user wants to hear of new ones."""
-    return {"notify": assistants.value("recrutements", "notify"), "offers": open_offers()}
+    return {"notify": assistants.automation_value("notify"), "offers": open_offers()}
 
 
 # MARK: Assistants
@@ -3012,7 +3013,36 @@ def assistant_public(assistant: bots.Assistant) -> dict:
             "recipes": assistants.recipes(assistant.id),
             "skills": [{"id": s["id"], "title": s["title"], "on": s["id"] in chosen}
                        for s in assistants.skills()],
-            "task": task_public(assistant)}
+            "task": task_public(assistant),
+            "automations": automations_of(assistant)}
+
+
+def automations_of(assistant: bots.Assistant) -> list[dict]:
+    """What its card says about the automations: the ones it carries, and those it may take or give back.
+    A system bot lists its own; one of the user's bots lists them all."""
+    owners = assistants.owners()
+    names = {a.id: a.name for a in assistants.all()}
+    return [{"key": a.key, "label": a.label, "origin": a.origin, "origin_name": names[a.origin],
+             "owner": owners[a.key], "owner_name": names.get(owners[a.key], owners[a.key]),
+             "carried": owners[a.key] == assistant.id}
+            for a in bots.AUTOMATIONS if assistant.custom or a.origin == assistant.id]
+
+
+class HandOver(BaseModel):
+    # The bot that carries it from now on: one of the user's bots, or its system bot to take it back.
+    assistant: str = Field(max_length=40)
+
+
+@app.put("/v1/automations/{key}", dependencies=[Depends(require_token)])
+async def hand_over_automation(key: str, body: HandOver) -> list[dict]:
+    """The user hands an automation to one of their bots, or takes it back (its card). Only from the
+    app: no reply of Marcel's can do it."""
+    try:
+        assistants.hand_over(key, body.assistant)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    log.info("Automatisme %s confié à %s", key, body.assistant)
+    return [assistant_public(a) for a in assistants.all()]
 
 
 def task_public(assistant: bots.Assistant) -> dict | None:
@@ -3101,7 +3131,7 @@ def apply_update(assistant: bots.Assistant, raw_changes: dict, instruction: str,
     if not isinstance(raw_changes, dict):
         raise ValueError("réglages illisibles")
     changes = bots.clean_changes(assistant, raw_changes)
-    allowed = bots.ACTIONS.get(assistant.id, {})
+    allowed = assistants.actions(assistant.id)
     if unknown := [a for a in actions if a not in allowed]:
         raise ValueError(f"Action inconnue pour {assistant.name} : {', '.join(unknown)}.")
     instruction = instruction.strip()
