@@ -145,6 +145,25 @@ une page peut mentir ou donner un lien vers un faux site ; le moteur voit la que
 vont qu'au modèle direct, sans outil : si le serveur n'en a pas (`MARCEL_MEMORY_LLM_URL` absent),
 la recherche reste coupée.
 
+### Chantiers 7 à 10, faits le 27 octobre 2026
+
+- **Tâche permanente** : une par bot, réglée dans sa fiche, à une heure fixe ou sur un événement
+  (offre, planning, e-mail, expéditeur). Elle tourne avec ce que le bot lit, ses consignes, ses
+  skills et ses tâches apprises, sur le modèle seul, sans outil. Elle ne peut finir que par une
+  action de ce bot (bloc `reglage`), faite seule ou laissée à « Appliquer » selon Réglages › Règles,
+  et jamais seule après un e-mail. La fiche montre le dernier travail et le prochain réveil.
+- **Tâches apprises** : « apprends à… » → bloc `recette` (titre et étapes), montré sous la réponse
+  avec « Annuler » (ou « Valider » selon la règle « Retenir une tâche apprise »), puis dans la fiche,
+  où on le modifie ou l'efface. Le bot les refait sur demande ou dans sa tâche permanente.
+- **Skills des bots** : des consignes écrites une fois, cochées bot par bot. Que du texte.
+- **Telegram** : « /planning … », « /offresrma … » → Hermes appelle `marcel_bot`, qui lance la même
+  mission que dans l'app et renvoie la réponse. Une conversation par bot, que l'app reprend sous ce
+  bot (« via Telegram »). Le bot Mails reste dans l'app.
+
+Ce qui manque encore : pas de notification sur l'iPhone pour un échange Telegram (l'utilisateur
+était sur Telegram), et une tâche permanente ne fait pas de recherche web (elle demanderait
+« Valider » à quelqu'un d'absent).
+
 ## Chantiers que Marcel peut faire lui-même
 
 Chacun se lance en envoyant le message tel quel à Marcel (mode Marcel). Il suit sa skill
@@ -193,7 +212,7 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > « page » : un petit tableau Markdown (missions de la semaine, offres en attente, objectifs)
 > recalculé par le serveur à chaque ouverture, sans modèle. Commence par Planning et Recrutements.
 
-### 7. Un bot qui travaille seul
+### 7. Un bot qui travaille seul — fait (fiche › Tâche permanente)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 7. Donne à chaque bot une tâche permanente, réglée
 > dans sa fiche (« surveille les offres et prépare ma réponse »), qui part seule sur un événement
@@ -203,7 +222,7 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > dans la conversation du bot avec une notification ; sa fiche montre « Dernier travail » et
 > « Prochain réveil ». Toujours en mode protégé avec un e-mail. Tests dans backend/tests.
 
-### 8. « Apprends-moi une tâche »
+### 8. « Apprends-moi une tâche » — fait (bloc `recette`, fiche › Tâches apprises)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 8. Dans la conversation d'un bot, l'utilisateur
 > décrit une tâche une fois, étape par étape (ou Marcel la tire d'une conversation réussie). Le
@@ -211,14 +230,14 @@ un chantier trop gros, il prépare une demande pour Claude Code ou Codex.
 > côté de ses consignes. Le bot la rejoue sur demande ou dans sa tâche permanente (chantier 7) ;
 > chaque étape qui agit suit les règles « demande d'abord ». Rien n'est appris sans être montré.
 
-### 9. Des skills partagées entre bots
+### 9. Des skills partagées entre bots — fait (fiche › Skills › Skills des bots)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 9. Ajoute une bibliothèque de skills de bot :
 > de courtes consignes réutilisables (« ton pour répondre à RMA », « format d'un brief »), créées
 > et modifiées dans Réglages, et cochées dans la fiche de chaque bot. Le serveur les ajoute au
 > prompt du bot (`bots.prompt`). Ce n'est que du texte : aucune skill ne donne un outil.
 
-### 10. Chaque bot sur Telegram
+### 10. Chaque bot sur Telegram — fait (outil `marcel_bot`, skill `marcel-bots`)
 
 > /code Lis docs/chantiers-grok-bot.md, chantier 10. Sur Telegram, « /planning », « /offres »… ouvrent
 > la conversation du bot correspondant, avec les mêmes lectures et les mêmes règles que dans l'app

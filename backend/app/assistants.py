@@ -15,10 +15,15 @@ import re
 import secrets
 import sqlite3
 import time
+import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 MAX_INSTRUCTIONS, MAX_INSTRUCTION_CHARS = 15, 300
+# Tasks the user taught a bot (« Apprends-moi une tâche »), each a short list of steps.
+MAX_RECIPES, MAX_STEPS, MAX_STEP_CHARS = 10, 12, 200
+# Skills shared between bots: plain text the user writes once and ticks in each bot's card.
+MAX_SKILLS, MAX_SKILL_TITLE_CHARS, MAX_SKILL_CHARS = 20, 60, 800
 
 
 @dataclass(frozen=True)
@@ -232,6 +237,13 @@ Réglages actuels :
 Consignes que l'utilisateur t'a demandé de retenir :
 {instructions}
 
+Skills que l'utilisateur t'a données (communes à plusieurs de ses bots, suis-les ici) :
+{skills}
+
+Tâches que l'utilisateur t'a apprises (quand il te demande l'une d'elles, refais-la étape par étape avec
+ce qui t'est joint ; une étape qui envoie, publie, achète ou supprime, tu la prépares, c'est lui qui la fait) :
+{recipes}
+
 Actions que tu peux proposer (clé « actions » du bloc) :
 {actions}
 
@@ -247,6 +259,14 @@ sport, cooking, hammock ; sinon ""). Le serveur l'applique dès ta réponse fini
 annonce-le au passé (« c'est fait »), sans demander d'appuyer sur quoi que ce soit. Un seul bloc par
 réponse, et seulement quand il faut changer ou lancer quelque chose. Tu ne supprimes, n'épingles et
 ne touches au serveur (VPS) jamais.
+
+Quand l'utilisateur t'apprend une tâche (« apprends à… », « retiens comment on… ») ou te demande de retenir
+ce que vous venez de faire pour le refaire, termine ta réponse par ce bloc (et rien après, sauf le bloc suivi) :
+```recette
+{{"titre": "Titre court", "etapes": ["première étape", "deuxième étape"]}}
+```
+(au plus 12 étapes courtes, écrites pour toi-même). Elle s'affiche dans ta fiche, où il peut la modifier
+ou l'effacer : annonce-la au passé.
 
 Tu peux aussi relancer l'utilisateur plus tard, ici même, quand il le demande ou l'accepte
 (« rappelle-moi mardi de… », « chaque soir, fais-moi le point ») : termine alors ta réponse par
@@ -302,6 +322,28 @@ class AssistantStore:
                 assistant TEXT NOT NULL,
                 text TEXT NOT NULL,
                 created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assistant_recipes (
+                id TEXT PRIMARY KEY,
+                assistant TEXT NOT NULL,
+                title TEXT NOT NULL,
+                steps TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bot_skills (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                text TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bot_inbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assistant TEXT NOT NULL,
+                conversation_id TEXT NOT NULL,
+                question TEXT NOT NULL,
+                mission_id TEXT NOT NULL,
+                at REAL NOT NULL,
+                delivered INTEGER NOT NULL DEFAULT 0
             );"""
         )
         self._db.commit()
@@ -368,7 +410,11 @@ class AssistantStore:
         cursor = self._db.execute("DELETE FROM custom_assistants WHERE id = ?", (assistant_id,))
         self._db.execute("DELETE FROM assistant_settings WHERE assistant = ?", (assistant_id,))
         self._db.execute("DELETE FROM assistant_instructions WHERE assistant = ?", (assistant_id,))
+        self._db.execute("DELETE FROM assistant_recipes WHERE assistant = ?", (assistant_id,))
         self._db.commit()
+        chosen = self.state("skills", {})
+        if chosen.pop(assistant_id, None) is not None:
+            self.set_state("skills", chosen)
         return cursor.rowcount > 0
 
     def values(self, assistant_id: str) -> dict:
@@ -414,6 +460,117 @@ class AssistantStore:
         self._db.commit()
         return cursor.rowcount > 0
 
+    # MARK: Tasks the user taught a bot
+
+    def recipes(self, assistant_id: str) -> list[dict]:
+        rows = self._db.execute("SELECT id, title, steps, created_at FROM assistant_recipes WHERE assistant = ? "
+                                "ORDER BY created_at", (assistant_id,))
+        return [{"id": i, "title": t, "steps": json.loads(st), "created_at": c} for i, t, st, c in rows]
+
+    def add_recipe(self, assistant_id: str, title: str, steps: list) -> dict:
+        title, steps = clean_recipe(title, steps)
+        existing = self.recipes(assistant_id)
+        if same := next((r for r in existing if r["title"].lower() == title.lower()), None):
+            # Taught again: the new steps replace the old ones.
+            return self.update_recipe(assistant_id, same["id"], title, steps)
+        if len(existing) >= MAX_RECIPES:
+            raise ValueError(f"{MAX_RECIPES} tâches apprises au plus : efface-en une d'abord.")
+        recipe = {"id": secrets.token_hex(6), "title": title, "steps": steps, "created_at": time.time()}
+        self._db.execute("INSERT INTO assistant_recipes (id, assistant, title, steps, created_at) VALUES (?, ?, ?, ?, ?)",
+                         (recipe["id"], assistant_id, title, json.dumps(steps, ensure_ascii=False), recipe["created_at"]))
+        self._db.commit()
+        return recipe
+
+    def update_recipe(self, assistant_id: str, recipe_id: str, title: str, steps: list) -> dict:
+        title, steps = clean_recipe(title, steps)
+        cursor = self._db.execute("UPDATE assistant_recipes SET title = ?, steps = ? WHERE assistant = ? AND id = ?",
+                                  (title, json.dumps(steps, ensure_ascii=False), assistant_id, recipe_id))
+        self._db.commit()
+        if not cursor.rowcount:
+            raise KeyError(recipe_id)
+        return next(r for r in self.recipes(assistant_id) if r["id"] == recipe_id)
+
+    def delete_recipe(self, assistant_id: str, recipe_id: str) -> bool:
+        cursor = self._db.execute("DELETE FROM assistant_recipes WHERE assistant = ? AND id = ?",
+                                  (assistant_id, recipe_id))
+        self._db.commit()
+        return cursor.rowcount > 0
+
+    # MARK: Skills shared between bots
+
+    def skills(self) -> list[dict]:
+        rows = self._db.execute("SELECT id, title, text, created_at FROM bot_skills ORDER BY created_at")
+        return [{"id": i, "title": t, "text": x, "created_at": c} for i, t, x, c in rows]
+
+    def add_skill(self, title: str, text: str) -> dict:
+        title, text = clean_skill(title, text)
+        if any(s["title"].lower() == title.lower() for s in self.skills()):
+            raise ValueError(f"Une skill s'appelle déjà « {title} ».")
+        if len(self.skills()) >= MAX_SKILLS:
+            raise ValueError(f"{MAX_SKILLS} skills au plus : efface-en une d'abord.")
+        skill = {"id": secrets.token_hex(6), "title": title, "text": text, "created_at": time.time()}
+        self._db.execute("INSERT INTO bot_skills (id, title, text, created_at) VALUES (?, ?, ?, ?)",
+                         (skill["id"], title, text, skill["created_at"]))
+        self._db.commit()
+        return skill
+
+    def update_skill(self, skill_id: str, title: str, text: str) -> dict:
+        title, text = clean_skill(title, text)
+        if any(s["title"].lower() == title.lower() and s["id"] != skill_id for s in self.skills()):
+            raise ValueError(f"Une skill s'appelle déjà « {title} ».")
+        cursor = self._db.execute("UPDATE bot_skills SET title = ?, text = ? WHERE id = ?", (title, text, skill_id))
+        self._db.commit()
+        if not cursor.rowcount:
+            raise KeyError(skill_id)
+        return next(s for s in self.skills() if s["id"] == skill_id)
+
+    def delete_skill(self, skill_id: str) -> bool:
+        cursor = self._db.execute("DELETE FROM bot_skills WHERE id = ?", (skill_id,))
+        self._db.commit()
+        chosen = self.state("skills", {})
+        self.set_state("skills", {bot: [i for i in ids if i != skill_id] for bot, ids in chosen.items()})
+        return cursor.rowcount > 0
+
+    def chosen_skills(self, assistant_id: str) -> list[dict]:
+        ids = self.state("skills", {}).get(assistant_id, [])
+        return [s for s in self.skills() if s["id"] in ids]
+
+    def choose_skills(self, assistant_id: str, skill_ids: list[str]) -> None:
+        known = {s["id"] for s in self.skills()}
+        if unknown := [i for i in skill_ids if i not in known]:
+            raise ValueError(f"Skill inconnue : {', '.join(unknown)}.")
+        chosen = self.state("skills", {})
+        chosen[assistant_id] = [i for i in dict.fromkeys(skill_ids)]
+        self.set_state("skills", chosen)
+
+    # MARK: What the user asked a bot outside the app (Telegram), for the app to show under that bot
+
+    def add_inbox(self, assistant_id: str, conversation_id: str, question: str, mission_id: str) -> int:
+        cursor = self._db.execute("INSERT INTO bot_inbox (assistant, conversation_id, question, mission_id, at) "
+                                  "VALUES (?, ?, ?, ?, ?)",
+                                  (assistant_id, conversation_id, question, mission_id, time.time()))
+        self._db.commit()
+        return cursor.lastrowid
+
+    def inbox(self, assistant_id: str | None = None, pending: bool = False, limit: int = 20) -> list[dict]:
+        query, params = "SELECT id, assistant, conversation_id, question, mission_id, at, delivered FROM bot_inbox", []
+        where = []
+        if assistant_id:
+            where.append("assistant = ?")
+            params.append(assistant_id)
+        if pending:
+            where.append("delivered = 0")
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        rows = self._db.execute(query + " ORDER BY id DESC LIMIT ?", (*params, limit)).fetchall()
+        keys = ("id", "assistant", "conversation_id", "question", "mission_id", "at", "delivered")
+        return [dict(zip(keys, row)) | {"delivered": bool(row[6])} for row in reversed(rows)]
+
+    def mark_inbox_delivered(self, entry_id: int) -> bool:
+        cursor = self._db.execute("UPDATE bot_inbox SET delivered = 1 WHERE id = ?", (entry_id,))
+        self._db.commit()
+        return cursor.rowcount > 0
+
     def instructions_note(self, assistant_id: str, intro: str) -> str:
         """The user's instructions for an assistant, as lines for a prompt ("" when none)."""
         notes = self.instructions(assistant_id)
@@ -429,6 +586,37 @@ def clean_changes(assistant: Assistant, changes: dict) -> dict:
             raise ValueError(f"Réglage inconnu pour {assistant.name} : {key}.")
         cleaned[key] = setting.clean(value)
     return cleaned
+
+
+def clean_recipe(title, steps) -> tuple[str, list[str]]:
+    """A taught task checked: a title and 1 to MAX_STEPS short steps; ValueError otherwise."""
+    title = " ".join(str(title or "").split())
+    if len(title) < 3 or len(title) > MAX_NAME_CHARS * 2:
+        raise ValueError(f"titre de tâche entre 3 et {MAX_NAME_CHARS * 2} caractères")
+    if not isinstance(steps, list):
+        raise ValueError("étapes attendues en liste")
+    steps = [" ".join(str(step).split()) for step in steps]
+    steps = [step for step in steps if step]
+    if not 1 <= len(steps) <= MAX_STEPS:
+        raise ValueError(f"de 1 à {MAX_STEPS} étapes")
+    if any(len(step) > MAX_STEP_CHARS for step in steps):
+        raise ValueError(f"une étape fait {MAX_STEP_CHARS} caractères au plus")
+    return title, steps
+
+
+def clean_skill(title, text) -> tuple[str, str]:
+    title, text = " ".join(str(title or "").split()), str(text or "").strip()
+    if len(title) < 2 or len(title) > MAX_SKILL_TITLE_CHARS:
+        raise ValueError(f"Nom de skill entre 2 et {MAX_SKILL_TITLE_CHARS} caractères.")
+    if len(text) < 3 or len(text) > MAX_SKILL_CHARS:
+        raise ValueError(f"Texte de skill entre 3 et {MAX_SKILL_CHARS} caractères.")
+    return title, text
+
+
+def slash_name(name: str) -> str:
+    """ "Offres RMA" → "offresrma", as « / » names a bot in the app and on Telegram."""
+    folded = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    return "".join(c for c in folded if c.isalnum())
 
 
 def words(raw: str) -> list[str]:
@@ -455,9 +643,12 @@ def overview(assistants: list[Assistant], values) -> str:
     return OVERVIEW_PROMPT.format(lines="\n".join(lines))
 
 
-def prompt(assistant: Assistant, values: dict, instructions: list[dict]) -> str:
+def prompt(assistant: Assistant, values: dict, instructions: list[dict], recipes: list[dict] = (),
+           skills: list[dict] = ()) -> str:
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
         followups=FOLLOWUPS, name=assistant.name, role=role, actions=actions_note(assistant.id),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
-        instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)")
+        instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)",
+        skills="\n\n".join(f"« {s['title']} » :\n{s['text']}" for s in skills) or "(aucune)",
+        recipes="\n".join(f"- « {r['title']} » : " + " → ".join(r["steps"]) for r in recipes) or "(aucune)")

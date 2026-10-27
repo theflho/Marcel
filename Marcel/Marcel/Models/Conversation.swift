@@ -27,6 +27,8 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     var proposalDecision: String?
     /// What Marcel did himself in this reply and the user took back ("Annuler"), by action id.
     var undone: [String] = []
+    /// Where the user wrote it when not in the app ("Telegram"), said under the message.
+    var via: String?
 
     init(id: UUID = UUID(), role: Role, content: String, status: Status = .complete,
          createdAt: Date = .now, attachments: [Attachment] = [], serverID: UUID? = nil, model: String? = nil) {
@@ -41,7 +43,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision, undone
+        case id, role, content, status, createdAt, attachments, missionID, serverID, model, actions, proposalDecision, undone, via
     }
 
     init(from decoder: Decoder) throws {
@@ -59,6 +61,7 @@ nonisolated struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         actions = try container.decodeIfPresent([MissionAction].self, forKey: .actions) ?? []
         proposalDecision = try container.decodeIfPresent(String.self, forKey: .proposalDecision)
         undone = try container.decodeIfPresent([String].self, forKey: .undone) ?? []
+        via = try container.decodeIfPresent(String.self, forKey: .via)
     }
 }
 

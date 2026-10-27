@@ -7,6 +7,7 @@ Hermes and Scaleway credentials live only in this container's environment.
 """
 
 import asyncio
+import uuid
 import base64
 import json
 import logging
@@ -38,7 +39,7 @@ from .missions import DONE, MissionError, MissionStore, valid_id
 from .offers import OfferStore
 from .planning import PlanningStore
 from . import websearch
-from .routines import RoutineStore, days_from_names, valid_time, valid_trigger
+from .routines import RoutineStore, days_from_names, next_slot, valid_time, valid_trigger
 from .semantic import LOCAL_MODEL, Embedder, SemanticIndex, digest
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
@@ -650,27 +651,33 @@ async def answer_with_results(request: ChatRequest, call, note: str, question: s
 # fin garde-fou : recherche web isolée
 
 
+def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "") -> tuple[str, bool]:
+    """What a bot is told, in its conversations, its standing task and on Telegram: who it is (its
+    role, settings, instructions, shared skills and taught tasks) and what the user lets it read
+    (its card › « Ce que Marcel lit ici »), all read-only data of the server; the e-mails stay with
+    the Mails bot alone. Also whether it may ask for an isolated web search."""
+    picked = reads_of(assistant)
+    parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id),
+                         assistants.recipes(assistant.id), assistants.chosen_skills(assistant.id)),
+             planning_note() if "planning" in picked else "",
+             offers.context(open_offers()) if "offres" in picked else "",
+             robot_note() if "robot" in picked else "",
+             goals.context() if "objectifs" in picked else "",
+             device if "agenda" in picked else "",
+             mail if assistant.id == "mails" else ""]
+    # Web pages only ever reach a model without any tool (the direct one), never a Hermes.
+    web = "web" in picked and (MOCK or MEMORY_LLM_URL != HERMES_URL)
+    return "\n\n".join(filter(None, parts)), web
+
+
 def start_assistant_mission(request: ChatRequest, model: str, title: str, note: str, facts, device: str,
                             mail: str, extra: list[dict]) -> dict:
     """A message in an assistant's conversation. It is there to tune the assistant: it needs no
     tool, so it goes to the model alone (or the restricted Hermes), whatever is asked."""
     assistant = assistants.find(request.assistant)
-    parts = [bots.prompt(assistant, assistant_values(assistant.id), assistants.instructions(assistant.id)),
-             app_context(bool(request.device_context)), note]
-    # What the user lets it read (its card › « Ce que Marcel lit ici »), all read-only data of the
-    # server; the e-mails stay with the Mails bot alone.
-    picked = reads_of(assistant)
-    parts += [planning_note() if "planning" in picked else "",
-              offers.context(open_offers()) if "offres" in picked else "",
-              robot_note() if "robot" in picked else "",
-              goals.context() if "objectifs" in picked else "",
-              device if "agenda" in picked else "",
-              mail if assistant.id == "mails" else ""]
-    # Web pages only ever reach a model without any tool (the direct one), never a Hermes.
-    web = "web" in picked and (MOCK or MEMORY_LLM_URL != HERMES_URL)
-    if web:
-        parts.append(SEARCH_PROMPT)
-    note = "\n\n".join(filter(None, parts))
+    context, web = bot_context(assistant, device, mail)
+    note = "\n\n".join(filter(None, [context, app_context(bool(request.device_context)), note,
+                                      SEARCH_PROMPT if web else ""]))
 
     def call(req: ChatRequest, text: str):
         if MOCK:
@@ -884,7 +891,7 @@ async def mail_context(question: str, force: bool = False) -> tuple[str, list[di
 
 
 # Blocks Marcel (or an assistant) ends a reply with, carried out by the server once it's complete.
-AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif|routine)[ \t]*\n?(.*?)```", re.DOTALL)
+AUTO_BLOCK = re.compile(r"```(reglage|assistant|objectif|routine|recette)[ \t]*\n?(.*?)```", re.DOTALL)
 
 # "Ask first" rules, set per kind of action in Réglages › Règles (like ChatGPT's dots, loosened one
 # kind at a time). "auto": Marcel does it and shows "Annuler"; "ask": it waits for "Valider".
@@ -897,6 +904,7 @@ RULE_KINDS = {
     "routine": "Créer une routine ou une relance",
     "navigateur": "Agir sur un site (navigateur)",
     "recherche": "Chercher sur le web (bots)",
+    "recette": "Retenir une tâche apprise (bots)",
 }
 RULE_VALUES = ("auto", "ask")
 
@@ -927,7 +935,7 @@ def apply_blocks(request: ChatRequest, text: str, only=lambda kind: True, at: in
         if not only(kind) or (at is not None and index != at):
             continue
         name = {"reglage": "Réglage", "assistant": "Nouvel assistant", "objectif": "Objectif suivi",
-                "routine": "Nouvelle routine"}[kind]
+                "routine": "Nouvelle routine", "recette": "Tâche apprise"}[kind]
         card = {"id": f"auto-{kind}-{index}", "name": name}
         try:
             data = json.loads(body)
@@ -966,6 +974,14 @@ def apply_blocks(request: ChatRequest, text: str, only=lambda kind: True, at: in
                 card["detail"] = (f"Je te relancerai ici : {when}" if bot
                                   else f"« {routine.title} » : {when}")
                 card["undo"] = {"kind": "routine", "id": routine.id}
+            elif kind == "recette":
+                # Learnt in a bot's conversation only: shown in its card, where the user edits it.
+                bot = assistants.find(str(data.get("assistant") or request.assistant or ""))
+                if not bot:
+                    raise ValueError("une tâche s'apprend dans la conversation d'un bot")
+                recipe = assistants.add_recipe(bot.id, str(data.get("titre", "")), data.get("etapes") or [])
+                card["detail"] = f"{bot.name} sait faire « {recipe['title']} » ({len(recipe['steps'])} étapes)"
+                card["undo"] = {"kind": "recette", "assistant": bot.id, "id": recipe["id"]}
             else:
                 title = " ".join(str(data.get("titre", "")).split())
                 if len(title) < 3:
@@ -1023,7 +1039,7 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
                 yield card
             for index, (kind, _) in enumerate(AUTO_BLOCK.findall(text)):
                 # A setting or a new assistant already has its own card to approve in the app.
-                if rules()[kind] == "ask" and kind in ("objectif", "routine"):
+                if rules()[kind] == "ask" and kind in ("objectif", "routine", "recette"):
                     yield {"id": f"{ASK_CARD}{kind}-{index}", "name": RULE_KINDS[kind], "status": "cancelled",
                            "detail": "Attend ton accord (Réglages › Règles) : touche « Valider »",
                            "assistant": request.assistant or ""}
@@ -1062,7 +1078,7 @@ def private_words() -> set[str]:
 
 
 class BlockApproval(BaseModel):
-    card: str = Field(pattern=r"^auto-ask-(objectif|routine)-\d{1,2}$")
+    card: str = Field(pattern=r"^auto-ask-(objectif|routine|recette)-\d{1,2}$")
 
 
 @app.post("/v1/missions/{mission_id}/approve", dependencies=[Depends(require_token)])
@@ -1997,6 +2013,18 @@ Routine « {title} » :
 {prompt}"""
 
 
+TASK_PROMPT = """Tâche permanente de ce bot, lancée seule ({schedule}) : l'utilisateur n'est pas là pour
+répondre. Fais-la avec ce qui t'est joint, puis écris directement le résultat, court et lisible sur
+un téléphone (pas de « voici »).
+Si une action de ce bot est utile (changer un de ses réglages, une de ses actions), propose-la avec le
+bloc ```reglage``` : le serveur la fait seule ou attend « Appliquer », selon les règles de l'utilisateur.
+Tout le reste (répondre, envoyer, accepter, acheter), tu le prépares en entier : c'est lui qui le fera.
+Si rien de nouveau ni d'important ne ressort, commence par « Rien à signaler. » et dis en une
+phrase ce que tu as vérifié.
+
+Tâche : {prompt}"""
+
+
 RELANCE_PROMPT = """Tu es Marcel, dans la conversation « {name} » ({summary}). C'est toi qui relances
 l'utilisateur, dans sa conversation avec toi : parle-lui directement, comme un message qui arrive
 (« Coucou, … »), et finis par une question simple à laquelle il peut répondre."""
@@ -2044,16 +2072,28 @@ async def run_routine(routine, event: str = ""):
     """Starts the routine's mission; its reply waits on the server for the iPhone to fetch it."""
     running_routines.add(routine.id)
     routines.mark_run(routine.id, time.time())
-    content = ROUTINE_PROMPT.format(schedule=routine.schedule.lower(), title=routine.title, prompt=routine.prompt)
+    bot = assistants.find(routine.assistant) if routine.assistant else None
+    task = routine.task and bot is not None
+    content = (TASK_PROMPT.format(schedule=routine.schedule.lower(), prompt=routine.prompt) if task else
+               ROUTINE_PROMPT.format(schedule=routine.schedule.lower(), title=routine.title, prompt=routine.prompt))
     from_mail = routine.trigger.startswith("email")
     if event:
         content += ("\n\nCe qui vient d'arriver :\n" + untrusted("E-MAILS REÇUS", event) if from_mail
                     else "\n\nCe qui vient d'arriver (lu par le robot RMA) :\n" + event)
-    if bot := assistants.find(routine.assistant) if routine.assistant else None:
+    if bot and not task:
         content = RELANCE_PROMPT.format(name=bot.name, summary=bot.summary) + "\n\n" + content
     request = ChatRequest(conversation_id=routine.conversation_id, messages=[Message(role="user", content=content)])
-    mail, extra = await mail_context(routine.prompt)
-    parts = [app_context(False), goals.context(), planning_note(), robot_note()]
+    if task and bot.id != "mails":
+        # The e-mails stay with the Mails bot (an e-mail trigger still brings the ones that arrived).
+        mail, extra = "", []
+    else:
+        mail, extra = await mail_context(routine.prompt, force=task)
+    if task:
+        # A bot's standing task: what that bot knows and reads, nothing more (no web search). Its
+        # e-mails, if any, are added below, in protected mode.
+        parts = [bot_context(bot)[0], app_context(False)]
+    else:
+        parts = [app_context(False), goals.context(), planning_note(), robot_note()]
     if from_mail and MEMORY_LLM_URL == HERMES_URL:
         # Never a stranger's e-mail to a Hermes, even the one without tools that act.
         running_routines.discard(routine.id)
@@ -2065,6 +2105,11 @@ async def run_routine(routine, event: str = ""):
                       "detail": "E-mails lus par le modèle seul, sans aucun outil : ni web, ni envoi, ni terminal"})
         model, url, key = MEMORY_LLM_MODEL, MEMORY_LLM_URL, MEMORY_LLM_KEY
         parts += [note, mail]
+    elif task and MEMORY_LLM_URL != HERMES_URL:
+        # A bot's task: the model alone, with no tool at all, like its conversations.
+        model, url, key = MEMORY_LLM_MODEL, MEMORY_LLM_URL, MEMORY_LLM_KEY
+        extra.append({"id": "routine", "name": "Tâche permanente", "status": "done",
+                      "detail": f"{routine.schedule} · {bot.name}, modèle seul, sans aucun outil"})
     else:
         # The Hermes without tools that act. No memories: it reads the open web, where they could leak.
         model = CHECK_HERMES_MODEL or (await base_models())[0]["id"]
@@ -2073,7 +2118,10 @@ async def run_routine(routine, event: str = ""):
                       "detail": f"{routine.schedule} · lancée seule, sans outil qui agit"})
         parts.append(mail)
     note = "\n\n".join(filter(None, parts))
-    looked = looked_at(planning=planning_note(), goals=goals.context(), mail=mail or (from_mail and event), event=event)
+    picked = reads_of(bot) if task else ["planning", "objectifs", "robot"]
+    looked = looked_at(planning=planning_note() if "planning" in picked else "",
+                       goals=goals.context() if "objectifs" in picked else "",
+                       mail=mail or (from_mail and event), event=event, robot="robot" in picked)
 
     async def source() -> AsyncIterator[str | dict]:
         for action in extra:
@@ -2094,7 +2142,7 @@ async def run_routine(routine, event: str = ""):
 # fin garde-fou : routines en mode protégé
 
 
-def looked_at(planning: str, goals: str, mail: str, event: str) -> str:
+def looked_at(planning: str, goals: str, mail: str, event: str, robot: bool = True) -> str:
     """What a routine had in front of it, said at the end of its result, so "nothing to report"
     can be trusted (Grok Bot and ChatGPT dots users can't tell silence from a miss)."""
     seen = []
@@ -2102,7 +2150,7 @@ def looked_at(planning: str, goals: str, mail: str, event: str) -> str:
         seen.append("ce qui vient d'arriver")
     if planning:
         seen.append("ton planning")
-    if assistants.state("reports", []):
+    if robot and assistants.state("reports", []):
         seen.append("les relevés du robot RMA")
     if count := goals.count("\n- "):
         seen.append(f"{count} objectif{'s' if count > 1 else ''}")
@@ -2129,6 +2177,10 @@ async def finish_routine(routine, mission, run_id: int) -> None:
     try:
         await asyncio.gather(mission.task, return_exceptions=True)
         if mission.status == DONE:
+            if routine.task:
+                for card in task_cards(routine, mission.text):
+                    mission.record(card)
+                missions.save(mission)
             routines.finish_run(run_id, "done")
             if routine.once:
                 routines.update(routine.id, status="paused")
@@ -2139,6 +2191,24 @@ async def finish_routine(routine, mission, run_id: int) -> None:
             routines.finish_run(run_id, "failed", mission.error or mission.status)
     finally:
         running_routines.discard(routine.id)
+
+
+def task_cards(routine, text: str) -> list[dict]:
+    """The action a bot's standing task ended with: only a setting or an action of that bot
+    (```reglage```), done now under an "auto" rule, else left for « Appliquer » in the app. Never
+    on its own when it read an e-mail, and nothing else (no routine, bot, goal or task) from a run
+    nobody watched."""
+    text = bots.FOLLOWUP_BLOCK.sub("", text)
+    if not any(kind == "reglage" for kind, _ in AUTO_BLOCK.findall(text)):
+        return []
+    if routine.trigger.startswith("email") or routine.assistant == "mails":
+        return [{"id": "auto-outside", "name": "Réglage", "status": "cancelled",
+                 "detail": "Pas appliqué tout seul : la tâche a lu des e-mails. Appuie sur « Appliquer » si tu veux."}]
+    if rules()["reglage"] != "auto":
+        return []
+    request = ChatRequest(conversation_id=routine.conversation_id, assistant=routine.assistant,
+                          messages=[Message(role="user", content=routine.prompt)])
+    return apply_blocks(request, text, only=lambda kind: kind == "reglage")
 
 
 MAIL_WATCH_EVERY = 5 * 60
@@ -2614,6 +2684,8 @@ class AssistantUpdate(BaseModel):
     actions: list[str] = Field(default_factory=list, max_length=3)
     # The illustration of Marcel the user picked for it ("pool", "sport"…).
     mood: str | None = Field(default=None, max_length=20)
+    # The shared skills ticked in its card (ids from /v1/bot-skills).
+    skills: list[str] | None = Field(default=None, max_length=bots.MAX_SKILLS)
 
 
 def assistant_values(assistant_id: str) -> dict:
@@ -2726,6 +2798,7 @@ def page_of(assistant: bots.Assistant) -> dict:
 
 def assistant_public(assistant: bots.Assistant) -> dict:
     values = assistant_values(assistant.id)
+    chosen = {s["id"] for s in assistants.chosen_skills(assistant.id)}
     summary = values["role"] if assistant.custom else assistant.summary
     return {"id": assistant.id, "name": assistant.name, "emoji": assistant.emoji, "summary": summary,
             "mood": assistants.mood(assistant), "custom": assistant.custom,
@@ -2733,7 +2806,31 @@ def assistant_public(assistant: bots.Assistant) -> dict:
             "settings": [s.public(values[s.key]) for s in assistant.settings],
             "instructions": assistants.instructions(assistant.id),
             "reads": [{"key": k, "label": label, "on": k in reads_of(assistant)} for k, label in READS.items()
-                      if not (k == "web" and assistant.id == "mails")]}
+                      if not (k == "web" and assistant.id == "mails")],
+            "recipes": assistants.recipes(assistant.id),
+            "skills": [{"id": s["id"], "title": s["title"], "on": s["id"] in chosen}
+                       for s in assistants.skills()],
+            "task": task_public(assistant)}
+
+
+def task_public(assistant: bots.Assistant) -> dict | None:
+    """Its standing task as its card shows it: what, when, its last work and its next wake-up."""
+    if not (routine := routines.task_of(assistant.id)):
+        return None
+    last = None
+    if runs := routines.runs(routine.id, limit=1):
+        run = runs[0]
+        mission = missions.get(run["mission_id"]) if valid_id(run["mission_id"]) else None
+        text = bots.FOLLOWUP_BLOCK.sub("", AUTO_BLOCK.sub("", mission.text if mission else "")).strip()
+        summary = " ".join(text.replace("*", "").replace("_", "").split())
+        last = {"at": run["at"], "status": run["status"], "error": run["error"],
+                "summary": summary[:160] + ("…" if len(summary) > 160 else "")}
+    upcoming = next_slot(routine, time.time(), USER_TZ)
+    return {"id": routine.id, "prompt": routine.prompt, "trigger": routine.trigger, "days": routine.days,
+            "at": routine.at, "status": routine.status, "schedule": routine.schedule,
+            "conversation_id": routine.conversation_id, "last_run": last, "next_run": upcoming,
+            "next": (local_time(upcoming) if upcoming else routine.schedule if routine.status == "active"
+                     else "En pause")}
 
 
 def find_assistant(assistant_id: str) -> bots.Assistant:
@@ -2773,6 +2870,8 @@ async def delete_assistant(assistant_id: str) -> dict:
     assistant = find_assistant(assistant_id)
     if not assistant.custom:
         raise HTTPException(400, "Les assistants de Marcel ne se suppriment pas.")
+    if task := routines.task_of(assistant_id):
+        routines.delete(task.id)
     assistants.delete(assistant_id)
     return {"deleted": assistant_id}
 
@@ -2784,6 +2883,8 @@ async def update_assistant(assistant_id: str, body: AssistantUpdate) -> dict:
     try:
         if body.reads is not None:
             set_reads(assistant, body.reads)
+        if body.skills is not None:
+            assistants.choose_skills(assistant.id, body.skills)
         apply_update(assistant, body.changes, body.instruction or "", body.actions, body.mood)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
@@ -2836,6 +2937,125 @@ async def delete_instruction(assistant_id: str, note_id: str) -> dict:
     if not assistants.delete_instruction(assistant.id, note_id):
         raise HTTPException(404, "Consigne introuvable")
     return assistant_public(assistant)
+
+
+# MARK: A bot's standing task, the tasks it was taught, the skills shared between bots
+
+
+class BotTask(BaseModel):
+    prompt: str = Field(min_length=3, max_length=1000)
+    # An event ("offre", "planning", "email", "email:sender") instead of the hour; "" = at the hour.
+    trigger: str = Field(default="", max_length=130)
+    days: str = Field(default="", max_length=20, pattern=r"^[0-6,]*$")
+    at: str = Field(default="08:00", pattern=r"^\d{1,2}:\d{2}$")
+    status: Literal["active", "paused"] = "active"
+    # The bot's conversation its results go to (the app's latest with it); a new one if empty.
+    conversation_id: str = Field(default="", max_length=40, pattern=r"^[0-9A-Fa-f-]*$")
+
+
+@app.put("/v1/assistants/{assistant_id}/task", dependencies=[Depends(require_token)])
+async def set_task(assistant_id: str, body: BotTask) -> dict:
+    """Sets (or changes) the bot's standing task: it runs alone, at its hour or on its event, with
+    what this bot reads, and its result comes back in its conversation."""
+    assistant = find_assistant(assistant_id)
+    if body.trigger and not valid_trigger(body.trigger):
+        raise HTTPException(400, f"Déclencheur inconnu : {body.trigger}")
+    if body.trigger.startswith("email") and MEMORY_LLM_URL == HERMES_URL and not MOCK:
+        raise HTTPException(409, "Tâche sur e-mail impossible sans accès direct au modèle (mode protégé).")
+    try:
+        if routine := routines.task_of(assistant.id):
+            routines.update(routine.id, prompt=body.prompt, trigger=body.trigger, days=body.days, at=body.at,
+                            status=body.status)
+        else:
+            routine = routines.add(f"Tâche de {assistant.name}", body.prompt, body.days, body.at,
+                                   assistant=assistant.id, conversation_id=body.conversation_id.upper(),
+                                   trigger=body.trigger, task=True)
+            if body.status != "active":
+                routines.update(routine.id, status=body.status)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return assistant_public(assistant)
+
+
+@app.delete("/v1/assistants/{assistant_id}/task", dependencies=[Depends(require_token)])
+async def delete_task(assistant_id: str) -> dict:
+    assistant = find_assistant(assistant_id)
+    if not (routine := routines.task_of(assistant.id)):
+        raise HTTPException(404, "Ce bot n'a pas de tâche permanente")
+    routines.delete(routine.id)
+    return assistant_public(assistant)
+
+
+@app.post("/v1/assistants/{assistant_id}/task/run", dependencies=[Depends(require_token)])
+async def run_task_now(assistant_id: str) -> dict:
+    """Runs the standing task now, to try it (it counts toward the routines' daily ceiling)."""
+    assistant = find_assistant(assistant_id)
+    if not (routine := routines.task_of(assistant.id)):
+        raise HTTPException(404, "Ce bot n'a pas de tâche permanente")
+    return await run_routine_now(routine.id)
+
+
+class RecipeUpdate(BaseModel):
+    title: str = Field(max_length=200)
+    steps: list[str] = Field(max_length=bots.MAX_STEPS)
+
+
+@app.put("/v1/assistants/{assistant_id}/recipes/{recipe_id}", dependencies=[Depends(require_token)])
+async def update_recipe(assistant_id: str, recipe_id: str, body: RecipeUpdate) -> dict:
+    assistant = find_assistant(assistant_id)
+    try:
+        assistants.update_recipe(assistant.id, recipe_id, body.title, body.steps)
+    except KeyError as error:
+        raise HTTPException(404, "Tâche apprise introuvable") from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return assistant_public(assistant)
+
+
+@app.delete("/v1/assistants/{assistant_id}/recipes/{recipe_id}", dependencies=[Depends(require_token)])
+async def delete_recipe(assistant_id: str, recipe_id: str) -> dict:
+    assistant = find_assistant(assistant_id)
+    if not assistants.delete_recipe(assistant.id, recipe_id):
+        raise HTTPException(404, "Tâche apprise introuvable")
+    return assistant_public(assistant)
+
+
+class SkillBody(BaseModel):
+    title: str = Field(max_length=200)
+    text: str = Field(max_length=4000)
+
+
+@app.get("/v1/bot-skills", dependencies=[Depends(require_token)])
+async def list_bot_skills() -> list[dict]:
+    """The skills shared between bots, each with the bots that use it."""
+    chosen = assistants.state("skills", {})
+    return [s | {"bots": [b for b, ids in chosen.items() if s["id"] in ids]} for s in assistants.skills()]
+
+
+@app.post("/v1/bot-skills", dependencies=[Depends(require_token)])
+async def add_bot_skill(body: SkillBody) -> dict:
+    try:
+        return assistants.add_skill(body.title, body.text) | {"bots": []}
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.put("/v1/bot-skills/{skill_id}", dependencies=[Depends(require_token)])
+async def update_bot_skill(skill_id: str, body: SkillBody) -> dict:
+    try:
+        skill = assistants.update_skill(skill_id, body.title, body.text)
+    except KeyError as error:
+        raise HTTPException(404, "Skill introuvable") from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return skill | {"bots": [b for b, ids in assistants.state("skills", {}).items() if skill_id in ids]}
+
+
+@app.delete("/v1/bot-skills/{skill_id}", dependencies=[Depends(require_token)])
+async def delete_bot_skill(skill_id: str) -> dict:
+    if not assistants.delete_skill(skill_id):
+        raise HTTPException(404, "Skill introuvable")
+    return {"deleted": skill_id}
 
 
 # MARK: MCP tools for Hermes (read only)
@@ -3263,6 +3483,110 @@ async def tool_run_routine(args: dict) -> str:
         raise ToolError(refusal[1])
     await run_routine(routine)
     return f"Routine « {routine.title} » lancée."
+
+
+# MARK: The bots on Telegram
+
+TELEGRAM_WAIT = 120
+TELEGRAM_HISTORY = 4
+
+
+def find_bot_named(word: str) -> bots.Assistant | None:
+    """ "/planning", "planningrma", "Offres RMA", "perso-1a2b3c4d" → that bot; None if unknown or unclear."""
+    key = bots.slash_name(word.strip().lstrip("/"))
+    every = assistants.all()
+    if not key:
+        return None
+    if exact := next((a for a in every if key in (a.id, bots.slash_name(a.name))), None):
+        return exact
+    starting = [a for a in every if bots.slash_name(a.name).startswith(key) or a.id.startswith(key)]
+    return starting[0] if len(starting) == 1 else None
+
+
+def plain_reply(text: str) -> str:
+    """A bot's reply without the blocks the app turns into cards."""
+    for block in (AUTO_BLOCK, SEARCH_BLOCK, bots.FOLLOWUP_BLOCK):
+        text = block.sub("", text)
+    return text.strip()
+
+
+@mcp.tool("marcel_bot", "Fait parler un bot de Marcel (Planning RMA, Pointage RMA, Offres RMA, Veille ou un bot créé "
+          "par l'utilisateur) quand l'utilisateur l'appelle sur Telegram (« /planning … », « /offresrma … »). Le bot "
+          "répond comme dans l'app : modèle seul, sans outil, avec ce qu'il a le droit de lire et les règles « demande "
+          "d'abord ». Renvoie sa réponse, à transmettre telle quelle ; la conversation se retrouve dans l'app, sous ce "
+          "bot. Jamais le bot Mails (il reste dans l'app).",
+          {"bot": {"type": "string", "description": "le bot : « planning », « offresrma », son nom ou son id"},
+           "message": {"type": "string", "description": "ce que l'utilisateur lui dit, sans la commande"}},
+          ("bot", "message"), read_only=False)
+async def tool_bot(args: dict) -> str:
+    bot = find_bot_named(str(args.get("bot", "")))
+    if not bot:
+        names = ", ".join(f"/{bots.slash_name(a.name)}" for a in assistants.all() if a.id != "mails")
+        raise ToolError(f"Bot inconnu. Bots joignables sur Telegram : {names}.")
+    if bot.id == "mails":
+        raise ToolError("Le bot Mails reste dans l'app : il lit des e-mails d'inconnus, qui ne passent jamais par Telegram.")
+    question = " ".join(str(args.get("message", "")).split())[:4000]
+    if not question:
+        raise ToolError("Message vide : que faut-il demander au bot ?")
+    # One conversation per bot for Telegram, which the app shows under that bot.
+    chats = assistants.state("telegram_conversations", {})
+    if bot.id not in chats:
+        chats[bot.id] = str(uuid.uuid4()).upper()
+        assistants.set_state("telegram_conversations", chats)
+    history = []
+    for entry in assistants.inbox(bot.id, limit=TELEGRAM_HISTORY):
+        past = missions.get(entry["mission_id"]) if valid_id(entry["mission_id"]) else None
+        if past and past.status == DONE:
+            history += [Message(role="user", content=entry["question"]),
+                        Message(role="assistant", content=plain_reply(past.text) or "…")]
+    request = ChatRequest(conversation_id=chats[bot.id], assistant=bot.id,
+                          messages=history + [Message(role="user", content=question)])
+    try:
+        started = await start_mission(request)
+    except HTTPException as error:
+        raise ToolError(str(error.detail)) from error
+    assistants.add_inbox(bot.id, chats[bot.id], question, started["id"])
+    mission = missions.get(started["id"])
+    try:
+        await asyncio.wait_for(asyncio.shield(mission.task), TELEGRAM_WAIT)
+    except asyncio.TimeoutError:
+        return f"{bot.name} travaille encore : sa réponse arrivera dans l'app, sous ce bot."
+    if mission.status != DONE:
+        return f"{bot.name} n'a pas pu répondre : {mission.error or mission.status}."
+    lines = [plain_reply(mission.text)]
+    for card in mission.actions:
+        if card["id"].startswith("auto-") and card.get("status") == "done" and card.get("detail"):
+            lines.append(f"✅ {card['detail']} (Annuler dans l'app)")
+        elif card["id"].startswith(ASK_CARD) and card.get("status") == "cancelled":
+            lines.append(f"⏳ {card.get('name', 'Action')} : à valider dans l'app, sous {bot.name}")
+    if re.search(r"```reglage", mission.text) and not any(c["id"].startswith("auto-reglage") for c in mission.actions):
+        lines.append(f"⏳ Réglage proposé : à appliquer dans l'app, sous {bot.name}")
+    return "\n\n".join(filter(None, lines))
+
+
+@app.get("/v1/bot-messages", dependencies=[Depends(require_token)])
+async def pending_bot_messages() -> list[dict]:
+    """What the user said to a bot outside the app (Telegram) and its reply, finished and not yet
+    put in that bot's conversation on the iPhone."""
+    pending = []
+    for entry in assistants.inbox(pending=True):
+        mission = missions.get(entry["mission_id"]) if valid_id(entry["mission_id"]) else None
+        bot = assistants.find(entry["assistant"])
+        if not mission or not bot:
+            assistants.mark_inbox_delivered(entry["id"])
+            continue
+        if mission.status == "running":
+            continue
+        pending.append(entry | {"assistant_name": bot.name, "text": mission.text, "model": mission.model,
+                                "actions": mission.actions, "status": mission.status, "via": "Telegram"})
+    return pending
+
+
+@app.post("/v1/bot-messages/{entry_id}/delivered", dependencies=[Depends(require_token)])
+async def bot_message_delivered(entry_id: int) -> dict:
+    if not assistants.mark_inbox_delivered(entry_id):
+        raise HTTPException(404, "Message introuvable")
+    return {"delivered": entry_id}
 
 
 @mcp.tool("marcel_retenir", "Ajoute un fait durable à la mémoire de Marcel (préférence, projet, information utile).",

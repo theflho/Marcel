@@ -44,7 +44,7 @@ def describe_trigger(trigger: str) -> str:
     return TRIGGERS.get(trigger, "")
 
 COLUMNS = ("id", "title", "prompt", "days", "at", "status", "conversation_id", "created_at", "updated_at",
-           "last_run_at", "assistant", "once", "trigger")
+           "last_run_at", "assistant", "once", "trigger", "task")
 RUN_COLUMNS = ("id", "routine_id", "mission_id", "at", "status", "error", "delivered")
 
 
@@ -70,9 +70,13 @@ class Routine:
     once: bool = False
     # An event from TRIGGERS instead of the hour; empty for a routine at a fixed time.
     trigger: str = ""
+    # A bot's standing task (its card › « Tâche permanente »): one per bot, run with what that bot
+    # reads and knows, which may end with an action of that bot (see run_routine).
+    task: bool = False
 
     def __post_init__(self):
         self.once = bool(self.once)
+        self.task = bool(self.task)
 
     def public(self) -> dict:
         return {c: getattr(self, c) for c in COLUMNS} | {"schedule": self.schedule}
@@ -154,6 +158,22 @@ def last_slot(routine: Routine, now: float, tz: ZoneInfo | None) -> float | None
     return None
 
 
+def next_slot(routine: Routine, now: float, tz: ZoneInfo | None) -> float | None:
+    """The next time the routine will run at, after now; None when it waits for an event or is paused."""
+    if routine.status != ACTIVE or routine.trigger:
+        return None
+    hour, minute = (int(part) for part in routine.at.split(":"))
+    today = datetime.fromtimestamp(now, tz).date()
+    for ahead in range(8):
+        day = today + timedelta(days=ahead)
+        if routine.weekdays and day.weekday() not in routine.weekdays:
+            continue
+        slot = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).timestamp()
+        if slot > now:
+            return slot
+    return None
+
+
 def is_due(routine: Routine, now: float, tz: ZoneInfo | None) -> bool:
     if routine.status != ACTIVE or routine.trigger:
         return False
@@ -183,7 +203,8 @@ class RoutineStore:
                 last_run_at REAL,
                 assistant TEXT NOT NULL DEFAULT '',
                 once INTEGER NOT NULL DEFAULT 0,
-                trigger TEXT NOT NULL DEFAULT ''
+                trigger TEXT NOT NULL DEFAULT '',
+                task INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS routine_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,6 +225,8 @@ class RoutineStore:
             self._db.execute("ALTER TABLE routines ADD COLUMN once INTEGER NOT NULL DEFAULT 0")
         if "trigger" not in existing:
             self._db.execute("ALTER TABLE routines ADD COLUMN trigger TEXT NOT NULL DEFAULT ''")
+        if "task" not in existing:
+            self._db.execute("ALTER TABLE routines ADD COLUMN task INTEGER NOT NULL DEFAULT 0")
         self._db.commit()
 
     # MARK: Routines
@@ -219,14 +242,15 @@ class RoutineStore:
         return [Routine(*row) for row in self._db.execute(query + " ORDER BY at, created_at", params)]
 
     def add(self, title: str, prompt: str, days: str = "", at: str = "08:00", assistant: str = "",
-            conversation_id: str = "", once: bool = False, trigger: str = "") -> Routine:
+            conversation_id: str = "", once: bool = False, trigger: str = "", task: bool = False) -> Routine:
         if trigger and not valid_trigger(trigger):
             raise ValueError(f"déclencheur inconnu : {trigger}")
         now = time.time()
         routine = Routine(id=secrets.token_hex(6), title=" ".join(title.split())[:MAX_TITLE_CHARS],
                           prompt=prompt.strip()[:MAX_PROMPT_CHARS], days=",".join(map(str, parse_days(days))),
                           at=valid_time(at), conversation_id=conversation_id or str(uuid.uuid4()).upper(),
-                          created_at=now, updated_at=now, assistant=assistant, once=once, trigger=trigger)
+                          created_at=now, updated_at=now, assistant=assistant, once=once, trigger=trigger,
+                          task=task)
         if len(routine.title) < 2 or len(routine.prompt) < 3:
             raise ValueError("titre ou consigne trop court")
         self._store(routine)
@@ -254,6 +278,10 @@ class RoutineStore:
         self._db.execute("DELETE FROM routine_runs WHERE routine_id = ?", (routine_id,))
         self._db.execute("DELETE FROM routines WHERE id = ?", (routine_id,))
         self._db.commit()
+
+    def task_of(self, assistant_id: str) -> Routine | None:
+        """A bot's standing task, active or paused."""
+        return next((r for r in self.list() if r.task and r.assistant == assistant_id), None)
 
     def waiting_for(self, event: str) -> list[Routine]:
         return [r for r in self.list(ACTIVE) if r.trigger == event

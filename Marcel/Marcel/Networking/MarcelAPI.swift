@@ -92,7 +92,7 @@ private nonisolated struct RulesBody: Encodable {
 
 /// How to take back what Marcel did himself, sent by the server with its card.
 nonisolated struct ActionUndo: Codable, Hashable, Sendable {
-    /// "reglage", "assistant", "objectif" or "routine".
+    /// "reglage", "assistant", "objectif", "routine" or "recette".
     let kind: String
     /// The assistant, goal or routine created.
     var id: String?
@@ -493,6 +493,56 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
     let custom: Bool?
     /// A server not updated yet sends none.
     let reads: [Read]?
+    /// Tasks the user taught it, which it does again on demand or in its standing task.
+    let recipes: [Recipe]?
+    /// The shared skills, each ticked or not for this bot.
+    let skills: [SkillChoice]?
+    /// What it does alone, at its hour or on its event; nil when it has none.
+    let task: BotTask?
+
+    /// A task taught once (« Apprends-moi une tâche »): a title and its steps.
+    struct Recipe: Decodable, Hashable, Sendable, Identifiable {
+        let id: String
+        let title: String
+        let steps: [String]
+    }
+
+    struct SkillChoice: Decodable, Hashable, Sendable, Identifiable {
+        let id: String
+        let title: String
+        let on: Bool
+    }
+
+    /// Its standing task, like a Grok Bot that works while the app is closed.
+    struct BotTask: Decodable, Hashable, Sendable {
+        struct LastRun: Decodable, Hashable, Sendable {
+            let at: Date
+            /// "running", "done" or "failed".
+            let status: String
+            let error: String
+            let summary: String
+        }
+
+        let id: String
+        let prompt: String
+        /// "" at an hour, else "offre", "planning", "email" or "email:sender".
+        let trigger: String
+        let days: String
+        let at: String
+        /// "active" or "paused".
+        let status: String
+        let schedule: String
+        let conversationID: String
+        let lastRun: LastRun?
+        /// When it wakes up next, as said in its card ("lun. 03/11 à 07:30", "À chaque nouvelle offre").
+        let next: String
+
+        enum CodingKeys: String, CodingKey {
+            case id, prompt, trigger, days, at, status, schedule, next
+            case conversationID = "conversation_id"
+            case lastRun = "last_run"
+        }
+    }
 
     func setting(_ key: String) -> Setting? { settings.first { $0.key == key } }
     /// The server's choice, else the built-in one (a server not updated yet sends none).
@@ -569,7 +619,7 @@ nonisolated struct OfferList: Decodable, Sendable {
 /// Blocks the server carries out and the action cards already report: hidden from the text.
 nonisolated enum AutoBlocks {
     static func strip(_ text: String) -> String {
-        text.replacingOccurrences(of: "```(objectif|routine|demande-code|suivi|recherche)[\\s\\S]*?```", with: "", options: .regularExpression)
+        text.replacingOccurrences(of: "```(objectif|routine|recette|demande-code|suivi|recherche)[\\s\\S]*?```", with: "", options: .regularExpression)
             // The follow-ups come last: hidden while they are still being written too.
             .replacingOccurrences(of: "```suivi[\\s\\S]*$", with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -744,6 +794,72 @@ private nonisolated struct AssistantUpdate: Encodable, Sendable {
     let actions: [String]
     let mood: String?
     let reads: [String]?
+    let skills: [String]?
+}
+
+/// A bot's standing task as the user sets it in its card (`PUT /v1/assistants/{id}/task`).
+nonisolated struct BotTaskChange: Encodable, Sendable {
+    var prompt: String
+    var trigger: String
+    var days: String
+    var at: String
+    var status: String
+    var conversationID: String
+
+    enum CodingKeys: String, CodingKey {
+        case prompt, trigger, days, at, status
+        case conversationID = "conversation_id"
+    }
+}
+
+private nonisolated struct RecipeChange: Encodable, Sendable {
+    let title: String
+    let steps: [String]
+}
+
+/// A skill shared between bots (`/v1/bot-skills`): plain text the user writes once.
+nonisolated struct BotSkill: Codable, Hashable, Sendable, Identifiable {
+    let id: String
+    let title: String
+    let text: String
+    /// The bots that use it.
+    let bots: [String]
+}
+
+private nonisolated struct SkillChange: Encodable, Sendable {
+    let title: String
+    let text: String
+}
+
+private nonisolated struct DeletedSkill: Decodable, Sendable {
+    let deleted: String
+}
+
+/// What the user said to a bot outside the app (Telegram) and its reply (`/v1/bot-messages`).
+nonisolated struct BotMessage: Decodable, Hashable, Sendable, Identifiable {
+    let id: Int
+    let assistant: String
+    let assistantName: String
+    let conversationID: String
+    let question: String
+    let missionID: String
+    let at: Date
+    let text: String
+    let model: String?
+    let actions: [MissionAction]?
+    let status: String
+    let via: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, assistant, question, at, text, model, actions, status, via
+        case assistantName = "assistant_name"
+        case conversationID = "conversation_id"
+        case missionID = "mission_id"
+    }
+}
+
+private nonisolated struct DeliveredBotMessage: Decodable, Sendable {
+    let delivered: Int
 }
 
 /// A bot's page (`/v1/assistants/{id}/page`): a table the server works out at each opening,
@@ -1100,10 +1216,56 @@ nonisolated struct MarcelAPI: Sendable {
 
     /// Saves settings and/or an instruction; the server checks them against their bounds.
     func updateAssistant(id: String, changes: [String: SettingValue], instruction: String? = nil,
-                         actions: [String] = [], mood: String? = nil, reads: [String]? = nil) async throws -> Assistant {
+                         actions: [String] = [], mood: String? = nil, reads: [String]? = nil,
+                         skills: [String]? = nil) async throws -> Assistant {
         try await call("PATCH", "v1/assistants/\(id)",
                        body: AssistantUpdate(changes: changes, instruction: instruction, actions: actions, mood: mood,
-                                             reads: reads))
+                                             reads: reads, skills: skills))
+    }
+
+    func setTask(assistantID: String, _ change: BotTaskChange) async throws -> Assistant {
+        try await call("PUT", "v1/assistants/\(assistantID)/task", body: change)
+    }
+
+    func deleteTask(assistantID: String) async throws -> Assistant {
+        try await call("DELETE", "v1/assistants/\(assistantID)/task")
+    }
+
+    /// Runs the standing task now: its result comes back like a routine's.
+    func runTask(assistantID: String) async throws {
+        let _: MissionInfo = try await call("POST", "v1/assistants/\(assistantID)/task/run")
+    }
+
+    func updateRecipe(assistantID: String, id: String, title: String, steps: [String]) async throws -> Assistant {
+        try await call("PUT", "v1/assistants/\(assistantID)/recipes/\(id)", body: RecipeChange(title: title, steps: steps))
+    }
+
+    func deleteRecipe(assistantID: String, id: String) async throws -> Assistant {
+        try await call("DELETE", "v1/assistants/\(assistantID)/recipes/\(id)")
+    }
+
+    func botSkills() async throws -> [BotSkill] {
+        try await call("GET", "v1/bot-skills")
+    }
+
+    func addBotSkill(title: String, text: String) async throws -> BotSkill {
+        try await call("POST", "v1/bot-skills", body: SkillChange(title: title, text: text))
+    }
+
+    func updateBotSkill(id: String, title: String, text: String) async throws -> BotSkill {
+        try await call("PUT", "v1/bot-skills/\(id)", body: SkillChange(title: title, text: text))
+    }
+
+    func deleteBotSkill(id: String) async throws {
+        let _: DeletedSkill = try await call("DELETE", "v1/bot-skills/\(id)")
+    }
+
+    func pendingBotMessages() async throws -> [BotMessage] {
+        try await call("GET", "v1/bot-messages")
+    }
+
+    func markBotMessageDelivered(id: Int) async throws {
+        let _: DeliveredBotMessage = try await call("POST", "v1/bot-messages/\(id)/delivered")
     }
 
     func botPage(id: String) async throws -> BotPage {

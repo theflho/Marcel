@@ -8,7 +8,7 @@ struct RulesView: View {
     @State private var error: String?
     @State private var newWord = ""
 
-    private static let order = ["reglage", "assistant", "objectif", "routine", "navigateur", "recherche"]
+    private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "navigateur", "recherche"]
 
     var body: some View {
         List {

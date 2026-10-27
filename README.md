@@ -259,12 +259,14 @@ Le Hermes principal reçoit les outils MCP de Marcel (`deploy/hermes-mcp.config.
   `marcel_historique`, `marcel_reponse`, `marcel_memoire`, `marcel_objectifs`, `marcel_routines`,
   `marcel_chercher` ;
 - qui agissent : `marcel_retenir` (mémoire), `marcel_creer_objectif`, `marcel_creer_routine`,
-  `marcel_lancer_routine`, et les outils `marcel_code_*` ci-dessus. **Aucun** ne supprime ni
+  `marcel_lancer_routine`, `marcel_bot` (un bot qui répond sur Telegram, voir plus bas), et les
+  outils `marcel_code_*` ci-dessus. **Aucun** ne supprime ni
   n'épingle : ça reste à l'utilisateur, dans l'app.
 
-Et trois skills (`backend/deploy/hermes-skills/`, copiées dans `~/.hermes/skills/marcel/` par
+Et quatre skills (`backend/deploy/hermes-skills/`, copiées dans `~/.hermes/skills/marcel/` par
 `update.sh` et `auto-update.sh`) : `marcel-code` (le déroulé d'une modification et quand ne pas
-fusionner), `marcel-donnees` (où chercher avant de redemander), `marcel-routines-objectifs`.
+fusionner), `marcel-donnees` (où chercher avant de redemander), `marcel-routines-objectifs`,
+`marcel-bots` (« /planning … » sur Telegram → `marcel_bot`).
 Hermes les lit à son prochain lancement (`hermes skills list` pour vérifier).
 
 ## Navigateur
@@ -400,6 +402,26 @@ réglages et les consignes retenues (retirables d'un appui).
   sa mission (réglage « role », modifiable en lui parlant) et ses consignes, sans aucun outil.
   10 au plus ; appui long › Supprimer l'assistant. API : `POST /v1/assistants`,
   `DELETE /v1/assistants/{id}`.
+- **Tâche permanente** (fiche › Tâche permanente) : une par bot, à heure fixe ou sur un événement
+  (offre, planning, e-mail, expéditeur). Elle tourne seule avec ce que ce bot lit, ses consignes,
+  ses skills et ses tâches apprises, sur le modèle seul sans outil (Hermes de vérification si
+  `MARCEL_MEMORY_LLM_URL` manque). Elle ne peut finir que par un bloc ```reglage``` de ce bot,
+  appliqué selon la règle « Changer le réglage d'un assistant », jamais seul après un e-mail. Son
+  résultat revient dans la conversation du bot, comme une routine ; la fiche montre le dernier
+  travail et le prochain réveil. API : `PUT|DELETE /v1/assistants/{id}/task`
+  (`{"prompt", "trigger", "days", "at", "status", "conversation_id"}`), `POST /v1/assistants/{id}/task/run`.
+- **Tâches apprises** : « apprends à trier mes offres : d'abord… ». Le bot finit par un bloc
+  ```recette``` (`{"titre", "etapes": [...]}`, 12 étapes au plus, 10 tâches par bot), retenu selon
+  la règle « Retenir une tâche apprise » (Annuler / Valider), affiché dans sa fiche, modifiable et
+  effaçable. API : `PUT|DELETE /v1/assistants/{id}/recipes/{recipe_id}`.
+- **Skills des bots** : de courtes consignes écrites une fois (fiche › Skills › Skills des bots) et
+  cochées par bot, ajoutées à son prompt. Que du texte, aucun outil. API : `GET|POST /v1/bot-skills`,
+  `PUT|DELETE /v1/bot-skills/{id}`, `PATCH /v1/assistants/{id}` avec `"skills": [ids]`.
+- **Les bots sur Telegram** : « /planning mes missions ? » sur Telegram → Hermes appelle
+  `marcel_bot`, qui lance la même mission que dans l'app (modèle seul, mêmes lectures, mêmes règles)
+  dans une conversation par bot, attend la réponse (2 min au plus) et la renvoie. Jamais le bot
+  Mails. L'app reprend l'échange sous le bot (« via Telegram ») : `GET /v1/bot-messages`,
+  `POST /v1/bot-messages/{id}/delivered`.
 - Offres de recrutement un **samedi, dimanche ou jour férié** (fériés de métropole, Pâques calculé) :
   alerte violette sur la carte et dans la notification.
 

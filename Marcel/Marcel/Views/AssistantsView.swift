@@ -103,6 +103,8 @@ private struct AssistantDetailView: View {
 
                 BotPageSection(assistantID: assistant.id)
 
+                BotTaskSection(assistant: assistant)
+
                 if let reads = assistant.reads, !reads.isEmpty {
                     Section {
                         ForEach(reads) { read in
@@ -147,6 +149,10 @@ private struct AssistantDetailView: View {
                 } header: {
                     Text("Consignes retenues")
                 }
+
+                RecipesSection(assistant: assistant)
+
+                BotSkillsSection(assistant: assistant)
 
                 Section {
                     Menu {

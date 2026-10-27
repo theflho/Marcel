@@ -363,6 +363,7 @@ final class ChatStore {
             resumeMissions()
             await refreshGoalProposals()
             await importRoutineRuns()
+            await importBotMessages()
         case 401, 403: serverStatus = .unauthorized
         default: serverStatus = .unreachable
         }
@@ -620,6 +621,76 @@ final class ChatStore {
         }
     }
 
+    // MARK: - A bot's standing task, taught tasks and shared skills
+
+    /// Sets (or changes) what the bot does alone. Its results come back in its latest conversation.
+    func setTask(_ change: BotTaskChange, of assistant: Assistant) async -> Bool {
+        guard !emergencyActive, let api = settings.api else { return false }
+        var change = change
+        if change.conversationID.isEmpty {
+            change.conversationID = listedConversations.first { $0.assistantID == assistant.id && $0.projectID == nil }?
+                .id.uuidString ?? ""
+        }
+        do {
+            replace(try await api.setTask(assistantID: assistant.id, change))
+            return true
+        } catch {
+            report("Tâche non enregistrée : \(error.localizedDescription)", action: action(for: error))
+            return false
+        }
+    }
+
+    func deleteTask(of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            replace(try await api.deleteTask(assistantID: assistant.id))
+        } catch {
+            report("Tâche non retirée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    /// Runs the standing task now, to try it; its result arrives like a routine's.
+    func runTask(of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            try await api.runTask(assistantID: assistant.id)
+        } catch {
+            report("Tâche non lancée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    func updateRecipe(_ recipe: Assistant.Recipe, title: String, steps: [String], of assistant: Assistant) async -> Bool {
+        guard !emergencyActive, let api = settings.api else { return false }
+        do {
+            replace(try await api.updateRecipe(assistantID: assistant.id, id: recipe.id, title: title, steps: steps))
+            return true
+        } catch {
+            report("Tâche non modifiée : \(error.localizedDescription)", action: action(for: error))
+            return false
+        }
+    }
+
+    func deleteRecipe(_ recipe: Assistant.Recipe, of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        do {
+            replace(try await api.deleteRecipe(assistantID: assistant.id, id: recipe.id))
+        } catch {
+            report("Tâche non effacée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
+    /// A shared skill ticked or not for this bot.
+    func setSkill(_ id: String, _ on: Bool, of assistant: Assistant) async {
+        guard !emergencyActive, let api = settings.api else { return }
+        var chosen = (assistant.skills ?? []).filter(\.on).map(\.id)
+        if on { chosen.append(id) } else { chosen.removeAll { $0 == id } }
+        do {
+            replace(try await api.updateAssistant(id: assistant.id, changes: [:], skills: chosen))
+        } catch {
+            report("Skill non changée : \(error.localizedDescription)", action: action(for: error))
+        }
+    }
+
     /// The user tapped "Créer l'assistant" under Marcel's proposal: created, then opened.
     func createAssistant(_ draft: AssistantDraft, from messageID: UUID) async {
         guard !emergencyActive, let api = settings.api else { return }
@@ -699,6 +770,9 @@ final class ChatStore {
             case "routine":
                 guard let id = undo.id else { return }
                 try await api.deleteRoutine(id: id)
+            case "recette":
+                guard let id = undo.id, let assistantID = undo.assistant else { return }
+                replace(try await api.deleteRecipe(assistantID: assistantID, id: id))
             default:
                 return
             }
@@ -756,6 +830,32 @@ final class ChatStore {
             }
             persist(id)
             try? await api.markRoutineRunDelivered(id: run.id)
+        }
+    }
+
+    /// Puts what the user said to a bot on Telegram, and its reply, in that bot's conversation.
+    func importBotMessages() async {
+        guard !emergencyActive, let api = settings.api, let entries = try? await api.pendingBotMessages() else { return }
+        for entry in entries {
+            guard let id = UUID(uuidString: entry.conversationID), !isStreaming(id) else { continue }
+            var question = ChatMessage(role: .user, content: entry.question, createdAt: entry.at, serverID: settings.activeID)
+            question.via = entry.via
+            var reply = ChatMessage(role: .assistant, content: entry.status == "done" ? entry.text
+                                    : "Pas de réponse sur \(entry.via) (\(entry.status)).",
+                                    createdAt: entry.at.addingTimeInterval(1), serverID: settings.activeID, model: entry.model)
+            reply.missionID = entry.missionID
+            reply.actions = entry.actions ?? []
+            if conversations.contains(where: { $0.id == id }) {
+                mutate(id) { conversation in
+                    guard !conversation.messages.contains(where: { $0.missionID == entry.missionID }) else { return }
+                    conversation.messages += [question, reply]
+                }
+            } else {
+                conversations.append(Conversation(id: id, title: "\(entry.assistantName) · \(entry.via)",
+                                                  messages: [question, reply], assistantID: entry.assistant))
+            }
+            persist(id)
+            try? await api.markBotMessageDelivered(id: entry.id)
         }
     }
 

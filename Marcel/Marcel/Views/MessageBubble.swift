@@ -26,6 +26,9 @@ struct MessageBubble: View {
                     if !message.content.isEmpty {
                         Text(message.content)
                     }
+                    if let via = message.via {
+                        Label("via \(via)", systemImage: "paperplane").font(.caption2).foregroundStyle(.secondary)
+                    }
                 } else {
                     // No text selection: it would swallow the long press that opens the menu below.
                     // A new assistant or a change of settings comes as a block at the end. Carried out
