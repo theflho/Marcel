@@ -43,7 +43,7 @@ from .planning import PlanningStore
 from . import websearch
 from .routines import RoutineStore, days_from_names, next_slot, reads_mail, valid_time, valid_trigger
 from .semantic import LOCAL_MODEL, Embedder, SemanticIndex, digest
-from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
+from .proactive import (APPROVED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
 
 MARCEL_TOKEN = os.environ.get("MARCEL_TOKEN", "")
@@ -142,7 +142,6 @@ TEXT_MIME_PREFIXES = ("text/", "application/json", "application/xml")
 # Memory: the core is sent with every mission, so it has a character budget.
 MEMORY_CORE_CHARS = int(os.environ.get("MARCEL_MEMORY_CORE_CHARS") or 1500)
 # Hour (server local time) of the nightly tidying.
-MEMORY_TIDY_HOUR = int(os.environ.get("MARCEL_MEMORY_TIDY_HOUR") or 3)
 # Model used to extract and tidy memories (OpenAI-compatible). Defaults to Hermes; pointing it
 # straight at the model provider avoids running the whole agent for these small jobs.
 MEMORY_LLM_URL = (os.environ.get("MARCEL_MEMORY_LLM_URL") or HERMES_URL).rstrip("/")
@@ -1885,22 +1884,6 @@ async def run_tidy() -> dict:
     return memory.tidy(merges, expire)
 
 
-async def nightly_tidy() -> None:
-    while True:
-        now = time.localtime()
-        target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, MEMORY_TIDY_HOUR, 0, 0, 0, 0, -1))
-        if target <= time.time():
-            target += DAY
-        await asyncio.sleep(target - time.time())
-        if missions.emergency:
-            continue
-        try:
-            summary = await run_tidy()
-            log.info("memory tidied: %s", {k: v for k, v in summary.items() if k != "stats"})
-        except Exception:
-            log.exception("nightly memory tidying failed")
-
-
 # MARK: Goals
 
 
@@ -2233,7 +2216,7 @@ async def ideas_seen() -> dict:
 
 @app.patch("/v1/ideas/{idea_id}", dependencies=[Depends(require_token)])
 async def update_idea(idea_id: str, body: IdeaUpdate) -> dict:
-    idea = find_idea(idea_id)
+    find_idea(idea_id)  # 404 when it doesn't exist
     changes: dict = {"status": body.status}
     if body.status in (OPENED, APPROVED) and body.conversation_id:
         changes["conversation_id"] = body.conversation_id

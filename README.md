@@ -65,12 +65,13 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   redémarrages. Côté app (Réglages › Sécurité), plus aucune
   requête ne part — ni test de connexion, ni envoi, ni reprise — tant qu'on n'a pas touché « Reprendre ».
 
-- Mémoire en trois niveaux (`MARCEL_DATA_DIR/marcel.db`), pour ne jamais saturer :
+- **Ancienne** mémoire de Marcel (plus envoyée ni tenue à jour : la mémoire est celle de Hermes, voir
+  « Hermes, seul cerveau »). Pour mémoire, elle était en trois niveaux (`MARCEL_DATA_DIR/marcel.db`) :
   - **noyau** : quelques faits stables, envoyés avec chaque mission, plafonnés à
     `MARCEL_MEMORY_CORE_CHARS` caractères (1 500 par défaut) ;
   - **archives** : sans limite, recherche plein texte (FTS5) ; seuls les ~8 souvenirs liés à la
     question accompagnent la mission (carte d'action « Mémoire » dans l'app) ;
-  - **rangement** chaque nuit à `MARCEL_MEMORY_TIDY_HOUR` h (3 h par défaut) ou à la demande :
+  - **rangement** à la demande (Réglages › Mémoire) :
     expire les faits périmés, fusionne les doublons, fait monter au noyau ce qui sert souvent
     (3 fois en 30 jours) et redescendre ce qui n'a pas servi depuis 60 jours ou dépasse le budget.
     Les souvenirs épinglés ne bougent jamais.
