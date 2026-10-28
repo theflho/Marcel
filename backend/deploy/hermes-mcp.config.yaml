@@ -8,7 +8,7 @@
 #
 # Les outils de lecture (marcel_resume, marcel_planning, marcel_offres, marcel_robot,
 # marcel_historique, marcel_reponse, marcel_memoire, marcel_objectifs, marcel_routines,
-# marcel_chercher, marcel_bots, marcel_passages, marcel_idees, marcel_regles) et ceux qui agissent : marcel_retenir, marcel_creer_objectif,
+# marcel_chercher, marcel_bots, marcel_passages, marcel_idees, marcel_regles, marcel_boite, marcel_boite_lire : sa propre boîte mail) et ceux qui agissent : marcel_retenir, marcel_creer_objectif,
 # marcel_creer_routine, marcel_lancer_routine, marcel_regler_bot, marcel_bot (les bots sur Telegram), marcel_journaux
 # (journaux du serveur) et les outils de code marcel_code_* (voir README, « Marcel modifie son propre
 # code »). Créer un objectif ou une routine suit les règles de l'app (Réglages › Règles) : « Demander »

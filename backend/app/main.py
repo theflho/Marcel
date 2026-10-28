@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import assistants as bots
+from .agentmail import Mailbox, MailboxError
 from .gmail import DEFAULT_QUERY, MAIL_WORDS, Gmail, GmailExpired, GmailRefused
 from .code_requests import AGENTS, DEFAULT_AGENT, CodeRequestStore, GitHubError
 from .code_tools import CodeError, CodeWorkspace, GitHub
@@ -200,6 +201,8 @@ github = GitHub(GITHUB_REPO, GITHUB_TOKEN)
 PLANNING_KEY = os.environ.get("MARCEL_PLANNING_KEY", "")
 # Gmail, read only (connected once with python -m app.gmail_auth).
 gmail = Gmail(DATA_DIR, os.environ.get("MARCEL_GOOGLE_CLIENT_ID", ""), os.environ.get("MARCEL_GOOGLE_CLIENT_SECRET", ""))
+# Marcel's own address (AgentMail), for the accounts he creates: he only reads it.
+mailbox = Mailbox(os.environ.get("MARCEL_AGENTMAIL_KEY", ""), os.environ.get("MARCEL_AGENTMAIL_INBOX", ""))
 # Background jobs (memory extraction) are kept here so they aren't garbage-collected mid-way.
 background: set[asyncio.Task] = set()
 
@@ -466,7 +469,8 @@ async def start_mission(request: ChatRequest) -> dict:
         # The full Hermes may have a browser, which can submit forms: only once the user said go.
         # Blocked: never, even when the message says go.
         browser = rules()["navigateur"] != "off" and (approves(title) or rules()["navigateur"] == "auto")
-        inner = lambda: hermes_stream(request, model, note, browser=browser)  # noqa: E731
+        vault = browser and vault_open(title)
+        inner = lambda: hermes_stream(request, model, note, browser=browser, vault=vault)  # noqa: E731
     mission = missions.start(request.conversation_id,
                              lambda: with_memory(request, inner, facts, extra, learn=not request.private),
                              model=model, title=title)
@@ -785,7 +789,7 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
     assistant = assistants.find(request.assistant)
     tools = bot_tools(assistant, mail)
     context, web = bot_context(assistant, device, mail, tools)
-    note = "\n\n".join(filter(None, [context, app_context(bool(request.device_context)), note,
+    note = "\n\n".join(filter(None, [context, app_context(bool(request.device_context), assistant.id), note,
                                       SEARCH_PROMPT if web else "", IPHONE_PROMPT]))
 
     def call(req: ChatRequest, text: str):
@@ -795,7 +799,7 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
             # The browser as in Marcel's conversations: only once the user said go (rule « navigateur »).
             browser = rule("navigateur", assistant.id) != "off" and (
                 approves(title) or rule("navigateur", assistant.id) == "auto")
-            return hermes_stream(req, model, text, browser=browser)
+            return hermes_stream(req, model, text, browser=browser, vault=browser and vault_open(title, assistant.id))
         if MEMORY_LLM_URL != HERMES_URL:
             return hermes_stream(req, MEMORY_LLM_MODEL, text, MEMORY_LLM_URL, MEMORY_LLM_KEY)
         return hermes_stream(req, CHECK_HERMES_MODEL or model, text, CHECK_HERMES_URL, CHECK_HERMES_KEY)
@@ -837,11 +841,11 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   l'ampoule en haut de l'écran.
 - Navigateur : pour lire une page ou comparer, les outils web (recherche, extraction) suffisent. Le
   navigateur (outils browser_*) sert à agir sur un site : tu t'en sers seul quand la tâche le
-  demande, et tu dis ensuite ce que tu as fait. Tu ne remplis jamais un mot de passe ni une carte
-  bancaire (les identifiants enregistrés, browser_vault, restent coupés par Marcel).
-- Actions : tu prépares (brouillon, panier, réservation) mais rien ne part sans lui. Pour une
-  action réelle, donne le contenu exact (destinataire, texte, montant) et attends son accord
-  explicite dans la conversation ; sur une idée, l'app propose le bouton « Valider ».
+  demande, et tu dis ensuite ce que tu as fait.
+{autonomy}
+- Messages : un e-mail, un message ou une publication ne part jamais sans lui. Donne le contenu
+  exact (destinataire, texte) et attends son accord explicite ; sur une idée, l'app propose le
+  bouton « Valider ».
 - Routines : pour une tâche à heure fixe, sans suivi dans le temps (« chaque lundi à 8 h, le point de
   ma semaine », « chaque soir, résume mes e-mails »), crée-la quand il le demande ou l'accepte, en
   terminant ta réponse par :
@@ -926,7 +930,7 @@ offers = OfferStore(DATA_DIR / "marcel.db", USER_TZ)
 routines = RoutineStore(DATA_DIR / "marcel.db", USER_TZ)
 
 
-def app_context(agenda_shared: bool) -> str:
+def app_context(agenda_shared: bool, assistant: str | None = None) -> str:
     """What Marcel is and what is plugged in right now, sent with every mission."""
     now = datetime.now(USER_TZ) if USER_TZ else datetime.now()
     days = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
@@ -940,8 +944,39 @@ def app_context(agenda_shared: bool) -> str:
                  if agenda_shared else "Agenda : non partagé (Réglages › Sur cet iPhone › Partager mon agenda).")
     level = {"off": "désactivées", "quiet": "discrètes (l'important seulement)", "normal": "normales"}
     state.append(f"Vérifications automatiques des objectifs : {level.get(ideas.settings()['level'], 'normales')}.")
-    return APP_PROMPT.format(state="\n".join(state), followups=bots.FOLLOWUPS, big_work=big_work_note()) \
+    return APP_PROMPT.format(state="\n".join(state), followups=bots.FOLLOWUPS, big_work=big_work_note(),
+                             autonomy=autonomy_note(assistant)) \
         + "\n\n" + data_overview()
+
+
+def autonomy_note(assistant: str | None = None) -> str:
+    """What Marcel may do on sites in the user's name, by the rules « compte » and « achat »."""
+    address = mailbox.inbox or "ton adresse AgentMail (outil marcel_boite)"
+    account = {
+        "auto": f"- Comptes : tu as ta propre identité, l'adresse {address} (outils marcel_boite et "
+                "marcel_boite_lire pour les codes et liens de confirmation) et le coffre du navigateur "
+                "(browser_vault) pour les identifiants. Crée un compte ou connecte-toi seul quand la tâche le "
+                "demande, toujours avec cette adresse et un mot de passe fort que tu enregistres dans le coffre, "
+                "jamais avec l'adresse ni les mots de passe de l'utilisateur. Dis ensuite quel compte tu as créé.",
+        "ask": f"- Comptes : avant de créer un compte ou de te connecter à un site, dis lequel et avec quelle "
+               f"adresse (la tienne : {address}), et attends son « Vas-y ». Ensuite, tu le fais seul (coffre "
+               "browser_vault, codes avec marcel_boite).",
+        "off": "- Comptes : tu ne crées aucun compte et ne te connectes à aucun site ; dis-lui que c'est bloqué "
+               "dans Réglages › Règles.",
+    }[rule("compte", assistant)]
+    cap = purchase_cap()
+    buying = {
+        "auto": f"- Réservations et achats : tu réserves et paies en son nom, seul, jusqu'à {cap} € par achat, "
+                "tout compris, avec le moyen de paiement du coffre (browser_vault). Au-delà, ou si le prix final "
+                "n'est pas sûr, donne le détail exact (site, objet, date, montant) et attends son « Vas-y ». "
+                "Ensuite, dis ce que tu as payé, où, combien et le numéro de réservation.",
+        "ask": "- Réservations et achats : tu prépares tout (panier, réservation) puis tu donnes le détail exact "
+               "(site, objet, date, montant) et tu attends son « Vas-y » ; après, tu le fais seul, avec le moyen "
+               f"de paiement du coffre (browser_vault), jusqu'à {cap} € par achat.",
+        "off": "- Réservations et achats : tu ne réserves et n'achètes rien, même s'il le demande ; tu peux "
+               "préparer le panier. Dis-lui que c'est bloqué dans Réglages › Règles.",
+    }[rule("achat", assistant)]
+    return f"{account}\n{buying}"
 
 
 def data_overview() -> str:
@@ -1026,6 +1061,8 @@ RULE_KINDS = {
     "objectif": "Suivre un nouvel objectif",
     "routine": "Créer une routine ou une relance",
     "navigateur": "Agir sur un site (navigateur)",
+    "compte": "Créer un compte ou s'y connecter (identité de Marcel)",
+    "achat": "Réserver ou acheter en ton nom",
     "recherche": "Chercher sur le web (bots)",
     "recette": "Retenir une tâche apprise (bots)",
     "iphone": "Lire sur l'iPhone (rappels, contacts, position, agenda)",
@@ -1039,8 +1076,17 @@ OFF_CARD = "auto-off-"
 def rules() -> dict[str, str]:
     saved = assistants.state("rules", {}) or {}
     defaults = {kind: "auto" for kind in RULE_KINDS} | {"navigateur": "ask" if BROWSER_GUARD else "auto",
-                                                         "recherche": "ask", "iphone": "ask", "iphone_ecriture": "ask"}
+                                                         "recherche": "ask", "iphone": "ask", "iphone_ecriture": "ask",
+                                                         "achat": "ask"}
     return defaults | {k: v for k, v in saved.items() if k in RULE_KINDS and v in RULE_VALUES}
+
+
+# What Marcel may pay by himself, per purchase, under the rule « achat » set to « auto ».
+DEFAULT_PURCHASE_CAP = 50
+
+
+def purchase_cap() -> int:
+    return int(assistants.state("purchase_cap", DEFAULT_PURCHASE_CAP) or 0)
 
 
 def bot_rules() -> dict[str, dict[str, str]]:
@@ -1204,7 +1250,8 @@ async def with_memory(request: ChatRequest, inner, facts, extra: list[dict] = ()
 @app.get("/v1/rules", dependencies=[Depends(require_token)])
 async def get_rules() -> dict:
     return {"rules": rules(), "labels": RULE_KINDS, "bots": bot_rules(),
-            "private_words": assistants.state("private_words", [])}
+            "private_words": assistants.state("private_words", []), "purchase_cap": purchase_cap(),
+            "mailbox": mailbox.inbox if mailbox.connected else None}
 
 
 class RulesUpdate(BaseModel):
@@ -1214,6 +1261,8 @@ class RulesUpdate(BaseModel):
     assistant: str | None = None
     # Words a web search question must never carry (name, town, employer…), set by the user.
     private_words: list[str] | None = Field(default=None, max_length=50)
+    # Euros Marcel may pay by himself per purchase (rule « achat »).
+    purchase_cap: int | None = Field(default=None, ge=0, le=5000)
 
 
 @app.put("/v1/rules", dependencies=[Depends(require_token)])
@@ -1235,6 +1284,8 @@ async def put_rules(body: RulesUpdate) -> dict:
     if body.private_words is not None:
         words = sorted({" ".join(w.split())[:60] for w in body.private_words if len(w.strip()) >= 3})
         assistants.set_state("private_words", words)
+    if body.purchase_cap is not None:
+        assistants.set_state("purchase_cap", body.purchase_cap)
     return await get_rules()
 
 
@@ -1326,18 +1377,31 @@ BROWSER_STOP = ("Navigateur arrêté : Marcel ne s'en sert qu'après ton accord.
                 "qu'il fera (site, champs, montant) ; réponds « Vas-y » pour qu'il le fasse.")
 
 
+VAULT_STOP = ("Navigateur arrêté : le coffre (identifiants et carte de Marcel) est fermé par tes règles « Comptes » "
+              "et « Réservations et achats ». Réponds « Vas-y » ou mets l'une d'elles sur « Tout seul ».")
+
+
 def approves(message: str) -> bool:
     return bool(APPROVAL.search(message))
+
+
+def vault_open(message: str, assistant: str | None = None) -> bool:
+    """The saved logins and card (Marcel's own, browser_vault) serve accounts and purchases: open when
+    one of those rules says « auto », or « ask » and the user's message is a go-ahead. Never in a
+    routine: nobody is there to say go, and an e-mail may have started it."""
+    levels = (rule("compte", assistant), rule("achat", assistant))
+    return "auto" in levels or ("ask" in levels and approves(message))
 # fin garde-fou : navigateur
 
 
 async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                         url: str = HERMES_URL, key: str = HERMES_API_KEY,
-                        browser: bool = True) -> AsyncIterator[str | dict]:
+                        browser: bool = True, vault: bool = False) -> AsyncIterator[str | dict]:
     """Calls Hermes' OpenAI-compatible endpoint and yields text deltas.
 
     Tool calls streamed by Hermes become actions, so the app can show what the agent does.
-    Without `browser`, the first browser tool call ends the reply (and the request to Hermes).
+    Without `browser`, the first browser tool call ends the reply (and the request to Hermes);
+    without `vault`, the first call to the saved logins and cards (browser_vault) does.
     """
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {
@@ -1390,7 +1454,7 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                     if error := chunk.get("error"):
                         detail = error.get("message") if isinstance(error, dict) else str(error)
                         raise MissionError(f"Hermes s'est arrêté : {str(detail)[:200]}")
-                    for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser):
+                    for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser, vault):
                         yield item
     except httpx.ConnectError as error:
         raise MissionError("Hermes est injoignable : son serveur ne répond pas (redémarrage en cours ?).") from error
@@ -1412,7 +1476,8 @@ def hermes_refusal(status: int, body: str) -> str:
     return f"Hermes n'a pas pu répondre : {said}" + (f" ({detail})" if detail else "") + "."
 
 
-def hermes_chunk(chunk: dict, tools: dict[int, dict], finish_tools, worth_showing, browser: bool):
+def hermes_chunk(chunk: dict, tools: dict[int, dict], finish_tools, worth_showing, browser: bool,
+                 vault: bool = False):
     """The text and steps of one piece of Hermes' stream."""
     for choice in chunk.get("choices", []):
         delta = choice.get("delta") or {}
@@ -1424,11 +1489,9 @@ def hermes_chunk(chunk: dict, tools: dict[int, dict], finish_tools, worth_showin
             tool["name"] += function.get("name") or ""
             tool["detail"] = (tool["detail"] + (function.get("arguments") or ""))[:300]
             # garde-fou : navigateur coupé
-            if BROWSER_TOOL.match(tool["name"]) and (not browser or "vault" in tool["name"]):
+            if BROWSER_TOOL.match(tool["name"]) and (not browser or ("vault" in tool["name"] and not vault)):
                 yield tool | {"status": "cancelled", "detail": "coupé par Marcel avant d'agir"}
-                raise MissionError(BROWSER_STOP if "vault" not in tool["name"] else
-                                   "Navigateur arrêté : Marcel ne remplit jamais tes mots de passe ni "
-                                   "tes cartes. Ce geste-là reste le tien.")
+                raise MissionError(BROWSER_STOP if "vault" not in tool["name"] else VAULT_STOP)
             # fin garde-fou : navigateur coupé
             if worth_showing(index, tool):
                 yield dict(tool)
@@ -3878,6 +3941,40 @@ def tool_rules(_: dict) -> str:
         found = assistants.find(bot)
         lines += [f"- {found.name if found else bot}, {RULE_KINDS[k].lower()} : {names[v]}" for k, v in levels.items()]
     return "\n".join(lines)
+
+
+@mcp.tool("marcel_boite",
+          "Ta propre boîte mail (pas celle de l'utilisateur) : les derniers messages reçus, pour les codes et liens "
+          "de confirmation des comptes que tu crées. Lecture seule.",
+          {"nombre": {"type": "integer", "description": "Combien de messages (10 par défaut, 25 au plus)"}})
+async def tool_mailbox(args: dict) -> str:
+    if not mailbox.connected:
+        raise ToolError("Pas de boîte mail : MARCEL_AGENTMAIL_KEY n'est pas réglé sur le serveur.")
+    if rule("compte") == "off":
+        raise ToolError("Règle « bloqué » (comptes) : l'utilisateur l'a interdit.")
+    try:
+        found = await mailbox.messages(int(args.get("nombre") or 10))
+    except (MailboxError, ValueError) as error:
+        raise ToolError(str(error)) from error
+    if not found:
+        return f"Boîte {mailbox.inbox} : vide."
+    lines = [f"- id {m['id']} · {m['at'][:16].replace('T', ' ')} · {m['from']} · {m['subject']}"
+             + (" · non lu" if m["unread"] else "") + f"\n  {m['preview']}" for m in found]
+    return f"Boîte {mailbox.inbox} :\n" + untrusted("BOÎTE DE MARCEL", "\n".join(lines))
+
+
+@mcp.tool("marcel_boite_lire", "Le texte d'un message de ta boîte (id donné par marcel_boite).",
+          {"id": {"type": "string"}}, required=("id",))
+async def tool_mailbox_read(args: dict) -> str:
+    if not mailbox.connected:
+        raise ToolError("Pas de boîte mail : MARCEL_AGENTMAIL_KEY n'est pas réglé sur le serveur.")
+    if rule("compte") == "off":
+        raise ToolError("Règle « bloqué » (comptes) : l'utilisateur l'a interdit.")
+    try:
+        m = await mailbox.message(str(args.get("id") or ""))
+    except MailboxError as error:
+        raise ToolError(str(error)) from error
+    return untrusted("E-MAIL REÇU PAR MARCEL", f"De : {m['from']}\nObjet : {m['subject']}\nReçu : {m['at']}\n\n{m['text']}")
 
 
 @mcp.tool("marcel_lancer_routine", "Lance une routine tout de suite (son résultat arrive dans sa conversation).",
