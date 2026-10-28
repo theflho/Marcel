@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY deploy/hermes-skills ./hermes-skills
 RUN mkdir -p /data/files && chown -R nobody /data
 USER nobody
 EXPOSE 8000

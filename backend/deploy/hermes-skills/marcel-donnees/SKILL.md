@@ -7,6 +7,8 @@ description: Retrouver ce que Marcel sait et a fait (conversations passées, mé
 
 Avant de dire « je ne sais pas » ou de redemander quelque chose à l'utilisateur, cherche :
 
+- `marcel_contexte` : heure locale, connexions, règles effectives de ton profil, plafond d'achat et
+  agent de code choisi ; à lire au début de l'échange. Le planning et les objectifs ne sont plus joints.
 - `marcel_resume` : la carte de tout ce que Marcel garde, avec les totaux à jour.
 - `marcel_chercher` : recherche par le sens dans la mémoire, les réponses passées et le planning.
 - `marcel_historique` puis `marcel_reponse` : retrouver une conversation et lire une réponse en entier.

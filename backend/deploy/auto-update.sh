@@ -100,13 +100,13 @@ hermes_cli() {  # une commande hermes, sous l'utilisateur de Hermes (ou dans son
   fi
 }
 
-profiles_tool() {  # plan|prepare : app/hermes_profiles.py, avec la liste voulue et le dossier de Hermes montés
+profiles_tool() {  # plan|prepare|verify : liste voulue et dossier de Hermes montés
   docker compose run --rm --no-deps -T --user "$hermes_owner" -v "$hermes_home:/hermes" -v "$work:/work:ro" \
     marcel-api python -m app.hermes_profiles "$1" /work/profiles.json /hermes
 }
 
 profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés, finis, retirés.
-  # Hermes les sert à chaud (gateway.multiplex_profiles) : aucun redémarrage.
+  # Hermes les sert sur le gateway multiplexé ; les nouveaux contrats attendent un redémarrage confirmé.
   curl -fsS -m 10 -H "Authorization: Bearer $token" "$api/v1/hermes/profiles" -o "$work/profiles.json" 2>/dev/null \
     || return 0  # serveur arrêté, ou trop ancien pour les profils
   chmod 755 "$work" && chmod 644 "$work/profiles.json"
@@ -115,6 +115,10 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
   digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml" "$hermes_home/.env") app/hermes_profiles.py \
     | sha256sum | cut -d' ' -f1)
   [[ "$digest" == "$(cat .hermes-profiles-applied 2>/dev/null)" ]] && return 0
+  # Revoke an earlier acknowledgment before changing files or retrying a failed sync.
+  curl -fsS -m 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data '{"revisions":{}}' "$api/v1/hermes/profiles/applied" >/dev/null \
+    || { echo "$(date '+%F %T') profils : synchronisation différée, contexte conservé"; return 0; }
   plan=$(profiles_tool plan 2>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
   while read -r action name; do
     case "$action" in
@@ -124,14 +128,20 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
                 && echo "$(date '+%F %T') profil Hermes retiré : $name" ;;
     esac
   done <<< "$plan"
-  local prepared
-  prepared=$(profiles_tool prepare 2>>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  # The context contract includes the installed skills; copy them before writing/acknowledging SOUL.
+  skills
+  profiles_tool prepare >/dev/null 2>>"$work/profiles.err" || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  # Always restart an unacknowledged contract, even when prepare is now unchanged: a previous
+  # attempt may have written the files but failed its restart, or only the skills may have changed.
+  echo "$(date '+%F %T') Hermes redémarre (profils, consignes ou plateforme marcel)."
+  restart_hermes || { echo "$(date '+%F %T') profils : redémarrage refusé, ancien contexte conservé"; return 0; }
+  hermes_answers || { echo "$(date '+%F %T') profils : Hermes ne répond pas, ancien contexte conservé"; return 0; }
+  profiles_tool verify >"$work/profiles-applied.json" 2>>"$work/profiles.err" \
+    || { echo "$(date '+%F %T') profils : vérification des consignes ratée"; return 0; }
+  curl -fsS -m 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-binary "@$work/profiles-applied.json" "$api/v1/hermes/profiles/applied" >/dev/null \
+    || { echo "$(date '+%F %T') profils : accusé de synchronisation refusé, ancien contexte conservé"; return 0; }
   echo "$digest" > .hermes-profiles-applied
-  # The main profile's own .env changed (the « marcel » platform's settings): its adapters read it at start.
-  if grep -qx "changed main" <<< "$prepared"; then
-    echo "$(date '+%F %T') Hermes redémarre (réglages de la plateforme marcel)."
-    restart_hermes
-  fi
 }
 
 config_tool() {  # apply|restore … : app/hermes_config.py, avec le dossier de Hermes et deploy/ montés, sous son utilisateur

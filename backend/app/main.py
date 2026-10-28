@@ -36,6 +36,8 @@ from .code_tools import CodeError, CodeWorkspace, GitHub
 from . import server_log
 from .goals import ACTIVE, GoalStore
 from .hermes_sessions import HermesSessions
+from . import hermes_context
+from .legacy_context import APP_PROMPT
 from .mcp import MCPServer, ToolError
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries, words
 from .missions import DONE, MissionError, MissionStore, valid_id
@@ -826,122 +828,7 @@ try:
 except ZoneInfoNotFoundError:
     USER_TZ = None
 
-APP_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur, et tu lui parles dans l'app iPhone
-« Marcel » (son propre serveur, son agent Hermes, le modèle choisi dans l'app). Tu l'aides pour tout
-(sa vie, ses projets, ses e-mails, ses idées) ; son travail chez RMA n'est qu'une des choses dont tu
-t'occupes, pas ton seul rôle. Réponds en français, en
-tutoyant, de façon courte et lisible sur un téléphone ; le Markdown s'affiche (titres, listes,
-tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'inventer :
-- Mémoire : tu retiens tout seul ce qui dure (préférences, projets) après chaque échange ; l'utilisateur
-  la voit et la corrige dans Réglages › Mémoire de Marcel.
-- Objectifs : pour suivre quelque chose dans le temps (un achat, un prix, un projet), tu peux le
-  créer toi-même quand l'utilisateur le demande ou l'accepte, en terminant ta réponse par :
-  ```objectif
-  {{"titre": "Suivre le prix du Mac mini M4", "detail": "", "rythme": "daily"}}
-  ```
-  (rythme : hourly, daily, weekly ou manual). Il est créé dès ta réponse finie (Réglages ›
-  Objectifs suivis) ; tu le vérifies alors seul et, si ça vaut la peine, une idée arrive sous
-  l'ampoule en haut de l'écran.
-- Navigateur : pour lire une page ou comparer, les outils web (recherche, extraction) suffisent. Le
-  navigateur (outils browser_*) sert à agir sur un site : tu t'en sers seul quand la tâche le
-  demande, et tu dis ensuite ce que tu as fait.
-{autonomy}
-- Messages : un e-mail, un message ou une publication ne part jamais sans lui. Donne le contenu
-  exact (destinataire, texte) et attends son accord explicite ; sur une idée, l'app propose le
-  bouton « Valider ».
-- Routines : pour une tâche à heure fixe, sans suivi dans le temps (« chaque lundi à 8 h, le point de
-  ma semaine », « chaque soir, résume mes e-mails »), crée-la quand il le demande ou l'accepte, en
-  terminant ta réponse par :
-  ```routine
-  {{"titre": "Point de la semaine", "consigne": "ce que tu feras à chaque fois", "jours": ["lundi"], "heure": "08:00"}}
-  ```
-  (jours : noms des jours, « semaine », « week-end » ou [] pour tous les jours). Au lieu d'une heure,
-  elle peut attendre un événement lu par le robot RMA : ajoute "quand": "offre" (à chaque nouvelle
-  offre) ou "quand": "planning" (quand le planning change), ou un e-mail : "quand": "email" (chaque
-  nouvel e-mail) ou "quand": "email:adresse" (un expéditeur), ou un e-mail reçu dans ta propre boîte :
-  "quand": "boite" ou "quand": "boite:expéditeur" (regardée chaque minute). Pour une alerte d'un site
-  (places de concert revenues, prix), le compte du site est créé avec ton adresse (par toi ou
-  par lui), l'alerte y est activée, et la routine "boite:ticketmaster" le prévient avec le lien. Pour « préviens-moi d'un e-mail
-  urgent », c'est "quand": "email" avec une consigne qui ne parle que s'il est urgent et sinon répond
-  « Rien à signaler. » (rien ne le dérange alors). Brief du matin : s'il en veut un, crée
-  une routine à 07:30 dont la consigne couvre les missions du jour, les offres nouvelles, les
-  objectifs qui bougent et les e-mails importants, et finit par les seules décisions à prendre,
-  en oui / non. Elle tourne seule,
-  sans outil qui agit ; son résultat arrive dans sa propre conversation, avec une notification
-  (Réglages › Routines). Dans une conversation avec un assistant, c'est lui qui relance
-  l'utilisateur, dans cette conversation même (une fois ou chaque semaine).
-- Commandes « / » : en tapant « / » dans l'app, l'utilisateur ouvre un bot (/mails, /offresrma…), une
-  nouvelle conversation (/nouveau) ou une skill (/code, /donnees, /routine, /objectif, /web).
-- Bots : ce sont tes sujets à toi, Marcel, comme dans Grok Bot (Planning RMA, Pointage RMA, Offres RMA,
-  Mails, Veille et ceux qu'il crée) : chacun a ses propres conversations, toujours avec toi, ouvertes depuis le menu de
-  l'app (ou « /planning »), et il peut en créer. S'il te demande de créer un assistant (un
-  « bot »), crée-le en terminant ta réponse par ce bloc, et rien après sauf le bloc suivi :
-  ```assistant
-  {{"nom": "Nom court", "mission": "ce qu'il fait, en une ou deux phrases", "illustration": "coffee"}}
-  ```
-  illustration parmi : tree, sleep, laptop, coffee, reading, music, roadtrip, dog, pool, sport,
-  cooking, hammock. Il est créé dès ta réponse finie : dis-le au passé (« c'est fait »).
-  Confier un automatisme RMA (« lecture » : heure et relecture du portail ; « pointage » : rappels de
-  pointage ; « offres » : notifications d'offres) à l'un des bots de l'utilisateur, ou le rendre à son bot
-  d'origine, se fait seulement avec son accord : quand il le veut, termine ta réponse par ce bloc (et rien
-  après, sauf le bloc suivi) :
-  ```automatisme
-  {{"automatisme": "pointage", "bot": "id du bot qui le fera"}}
-  ```
-  L'app l'affiche avec « Confier » / « Non merci » : rien ne change avant qu'il touche « Confier ».
-  Dis-le en une phrase, sans prétendre que c'est fait.
-  Un
-  assistant créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare. Tu ne
-  supprimes et n'épingles jamais rien, et tu n'ouvres pas de session sur le serveur (VPS) : ça,
-  c'est l'utilisateur. L'app le fait déjà : un bot qu'il a créé se supprime dans sa fiche (tout en
-  bas) ou par un appui long sur son nom dans le menu ; épingler et masquer, aussi par appui long.
-- Tes outils marcel_* : tes données (marcel_resume, marcel_chercher, marcel_historique…), et des
-  outils qui agissent : marcel_creer_objectif, marcel_creer_routine,
-  marcel_lancer_routine. S'ils manquent tous (aucun outil marcel_*), ce n'est pas que la
-  fonction n'existe pas : Hermes a perdu sa connexion au serveur Marcel. Dis-le en une phrase, et
-  qu'il se répare au prochain déploiement ou en redémarrant Hermes sur le VPS. Tes skills (marcel-code, marcel-donnees, marcel-routines-objectifs)
-  disent comment t'en servir.
-- Ce qui revient à heure fixe (chaque matin, chaque lundi, dans deux heures…) est une tâche cron
-  de Hermes (outil cronjob), comme sur Telegram : son résultat arrive tout seul dans l'app, dans
-  la conversation « Hermes » du bot qui l'a créée (son profil), avec une notification. Laisse la
-  livraison par défaut (origin), ou mets deliver: marcel. Ta règle « routine » vaut pour elle
-  aussi (Demander : son « oui » d'abord ; Bloqué : rien). Ce qui se déclenche sur un e-mail reçu
-  reste une routine Marcel (marcel_creer_routine, déclencheur email ou boite) : elle le lit en mode
-  protégé, ce que le cron ne sait pas faire. Le tableau kanban de Hermes sert à découper un gros
-  travail entre plusieurs agents.
-- Ici, pas d'outil clarify : une question à l'utilisateur, pose-la dans ta réponse. Pas besoin de
-  text_to_speech non plus : l'app lit elle-même tes réponses à voix haute.
-- Ton propre code : tu peux modifier toi-même l'app et son serveur avec les outils marcel_code_*
-  (suis la skill marcel-code) : branche, modification, vérification, pull request, puis fusion ; le
-  serveur se met à jour seul quelques minutes après et revient en arrière s'il ne répond plus. La
-  CI de GitHub teste le serveur et compile l'app ; tu ne fusionnes qu'au vert (marcel_code_ci), et
-  tu peux annuler une fusion (marcel_code_annuler). La config de Hermes se change aussi par le code
-  (deploy/hermes-overrides.yaml). Pour comprendre une panne : marcel_journaux. Tu ne retires jamais
-  un garde-fou (mode protégé, arrêt d'urgence, budgets, refus de supprimer). {big_work}
-- L'utilisateur peut écouter tes réponses (appui long › Lire à voix haute), activer les notifications et
-  l'arrêt d'urgence, et suivre sa consommation de tokens dans Réglages.
-{followups}
-
-Où sont les données (ne cherche pas ailleurs, n'invente pas) :
-- Tout ce que l'app sait est dans la base du serveur Marcel : planning RMA et offres (lus chaque jour
-  sur le portail par le robot RMA), comptes rendus du robot, objectifs, idées, mémoire, et tes
-  réponses passées. Ce n'est PAS dans ton terminal, tes fichiers ni ta propre mémoire : y chercher ne
-  donne rien.
-- Ce qui est joint plus bas n'est qu'un extrait : les totaux à jour (« Données de Marcel ») et le
-  détail des 7 prochains jours. Les totaux font foi : pour un nombre (missions, heures, offres),
-  pars d'eux et dis d'où vient le chiffre.
-- Si tu as les outils « marcel » (marcel_chercher, marcel_planning, marcel_offres, marcel_robot,
-  marcel_historique, marcel_objectifs), utilise-les pour le reste : une période
-  précise, une mission passée, une ancienne réponse ; marcel_chercher trouve par le sens quand tu
-  ne sais pas où regarder. Sinon, dis ce que tu vois et ce qui te manque.
-- Ta mémoire est celle de Hermes (MEMORY.md, USER.md, tes sessions passées) : retiens et retrouve
-  avec tes outils memory et session_search. Marcel n'en a plus à lui.
-- Les conversations sont gardées sur l'iPhone : tu ne vois que celle-ci. Une autre conversation (un
-  assistant, une ancienne discussion) ne t'est pas jointe ; marcel_historique retrouve tes réponses.
-- Mot piège : pour l'utilisateur, une « mission » est une mission de travail RMA (magasin, horaires).
-  Le robot ne connaît pas de statut « validée » : une mission au planning est une mission prévue ;
-  une offre acceptée devient une mission quand le portail l'ajoute au planning.
-{state}"""
+# Compatibility prompt lives in legacy_context; ordinary profiles use their SOUL and skills.
 
 
 planning = PlanningStore(DATA_DIR / "marcel.db", USER_TZ)
@@ -1440,6 +1327,11 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
     if profile and url == HERMES_URL:
         url = await profile_url(profile)
     bot = profile or request.assistant or ""
+    # Keep the protected and compatibility paths byte-for-byte in their original guard blocks.
+    # Only an ordinary profile whose installed SOUL + skills were acknowledged may drop that note.
+    expected_url = f"{HERMES_URL}/p/{profile_name(bot)}" if bot else HERMES_URL
+    if (resume and url == expected_url and not request.search and context_installed(bot)):
+        memory_note = message_context(request, bot)
     identity = (url, bot, request.conversation_id)
     inputs = [message.model_dump() for message in request.messages]
     async with hermes_sessions.turn(*identity) if resume else nullcontext():
@@ -3403,22 +3295,90 @@ def profile_name(bot_id: str) -> str:
 
 
 def profile_soul(bot: bots.Assistant) -> str:
-    """Who the bot is, for its profile's SOUL.md; its card, rules and data come with each message."""
-    return (f"Tu es {bot.name}, un bot de Marcel, l'assistant personnel de l'utilisateur, qui te parle dans "
-            f"l'app iPhone Marcel.\n\n{bot.summary}\n\n{bot.role}\n\n"
-            "À chaque message, le serveur Marcel te joint ta fiche à jour (réglages, consignes, tâches "
-            "apprises, ce que tu lis) et les règles de l'utilisateur : elles passent avant ce fichier. Tes "
-            f"outils marcel_* travaillent pour toi ({bot.id}) : ta mémoire, tes règles. Réponds en "
-            "français, en tutoyant, court et lisible sur un téléphone.\n")
+    """The bot's durable card and rules, without planning, goals or other live data."""
+    values = assistant_values(bot.id)
+    role = bot.role.format(mission=values.get("role", "")) if bot.custom else bot.role
+    settings = "\n".join(s.describe(values[s.key]) for s in bot.settings)
+    instructions = "\n".join(f"- {n['text']}" for n in assistants.instructions(bot.id)) or "(aucune)"
+    skills = "\n\n".join(f"{s['title']} :\n{s['text']}" for s in assistants.chosen_skills(bot.id)) or "(aucune)"
+    recipes = "\n".join(f"- {r['title']} : " + " → ".join(r["steps"])
+                         for r in assistants.recipes(bot.id)) or "(aucune)"
+    return "\n\n".join([hermes_context.SOUL, profile_rules(bot.id),
+                           f"Ton sujet : {bot.name} ({bot.id}).\n{bot.summary}\n{role}",
+                           bots.TOOLS_NOTE.replace("{bot}", bot.id),
+                           f"Réglages :\n{settings}", f"Consignes de l'utilisateur :\n{instructions}",
+                           f"Skills partagées choisies :\n{skills}", f"Tâches apprises :\n{recipes}",
+                           "Actions possibles :\n" + bots.actions_note(assistants.actions(bot.id)),
+                           "Lectures choisies dans ta fiche : " + ", ".join(reads_of(bot))]) + "\n"
+
+
+def profile_rules(bot: str = "") -> str:
+    token = mcp_bot.set(bot)
+    try:
+        names = {"auto": "Tout seul", "ask": "Demander : accord d'abord", "off": "Bloqué : interdit"}
+        lines = ["Règles de ce profil (à reconsulter avec marcel_regles avant d'agir) :"]
+        lines += [f"- {RULE_KINDS[k]} : {names[rule(k, bot)]}" for k in RULE_KINDS]
+        return ("\n".join(lines) + "\n" + autonomy_note(bot) + "\n" + big_work_note()
+                + f"\nAgent de code choisi : {code_agent()}.")
+    finally:
+        mcp_bot.reset(token)
+
+
+def context_snapshot() -> dict:
+    skills = hermes_context.skill_manifest()
+    soul = hermes_context.SOUL + "\n" + profile_rules()
+    main = {"soul": soul, "revision": hermes_context.revision(soul, skills)}
+    profiles = []
+    for bot in assistants.all():
+        soul = profile_soul(bot)
+        profiles.append({"name": profile_name(bot.id), "bot": bot.id, "soul": soul,
+                         "revision": hermes_context.revision(soul, skills)})
+    profiles.append({"name": PROTECTED_PROFILE, "bot": "", "soul": PROTECTED_SOUL, "bare": True})
+    return {"prefix": PROFILE_PREFIX, "main": main, "skills": skills, "profiles": profiles}
+
+
+def context_revisions(snapshot: dict) -> dict[str, str]:
+    return {hermes_context.MAIN_PROFILE: snapshot["main"]["revision"]} | {
+        p["name"]: p["revision"] for p in snapshot["profiles"] if not p.get("bare")}
+
+
+def context_installed(bot: str = "") -> bool:
+    # A changed rule/card invalidates the acknowledgment immediately. Until the next sync, the
+    # compatibility note supplies the current rules exactly as before, without a deployment race.
+    name = profile_name(bot) if bot else hermes_context.MAIN_PROFILE
+    installed = assistants.state("hermes_context_installed", {})
+    expected = context_revisions(context_snapshot()).get(name)
+    return bool(expected and installed.get("endpoint") == HERMES_URL
+                and installed.get("revisions", {}).get(name) == expected)
+
+
+def message_context(request: ChatRequest, bot: str = "") -> str:
+    """Only what belongs to this message and cannot be recovered from Marcel's MCP data."""
+    assistant = assistants.find(bot) if bot else None
+    agenda = (request.device_context if not assistant or "agenda" in reads_of(assistant) else "")
+    return "\n\n".join(filter(None, [STYLES.get(request.style, ""),
+                                       untrusted("AGENDA DE L'IPHONE", agenda) if agenda else "",
+                                       slash_note(request.messages[-1].content)]))
 
 
 @app.get("/v1/hermes/profiles", dependencies=[Depends(require_token)])
 async def hermes_profiles() -> dict:
     """The Hermes profiles there should be, one per bot, read by deploy/auto-update.sh."""
-    return {"prefix": PROFILE_PREFIX,
-            "profiles": [{"name": profile_name(bot.id), "bot": bot.id, "soul": profile_soul(bot)}
-                         for bot in assistants.all()]
-            + [{"name": PROTECTED_PROFILE, "bot": "", "soul": PROTECTED_SOUL, "bare": True}]}
+    return context_snapshot()
+
+
+class HermesProfilesApplied(BaseModel):
+    revisions: dict[str, str] = Field(max_length=32)
+
+
+@app.post("/v1/hermes/profiles/applied", dependencies=[Depends(require_token)])
+async def hermes_profiles_applied(body: HermesProfilesApplied) -> dict:
+    """auto-update's acknowledgment after file verification, restart and health probe."""
+    expected = context_revisions(context_snapshot())
+    if any(expected.get(name) != fingerprint for name, fingerprint in body.revisions.items()):
+        raise HTTPException(409, "Profils modifiés pendant la synchronisation : réessayer au prochain passage.")
+    assistants.set_state("hermes_context_installed", {"endpoint": HERMES_URL, "revisions": body.revisions})
+    return {"profiles": sorted(body.revisions)}
 
 
 # The app as a Hermes platform, like Telegram: what Hermes sends on its own (its cron jobs'
@@ -3698,6 +3658,24 @@ def mission_line(m: dict) -> str:
     start, end = datetime.fromtimestamp(m["start_at"], USER_TZ), datetime.fromtimestamp(m["end_at"], USER_TZ)
     day = ("lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.")[start.weekday()]
     return f"- {day} {start:%d/%m/%Y %H:%M}-{end:%H:%M} · {m['store']} · {m['kind']} · {m['client']}"
+
+
+@mcp.tool("marcel_contexte", "Contexte actuel de ce profil : heure et fuseau de l'utilisateur, connexions, "
+          "règles effectives, plafond d'achat et choix de l'agent de code. À lire au début de l'échange ; "
+          "le planning et les objectifs se consultent avec leurs outils dédiés.")
+def tool_context(_: dict) -> str:
+    bot = mcp_bot.get()
+    now = datetime.now(USER_TZ)
+    lines = [f"Nous sommes le {now:%Y-%m-%d %H:%M} ({USER_TZ or 'heure du serveur'}).",
+             f"Profil : {bot or 'Marcel principal'}.",
+             "Gmail : connecté en lecture seule, e-mails uniquement par le mode protégé." if gmail.connected
+             else "Gmail : non connecté.",
+             "Agenda de l'iPhone : seulement s'il accompagne le message ou après une demande validée à l'iPhone.",
+             f"Boîte propre à Marcel : {mailbox.inbox or 'adresse à lire avec marcel_boite'}.",
+             profile_rules(bot)]
+    if bot and (assistant := assistants.find(bot)):
+        lines.append("Lectures choisies dans la fiche : " + ", ".join(reads_of(assistant)))
+    return "\n\n".join(lines)
 
 
 @mcp.tool("marcel_resume", "Totaux à jour de toutes les données de Marcel : planning RMA (passé et à venir), "
@@ -4138,11 +4116,11 @@ def tool_runs(args: dict) -> str:
           "« ask » (tu le proposes avec son bloc, il valide) ou « off » (interdit), et les niveaux propres à certains bots.")
 def tool_rules(_: dict) -> str:
     names = {"auto": "auto", "ask": "demande d'abord", "off": "bloqué"}
-    lines = [f"- {RULE_KINDS[k]} : {names[v]}" for k, v in rules().items()]
+    lines = [f"- {RULE_KINDS[k]} : {names[rule(k)]}" for k in RULE_KINDS]
     for bot, levels in bot_rules().items():
         found = assistants.find(bot)
         lines += [f"- {found.name if found else bot}, {RULE_KINDS[k].lower()} : {names[v]}" for k, v in levels.items()]
-    return "\n".join(lines)
+    return "\n".join(lines) + f"\nPlafond par achat : {purchase_cap()} € (total compris).\n" + autonomy_note(mcp_bot.get())
 
 
 @mcp.tool("marcel_boite",

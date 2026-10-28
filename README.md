@@ -10,11 +10,20 @@ backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/file
 
 ## Protocole
 
-Chaque mission envoie à Hermes, avant la mémoire, une présentation de l'app (`APP_PROMPT` dans
-`backend/app/main.py`) : qui est Marcel, ce que l'app sait faire (mémoire, objectifs, idées,
-validation des actions, voix, notifications), la date et l'heure (`MARCEL_TIMEZONE`,
-`Europe/Paris` par défaut) et ce qui est branché (Gmail, agenda, niveau de proactivité). Le
-caractère de Marcel peut se régler dans le `SOUL.md` de Hermes.
+Les consignes des conversations ordinaires sont installées dans le `SOUL.md` de Hermes et la
+skill `marcel-app`. Le profil principal garde son texte personnel autour d'un bloc Marcel géré ;
+chaque bot reçoit sa mission, ses consignes, ses réglages, ses skills partagées et ses règles dans
+son propre SOUL. Hermes lit l'heure et les connexions avec `marcel_contexte`, puis cherche les
+données nécessaires avec ses outils MCP. Marcel ne lui joint plus systématiquement le planning,
+les objectifs, les autres bots ni la présentation complète de l'app. Restent le message et ses
+pièces jointes, les identifiants de session, le style demandé, la commande `/` et l'agenda partagé.
+
+La transition attend un accusé du déploiement : `auto-update.sh` installe les skills et les SOUL,
+redémarre Hermes si nécessaire, vérifie sa réponse et le contenu réel des fichiers, puis confirme
+les versions par `POST /v1/hermes/profiles/applied`. Jusqu'à cet accusé, ou si une règle, une fiche,
+un plafond ou une skill change, Marcel transmet le contexte de compatibilité à jour. Il est isolé
+dans `backend/app/legacy_context.py`. Les e-mails protégés, appels au modèle seul, vérifications
+d'objectifs et conversations privées conservent leur chemin actuel et leurs garde-fous.
 
 - `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0,"tokens":{"today":0,"budget":2000000}}`
   (`ideas` : idées pas encore vues, pour la pastille ; `tokens` : consommation du jour lue dans
@@ -70,8 +79,8 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   Les e-mails protégés, appels au modèle seul, vérifications d'objectifs et conversations privées
   ne reprennent aucune session. Sans authentification Hermes ou sans identifiant de session renvoyé,
   Marcel conserve l'envoi de l'historique complet. L'iPhone transmet encore son historique à Marcel
-  pour cette reprise initiale et la détection des modifications ; la migration des consignes vers
-  les profils et les skills vient ensuite.
+  pour cette reprise initiale et la détection des modifications. Les consignes vivent dans les
+  profils et les skills après confirmation de leur installation (voir ci-dessus).
 - Arrêt d'urgence : `POST /v1/emergency/stop` coupe toutes les missions et refuse les nouvelles
   (`423`) jusqu'à `POST /v1/emergency/resume` ; état dans `GET /v1/emergency`. Il survit aux
   redémarrages. Côté app (Réglages › Sécurité), plus aucune
