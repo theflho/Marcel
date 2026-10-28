@@ -967,6 +967,21 @@ final class ChatStore {
         guard !emergencyActive, let api = settings.api, let entries = try? await api.pendingBotMessages() else { return }
         for entry in entries {
             guard let id = UUID(uuidString: entry.conversationID), !isStreaming(id) else { continue }
+            if conversations.first(where: { $0.id == id })?.messages.contains(where: { $0.missionID == entry.missionID }) == true {
+                try? await api.markBotMessageDelivered(id: entry.id)
+                continue
+            }
+            var received: [Attachment] = []
+            do {
+                for file in entry.attachments ?? [] {
+                    let data = try await api.download(file)
+                    received.append(try await AttachmentStore.storeReceived(file, data: data))
+                }
+            } catch {
+                AttachmentStore.delete(received)
+                report("Fichier de Hermes non reçu : \(error.localizedDescription)", action: action(for: error))
+                continue // Keep the delivery pending, including its text, until all bytes are stored.
+            }
             var question = ChatMessage(role: .user, content: entry.question, createdAt: entry.at, serverID: settings.activeID)
             question.via = entry.via
             var reply = ChatMessage(role: .assistant, content: entry.status == "done" ? entry.text
@@ -974,6 +989,7 @@ final class ChatStore {
                                     createdAt: entry.at.addingTimeInterval(1), serverID: settings.activeID, model: entry.model)
             reply.missionID = entry.missionID
             reply.actions = entry.actions ?? []
+            reply.attachments = received
             if conversations.contains(where: { $0.id == id }) {
                 mutate(id) { conversation in
                     guard !conversation.messages.contains(where: { $0.missionID == entry.missionID }) else { return }
@@ -1320,6 +1336,9 @@ final class ChatStore {
                 break
             } catch MarcelAPIError.unauthorized {
                 serverStatus = .unauthorized
+                finish(replyID, in: conversationID, .failed,
+                       error: MarcelAPIError.unauthorized.localizedDescription,
+                       action: action(for: MarcelAPIError.unauthorized))
                 break
             } catch {
                 // Connection lost (app in background, Tailscale down…): the mission goes on, retry.

@@ -183,9 +183,10 @@ def test_capabilities_api_auth_emergency_and_profile_scope(native, monkeypatch):
     assert client.get("/v1/hermes/capabilities", headers=AUTH).status_code == 423
     assert not calls
     main.missions.emergency_resume()
-    async def profile(bot):
-        return "http://hermes/p/marcel-planning"
-    monkeypatch.setattr(main, "profile_url", profile)
+    async def ready(name):
+        return True
+    monkeypatch.setattr(main, "HERMES_URL", "http://hermes")
+    monkeypatch.setattr(main, "profile_ready", ready)
     replies += [httpx.Response(200, json={"data": []}),
                 httpx.Response(200, json={"data": [{"name": "marcel-app", "description": "App", "category": "app"}]})]
     result = client.get("/v1/hermes/capabilities?assistant=planning", headers=AUTH).json()
@@ -224,3 +225,47 @@ def test_old_browser_rule_no_longer_limits_native_web_or_bot_profile(native, mon
     soul = main.profile_soul(main.assistants.find("planning"))
     assert "Agir sur un site (navigateur)" not in soul
     assert "hors outils web natifs" in soul
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, text=frame("", {"choices": [{"delta": {"content": "Réponse partielle"}}]})),
+    httpx.Response(200, text=""),
+])
+def test_clean_eof_without_done_fails_mission_and_keeps_partial_text(native, response):
+    replies, _ = native
+    replies.append(response)
+    remembered = []
+    async def go():
+        mission = main.missions.start("CONVERSATION", lambda:main.hermes_events(
+            "http://hermes", AUTH, {}, True, False, remembered.append))
+        await mission.task
+        assert mission.status == "failed" and "incomplète" in mission.error
+        assert not remembered
+        if "Réponse" in response.text:
+            assert mission.text == "Réponse partielle"
+    asyncio.run(go())
+
+
+def test_bot_unavailable_never_uses_the_main_profile(native, monkeypatch):
+    _, calls = native
+    async def unavailable(name):
+        return False
+    monkeypatch.setattr(main, "profile_ready", unavailable)
+    async def go():
+        with pytest.raises(main.MissionError, match="profil Hermes est indisponible"):
+            await main.profile_url("planning")
+    asyncio.run(go())
+    result = client.get("/v1/hermes/capabilities?assistant=planning", headers=AUTH).json()
+    assert result["ready"] is False and result["toolsets"] == [] and result["skills"] == []
+    assert not calls
+
+
+def test_a_failed_profile_probe_is_rechecked_on_the_next_attempt(native, monkeypatch):
+    replies, calls = native
+    monkeypatch.setattr(main, "profile_probes", {})
+    replies += [httpx.Response(503), httpx.Response(200, json={"data": []})]
+    async def go():
+        assert not await main.profile_ready("marcel-planning")
+        assert await main.profile_ready("marcel-planning")
+    asyncio.run(go())
+    assert len(calls) == 2

@@ -341,6 +341,15 @@ def load_file(file_id: str) -> tuple[dict, bytes]:
         raise HTTPException(404, "Pièce jointe introuvable") from None
 
 
+@app.get("/v1/files/{file_id}/content", dependencies=[Depends(require_token)])
+async def file_content(file_id: str) -> Response:
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif.")
+    meta, data = load_file(file_id)
+    return Response(data, media_type=meta["mime_type"],
+                    headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 def extract_text(meta: dict, data: bytes) -> str | None:
     """Readable text of a document, or None when it can't be read."""
     mime = meta["mime_type"]
@@ -1348,7 +1357,7 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
     Tool calls streamed by Hermes become actions, so the app can show what the agent does.
     Without `browser`, the first browser tool call ends the reply (and the request to Hermes);
     without `vault`, the first call to the saved logins and cards (browser_vault) does. With a bot's
-    `profile`, its own Hermes profile answers once it exists (else the main Hermes, as before).
+    `profile`, only its own Hermes profile may answer; an unavailable profile is an explicit error.
     """
     # Only ordinary conversations with the full Hermes resume a transcript. Protected e-mails,
     # direct model calls, goal checks and private chats keep their existing stateless request.
@@ -1457,12 +1466,16 @@ async def hermes_events(url: str, headers: dict, body: dict, browser: bool, vaul
                         raise MissionError(f"Hermes s'est arrêté : {str(detail)[:200]}")
                     for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser, vault):
                         yield item
-                if complete and remember and (session_id := resp.headers.get("X-Hermes-Session-Id")):
+                if not complete:
+                    raise MissionError("La liaison avec Hermes a été interrompue : la réponse est incomplète. Réessaie.")
+                if remember and (session_id := resp.headers.get("X-Hermes-Session-Id")):
                     remember(session_id)
     except httpx.ConnectError as error:
         raise MissionError("Hermes est injoignable : son serveur ne répond pas (redémarrage en cours ?).") from error
     except httpx.ReadTimeout as error:
         raise MissionError("Hermes n'a rien envoyé pendant 5 minutes : la réponse est abandonnée.") from error
+    except httpx.HTTPError as error:
+        raise MissionError("La liaison avec Hermes a été interrompue : la réponse peut être incomplète. Réessaie.") from error
     finally:
         # Credentials and live native run ids never survive the stream or enter SQLite.
         hermes_approvals.discard(approvals)
@@ -3446,9 +3459,13 @@ async def get_hermes_capabilities(assistant: str | None = None) -> dict:
         raise HTTPException(423, "Arrêt d'urgence actif : aucune requête ne part vers Hermes.")
     if assistant:
         find_assistant(assistant)
-    url = await profile_url(assistant) if assistant else HERMES_URL
+    ready = not assistant or await profile_ready(profile_name(assistant))
+    if not ready:
+        return {"profile": assistant, "ready": False, "toolsets": [], "skills": [],
+                "issues": ["Ce profil Hermes est indisponible. Réessaie dans un instant."]}
+    url = f"{HERMES_URL}/p/{profile_name(assistant)}" if assistant else HERMES_URL
     result = await hermes_capabilities(url, HERMES_API_KEY)
-    return result | {"profile": assistant or "Hermes", "ready": not assistant or url != HERMES_URL}
+    return result | {"profile": assistant or "Hermes", "ready": True}
 
 
 class HermesProfilesApplied(BaseModel):
@@ -3475,38 +3492,54 @@ HERMES_VIA = "Hermes"
 
 class HermesDelivery(BaseModel):
     bot: str = Field(default=MAIN_CHANNEL, max_length=100)
-    text: str = Field(max_length=20000)
+    text: str = Field(default="", max_length=20000)
+    attachments: list[str] = Field(default_factory=list, max_length=10)
 
 
-async def delivered_text(text: str) -> AsyncIterator[str]:
-    yield text
-
-
-@app.post("/v1/hermes/deliver", include_in_schema=False)
-async def hermes_deliver(body: HermesDelivery, authorization: str = Header(default="")) -> dict:
+def require_hermes_delivery(authorization: str = Header(default="")) -> None:
     scheme, _, token = authorization.partition(" ")
     if not MCP_TOKEN:
         raise HTTPException(404, "Not found")
     if scheme.lower() != "bearer" or not secrets.compare_digest(token, MCP_TOKEN):
         raise HTTPException(401, "Invalid token")
+    if missions.emergency:
+        raise HTTPException(423, "Arrêt d'urgence actif.")
+
+
+@app.post("/v1/hermes/files", dependencies=[Depends(require_hermes_delivery)], include_in_schema=False)
+async def hermes_upload_file(file: UploadFile) -> dict:
+    return await upload_file(file)
+
+
+async def delivered_text(text: str, files: list[dict]) -> AsyncIterator[str | dict]:
+    yield text
+    for meta in files:
+        yield {"id": f"hermes-file-{meta['id']}", "name": meta["filename"], "status": "done", "file": meta}
+
+
+@app.post("/v1/hermes/deliver", dependencies=[Depends(require_hermes_delivery)], include_in_schema=False)
+async def hermes_deliver(body: HermesDelivery) -> dict:
     bot = "" if body.bot == MAIN_CHANNEL else body.bot
     if bot and not assistants.find(bot):
         raise HTTPException(404, f"Bot inconnu : {body.bot}")
-    if not body.text.strip():
+    files = [load_file(file_id)[0] for file_id in body.attachments]
+    if not body.text.strip() and not files:
         return {"id": 0}
     chats = assistants.state("hermes_conversations", {})
     if bot not in chats:
         chats[bot] = str(uuid.uuid4()).upper()
         assistants.set_state("hermes_conversations", chats)
-    mission = missions.start(chats[bot], lambda: delivered_text(body.text), title=f"{HERMES_VIA} · {body.bot}")
+    mission = missions.start(chats[bot], lambda: delivered_text(body.text, files), title=f"{HERMES_VIA} · {body.bot}")
     await asyncio.gather(mission.task, return_exceptions=True)
     return {"id": assistants.add_inbox(bot, chats[bot], "", mission.id)}
 
 
 async def profile_url(bot_id: str) -> str:
-    """The bot's own profile on the main gateway once it exists, else the main Hermes."""
+    """Keep the conversation in its own profile; never substitute another memory silently."""
     name = profile_name(bot_id)
-    return f"{HERMES_URL}/p/{name}" if await profile_ready(name) else HERMES_URL
+    if not await profile_ready(name):
+        raise MissionError("Ce profil Hermes est indisponible. Ta conversation reste dans son profil ; réessaie dans un instant.")
+    return f"{HERMES_URL}/p/{name}"
 
 
 async def protected_target() -> tuple[str, str, str]:
@@ -3540,7 +3573,7 @@ async def protected_ready() -> bool:
 
 async def profile_ready(name: str) -> bool:
     checked, ready = profile_probes.get(name, (0.0, False))
-    if time.time() - checked >= PROFILE_PROBE_EVERY:
+    if not ready or time.time() - checked >= PROFILE_PROBE_EVERY:
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 resp = await client.get(f"{HERMES_URL}/p/{name}/v1/models",
@@ -4357,6 +4390,8 @@ async def pending_bot_messages() -> list[dict]:
             continue
         # No question: Hermes sent it on its own (POST /v1/hermes/deliver), else the user asked on Telegram.
         pending.append(entry | {"assistant_name": bot.name if bot else "Hermes", "text": mission.text,
+                                "attachments": [a["file"] for a in mission.actions
+                                                if a["id"].startswith("hermes-file-") and "file" in a],
                                 "model": mission.model, "actions": mission.actions, "status": mission.status,
                                 "via": "Telegram" if entry["question"] else HERMES_VIA})
     return pending

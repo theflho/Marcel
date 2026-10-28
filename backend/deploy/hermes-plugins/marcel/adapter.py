@@ -30,6 +30,7 @@ from gateway.platforms._shared import get_scoped_secret, send_error, seed_extra_
 from gateway.platforms.send_targets import parse_nonempty
 
 from .compat import skills_api_compat
+from .media import post_delivery
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +55,15 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
-async def _post(url: str, key: str, bot: str, text: str) -> dict[str, Any]:
+async def _post(url: str, key: str, bot: str, text: str, media_files=()) -> dict[str, Any]:
+    paths = []
+    for path in media_files:
+        safe = BasePlatformAdapter.validate_media_delivery_path(path)
+        if not safe:
+            raise ValueError("Hermes refuse l'envoi de ce fichier")
+        paths.append(safe)
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        resp = await client.post(f"{url.rstrip('/')}/v1/hermes/deliver",
-                                 json={"bot": bot, "text": text[:MAX_MESSAGE_LENGTH]},
-                                 headers={"Authorization": f"Bearer {key}"})
-    if resp.status_code >= 300:
-        raise RuntimeError(f"Marcel HTTP {resp.status_code}: {resp.text[:200]}")
-    return resp.json()
+        return await post_delivery(client, url, key, bot, text[:MAX_MESSAGE_LENGTH], paths)
 
 
 class MarcelAdapter(BasePlatformAdapter):
@@ -93,6 +95,33 @@ class MarcelAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(error))
         return SendResult(success=True, message_id=str(answer.get("id", "")))
 
+    async def _send_file(self, chat_id: str, path: str, caption: Optional[str]) -> SendResult:
+        try:
+            answer = await _post(self._deliver_url, self._deliver_key, chat_id, caption or "", [path])
+        except Exception as error:
+            return SendResult(success=False, error=str(error))
+        return SendResult(success=True, message_id=str(answer.get("id", "")))
+
+    async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
+                            file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                            metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
+        return await self._send_file(chat_id, file_path, caption)
+
+    async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None,
+                              reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                              **kwargs) -> SendResult:
+        return await self._send_file(chat_id, image_path, caption)
+
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_file(chat_id, audio_path, caption)
+
+    async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None,
+                         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
+                         **kwargs) -> SendResult:
+        return await self._send_file(chat_id, video_path, caption)
+
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         return {"name": chat_id, "type": "dm"}
 
@@ -115,7 +144,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
         return send_error("marcel standalone send: MARCEL_DELIVER_KEY not configured")
     bot = chat_id or _setting(extra, "", "MARCEL_HOME_CHANNEL", "marcel")
     try:
-        answer = await _post(_setting(extra, "deliver_url", "MARCEL_DELIVER_URL", DEFAULT_URL), key, bot, message)
+        answer = await _post(_setting(extra, "deliver_url", "MARCEL_DELIVER_URL", DEFAULT_URL), key, bot, message, media_files or [])
     except Exception as error:
         return send_error(f"marcel standalone send failed: {error}")
     return {"success": True, "platform": "marcel", "chat_id": bot, "message_id": str(answer.get("id", ""))}

@@ -33,7 +33,9 @@ d'objectifs et conversations privées conservent leur chemin actuel et leurs gar
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
 Une réponse de Hermes est une **mission** qui tourne sur le VPS : elle continue quand l'app est
-fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
+fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée. Une fermeture du flux sans
+`[DONE]` est une erreur explicite avec conservation du texte partiel. Un refus d’authentification
+pendant la réception termine l’état « en cours » de l’app et permet de corriger le jeton.
 
 - `GET /v1/models` → `{"models": [{"id","label"}], "default": "..."}`. La liste est lue dans Hermes
   (`/v1/models`, gardée 5 min) et les ids sont rendus lisibles (`deepseek-r1-distill-llama-70b` →
@@ -162,6 +164,12 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   partirait deux fois. Les notifications push demandent un compte Apple payant : les idées
   s'affichent à l'ouverture de l'app (pastille mise à jour avec le test de connexion).
 
+- Les fichiers envoyés par Hermes passent par `POST /v1/hermes/files` (clé MCP), puis
+  `/v1/hermes/deliver` avec leurs identifiants. Le plugin vérifie les chemins avec Hermes et
+  transfère les octets avant d’annoncer un succès. Les messages peuvent ne contenir qu’un fichier.
+  L’iPhone télécharge via `GET /v1/files/{id}/content` (clé de l’app), conserve le fichier original
+  pour l’aperçu/partage et accuse réception seulement quand tous les fichiers sont enregistrés.
+  En cas d’échec, la livraison reste en attente et sera réessayée. Limites : 10 fichiers, 20 Mo chacun.
 - `POST /v1/files` (multipart, champ `file`, 20 Mo max) → `{"id", "filename", "mime_type", "size"}`.
   Stocké dans `MARCEL_DATA_DIR/files`. Vers Hermes : photos en image (modèle avec vision requis),
   PDF et fichiers texte en texte extrait, autres fichiers signalés comme non lisibles.
@@ -355,8 +363,9 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
   reste au gateway principal). Rien n'est refait tant que la liste et la config principale ne
   changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
 - **Qui répond** : une conversation d'un bot (toujours avec outils, sauf avec des e-mails) et sa tâche permanente
-  vont à `HERMES_URL/p/marcel-<bot>/` dès que le profil répond (vérifié chaque minute) ; avant, au
-  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (profil `marcel-protege`).
+  vont à `HERMES_URL/p/marcel-<bot>/`. Un profil indisponible produit une erreur explicite,
+  sans substitution par le profil principal ni sa mémoire. Une sonde négative est retentée dès
+  la tentative suivante. Les e-mails restent en Mode protégé (profil `marcel-protege`).
 - **Ses outils** : l'en-tête `X-Marcel-Bot` fait suivre aux outils `marcel_*` les règles de ce bot, et
   `marcel_retenir` écrit dans sa mémoire.
 - Le serveur Marcel ne touche jamais au VPS : il ne fait que dire ce qu'il faut.

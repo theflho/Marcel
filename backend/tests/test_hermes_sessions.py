@@ -167,8 +167,10 @@ def test_unavailable_session_header_or_incomplete_stream_keeps_bootstrap_history
     replies.extend([answer(), answer("api-incomplete", done=False)])
 
     async def go():
-        for _ in range(3):
+        await collect(chat())
+        with pytest.raises(main.MissionError, match="incomplète"):
             await collect(chat())
+        await collect(chat())
 
     asyncio.run(go())
     assert all("X-Hermes-Session-Id" not in request.headers for request, _ in calls)

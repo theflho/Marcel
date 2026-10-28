@@ -22,12 +22,12 @@ struct MessageBubble: View {
                         HermesApprovalCard(action: action, message: message)
                     }
                 }
+                if !message.attachments.isEmpty {
+                    MessageAttachmentsView(attachments: message.attachments)
+                }
                 if message.content.isEmpty && message.status == .streaming {
                     // Nothing written yet: the line above says what Marcel is doing.
                 } else if isUser {
-                    if !message.attachments.isEmpty {
-                        MessageAttachmentsView(attachments: message.attachments)
-                    }
                     if !message.content.isEmpty {
                         Text(message.content)
                     }

@@ -70,6 +70,18 @@ nonisolated enum AttachmentStore {
         return attachment
     }
 
+    /// Keep the original output; generated images and documents must not be recompressed.
+    @concurrent
+    static func storeReceived(_ file: ReceivedFile, data: Data) async throws -> Attachment {
+        guard data.count <= maxBytes else { throw AttachmentError.tooLarge }
+        guard data.count == file.size else { throw AttachmentError.incompleteDownload }
+        let attachment = Attachment(kind: file.mimeType.hasPrefix("image/") ? .image : .file,
+                                    filename: file.filename, mimeType: file.mimeType,
+                                    byteCount: data.count, remoteID: file.id)
+        try data.write(to: url(for: attachment), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        return attachment
+    }
+
     static func delete(_ attachments: [Attachment]) {
         for attachment in attachments {
             try? FileManager.default.removeItem(at: url(for: attachment))
@@ -78,12 +90,13 @@ nonisolated enum AttachmentStore {
 }
 
 nonisolated enum AttachmentError: LocalizedError {
-    case unreadableImage, tooLarge
+    case unreadableImage, tooLarge, incompleteDownload
 
     var errorDescription: String? {
         switch self {
         case .unreadableImage: "Impossible de lire cette image."
         case .tooLarge: "Fichier trop volumineux (20 Mo maximum)."
+        case .incompleteDownload: "Le fichier reçu est incomplet. Le téléchargement sera réessayé."
         }
     }
 }

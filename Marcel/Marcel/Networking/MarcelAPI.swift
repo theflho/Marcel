@@ -961,6 +961,18 @@ private nonisolated struct DeletedSkill: Decodable, Sendable {
     let deleted: String
 }
 
+nonisolated struct ReceivedFile: Decodable, Hashable, Sendable {
+    let id: String
+    let filename: String
+    let mimeType: String
+    let size: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, filename, size
+        case mimeType = "mime_type"
+    }
+}
+
 /// What the user said to a bot outside the app (Telegram) and its reply (`/v1/bot-messages`).
 nonisolated struct BotMessage: Decodable, Hashable, Sendable, Identifiable {
     let id: Int
@@ -975,9 +987,10 @@ nonisolated struct BotMessage: Decodable, Hashable, Sendable, Identifiable {
     let actions: [MissionAction]?
     let status: String
     let via: String
+    let attachments: [ReceivedFile]?
 
     enum CodingKeys: String, CodingKey {
-        case id, assistant, question, at, text, model, actions, status, via
+        case id, assistant, question, at, text, model, actions, status, via, attachments
         case assistantName = "assistant_name"
         case conversationID = "conversation_id"
         case missionID = "mission_id"
@@ -1162,8 +1175,10 @@ nonisolated struct MarcelAPI: Sendable {
         request.httpBody = try JSONEncoder().encode(ChatRequest(
             conversationId: conversationID.uuidString,
             messages: messages.map {
-                .init(role: $0.role.rawValue, content: $0.content,
-                      attachments: $0.attachments.compactMap(\.remoteID))
+                .init(role: $0.role.rawValue,
+                      content: $0.content + ($0.role == .assistant && !$0.attachments.isEmpty
+                          ? "\nFichiers joints : " + $0.attachments.map(\.filename).joined(separator: ", ") : ""),
+                      attachments: $0.role == .user ? $0.attachments.compactMap(\.remoteID) : [])
             },
             model: model,
             deviceContext: deviceContext,
@@ -1584,6 +1599,16 @@ nonisolated struct MarcelAPI: Sendable {
             throw MarcelAPIError.http(status, String(decoding: responseData.prefix(300), as: UTF8.self))
         }
         return try JSONDecoder().decode(UploadResponse.self, from: responseData).id
+    }
+
+    func download(_ file: ReceivedFile) async throws -> Data {
+        var request = URLRequest(url: baseURL.appending(path: "v1/files/\(file.id)/content"), timeoutInterval: 60)
+        authorize(&request)
+        let (data, response) = try await Self.session.data(for: request)
+        try Self.check(response, body: data)
+        guard data.count <= AttachmentStore.maxBytes else { throw AttachmentError.tooLarge }
+        guard data.count == file.size else { throw AttachmentError.incompleteDownload }
+        return data
     }
 
     private func authorize(_ request: inout URLRequest) {

@@ -19,7 +19,7 @@ struct HermesCapabilitiesView: View {
             if let error { Text(error).foregroundStyle(.secondary) }
             if let catalog {
                 if !catalog.ready {
-                    Text("Ce profil n’est pas encore prêt. La liste ci-dessous est celle du profil principal utilisé en attendant.")
+                    Text("Ce profil est indisponible. Réessaie dans un instant ; la conversation reste dans ce profil.")
                         .foregroundStyle(.orange)
                 }
                 ForEach(catalog.issues, id: \.self) { Text($0).foregroundStyle(.orange) }
