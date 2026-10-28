@@ -11,6 +11,10 @@ services:
     container_name: llm-guard
     command: ["uvicorn", "app.llm_guard:app", "--host", "0.0.0.0", "--port", "4000"]
     env_file: guard.env
+    # Le Hermes principal tourne sur la machine (utilisateur hermes), hors de Docker : il passe par
+    # http://127.0.0.1:4000/v1, avec sa clé « hermes » de GUARD_KEYS. Jamais publié au-delà de la machine.
+    ports:
+      - "127.0.0.1:4000:4000"
     volumes:
       - guard-data:/data
     restart: unless-stopped

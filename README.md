@@ -275,6 +275,12 @@ fusionner), `marcel-donnees` (où chercher avant de redemander), `marcel-routine
 `marcel-bots` (« /planning … » sur Telegram → `marcel_bot`).
 Hermes les lit à son prochain lancement (`hermes skills list` pour vérifier).
 
+**Hermes passe par llm-guard** : sur le VPS, le Hermes principal (et les profils des bots, copiés de
+lui) appelle `http://127.0.0.1:4000/v1` avec la clé « hermes » de `GUARD_KEYS`
+(`HERMES_CUSTOM_API_SCALEWAY_AI_API_KEY` dans `/home/hermes/.hermes/.env`) : la clé Scaleway ne
+reste que dans `guard.env`, et ses tokens comptent dans le budget du jour. llm-guard est publié sur
+`127.0.0.1:4000` seulement (`deploy/compose.vps.yaml`), puisque ce Hermes tourne hors de Docker.
+
 ## Un bot = un profil Hermes
 
 Chaque bot (Planning, Pointage, Offres, Mails, Veille et ceux que l'utilisateur crée) est un
