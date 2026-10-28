@@ -33,6 +33,9 @@ LOCKED = {"model", "provider", "providers", "custom_providers", "fallback_model"
 SECRET_KEY = re.compile(r"key|token|secret|password|authorization", re.IGNORECASE)
 PLACEHOLDER = "${MARCEL_MCP_TOKEN}"
 BACKUP_SUFFIX = ".avant-marcel"
+# Where Marcel's MCP server may be: the Docker network (Hermes in a container) or the port marcel-api
+# publishes on the VPS itself (Hermes run by its own user, as on the VPS).
+LOCAL_MCP = ("http://marcel-api:", "http://127.0.0.1:8000/")
 
 
 class OverlayError(Exception):
@@ -48,8 +51,9 @@ def check(overlay, path: tuple[str, ...] = ()) -> None:
         where = ".".join(here)
         if not path and key in LOCKED:
             raise OverlayError(f"{where} reste réglé par l'utilisateur (modèle, fournisseurs, passerelle)")
-        if here == ("mcp_servers", "marcel", "url") and not str(value).startswith("http://marcel-api:"):
-            raise OverlayError(f"{where} : le serveur MCP marcel reste sur le réseau interne (http://marcel-api:…)")
+        if here == ("mcp_servers", "marcel", "url") and not str(value).startswith(LOCAL_MCP):
+            raise OverlayError(f"{where} : le serveur MCP marcel reste interne (http://marcel-api:… ou "
+                               "http://127.0.0.1:8000/…)")
         if value is None:
             raise OverlayError(f"{where} : on ne retire pas une clé (valeur vide)")
         if isinstance(value, dict):
