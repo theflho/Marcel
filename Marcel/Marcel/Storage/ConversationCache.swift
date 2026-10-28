@@ -35,6 +35,15 @@ nonisolated struct ConversationCache: Sendable {
         try? FileManager.default.removeItem(at: directory.appending(path: "\(id.uuidString).json"))
     }
 
+    func clear() throws {
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            try FileManager.default.removeItem(at: file)
+        }
+        if FileManager.default.fileExists(atPath: projectsFile.path) {
+            try FileManager.default.removeItem(at: projectsFile)
+        }
+    }
+
     func saveProjects(_ projects: [Project]) {
         guard let data = try? JSONEncoder.marcel.encode(projects) else { return }
         try? data.write(to: projectsFile, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])

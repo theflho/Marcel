@@ -32,6 +32,13 @@ d'objectifs et conversations privées conservent leur chemin actuel et leurs gar
   parce que le budget est épuisé le dit (« Budget de tokens du jour atteint… »).
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
+`POST /v1/chat/reset` avec `{"scope":"bots_and_history"}` efface les bots, les conversations
+de l’app, leurs sessions API Hermes et les pièces jointes. Les anciennes routines sont mises en
+pause. Les bots intégrés restent désactivés après redémarrage ; de nouveaux bots peuvent être
+créés ensuite. Le `reset_id` renvoyé dans `/health` fait aussi effacer le cache, les brouillons et
+les notifications de l’iPhone à sa prochaine connexion. Cette action exige la clé de l’app et
+n’est pas un outil MCP. Les connexions, règles, mémoire durable Hermes et sessions CLI sont conservées.
+
 Une réponse de Hermes est une **mission** qui tourne sur le VPS : elle continue quand l'app est
 fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée. Une fermeture du flux sans
 `[DONE]` est une erreur explicite avec conservation du texte partiel. Un refus d’authentification

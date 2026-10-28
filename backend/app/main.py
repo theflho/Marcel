@@ -36,6 +36,7 @@ from .code_tools import CodeError, CodeWorkspace, GitHub
 from . import server_log
 from .goals import ACTIVE, GoalStore
 from .hermes_sessions import HermesSessions
+from .chat_reset import clear_api_history
 from .hermes_approvals import HermesApprovals
 from . import hermes_context
 from .hermes_capabilities import capabilities as hermes_capabilities
@@ -275,6 +276,7 @@ def sse(payload: dict) -> str:
 async def health() -> dict:
     spent = await guard_usage()
     return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen(),
+            "reset_id": assistants.state("chat_reset_id", ""),
             "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}, "mail": gmail.connected,
             "mcp": dict(mcp_contact) if MCP_TOKEN else None}
 
@@ -3263,6 +3265,40 @@ def find_assistant(assistant_id: str) -> bots.Assistant:
 @app.get("/v1/assistants", dependencies=[Depends(require_token)])
 async def list_assistants() -> list[dict]:
     return [assistant_public(a) for a in assistants.all()]
+
+
+class ChatReset(BaseModel):
+    scope: Literal["bots_and_history"]
+
+
+@app.post("/v1/chat/reset", dependencies=[Depends(require_token)])
+async def reset_chat(body: ChatReset) -> dict:
+    """An explicit user action, authenticated with the app key; never an autonomous MCP tool."""
+    urls = [HERMES_URL] + [f"{HERMES_URL}/p/{profile_name(bot.id)}" for bot in assistants.all()]
+    urls.append(f"{HERMES_URL}/p/{PROTECTED_PROFILE}")
+    # Pause old schedules first: they must not repopulate conversations during deletion.
+    for routine in routines.list():
+        routines.update(routine.id, status="paused")
+    await missions.clear_history()
+    try:
+        native = 0 if MOCK else await clear_api_history(urls, HERMES_API_KEY)
+    except (httpx.HTTPError, ValueError, KeyError) as error:
+        raise HTTPException(502, "Hermes n'a pas fini d'effacer les anciennes conversations. Réessaie la remise à zéro.") from error
+    assistants.reset_bots_and_inbox()
+    hermes_sessions.clear()
+    hermes_approvals.pending.clear()
+    vectors.remove("reponse", list(vectors.known("reponse")))
+    # Past routine results are history too; keep schedules paused for reference, with no stale chat id.
+    routines.clear_history()
+    if FILES_DIR.exists():
+        for path in FILES_DIR.iterdir():
+            if path.is_file():
+                path.unlink()
+    reset_id = uuid.uuid4().hex
+    assistants.set_state("chat_reset_id", reset_id)
+    profile_probes.clear()
+    reindex.set()
+    return {"reset_id": reset_id, "bots": 0, "history": 0, "native_sessions_deleted": native}
 
 
 class AssistantCreate(BaseModel):

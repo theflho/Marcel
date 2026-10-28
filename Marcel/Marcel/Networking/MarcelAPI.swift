@@ -1088,6 +1088,7 @@ nonisolated struct ServerHealth: Sendable {
     let unseenIdeas: Int
     /// Nil when the server has no LLM guard.
     let tokens: TokenUsage?
+    let resetID: String?
 }
 
 nonisolated enum MarcelAPIError: LocalizedError {
@@ -1129,7 +1130,7 @@ nonisolated struct MarcelAPI: Sendable {
         guard let (data, response) = try? await Self.session.data(for: request) else { return nil }
         let body = try? JSONDecoder().decode(HealthBody.self, from: data)
         return ServerHealth(status: (response as? HTTPURLResponse)?.statusCode ?? 0, emergency: body?.emergency ?? false,
-                            unseenIdeas: body?.ideas ?? 0, tokens: body?.tokens)
+                            unseenIdeas: body?.ideas ?? 0, tokens: body?.tokens, resetID: body?.resetID)
     }
 
     func models() async throws -> [ModelOption] {
@@ -1667,6 +1668,11 @@ private nonisolated struct HealthBody: Decodable {
     let emergency: Bool?
     let ideas: Int?
     let tokens: TokenUsage?
+    let resetID: String?
+    enum CodingKeys: String, CodingKey {
+        case emergency, ideas, tokens
+        case resetID = "reset_id"
+    }
 }
 
 private nonisolated struct SeenResult: Decodable {

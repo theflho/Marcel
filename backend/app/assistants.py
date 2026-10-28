@@ -438,11 +438,12 @@ class AssistantStore:
         return [custom_assistant(*row) for row in rows]
 
     def all(self) -> list[Assistant]:
-        return [self._carrying(a) for a in list(ASSISTANTS) + self.custom()]
+        builtins = list(ASSISTANTS) if self.state("builtin_bots_enabled", True) else []
+        return [self._carrying(a) for a in builtins + self.custom()]
 
     def find(self, assistant_id: str) -> Assistant | None:
         if assistant_id in BY_ID:
-            return self._carrying(BY_ID[assistant_id])
+            return self._carrying(BY_ID[assistant_id]) if self.state("builtin_bots_enabled", True) else None
         row = self._db.execute("SELECT id, name, mood, mission FROM custom_assistants WHERE id = ?",
                                (assistant_id,)).fetchone()
         return self._carrying(custom_assistant(*row)) if row else None
@@ -553,8 +554,21 @@ class AssistantStore:
             self.set_state("skills", chosen)
         return cursor.rowcount > 0
 
+    def reset_bots_and_inbox(self) -> None:
+        with self._db:
+            for table in ("custom_assistants", "assistant_settings", "assistant_instructions",
+                          "assistant_recipes", "bot_skills", "bot_inbox"):
+                self._db.execute(f"DELETE FROM {table}")
+            for name in ("automation_owners", "skills", "reads", "bot_rules", "telegram_conversations",
+                         "hermes_conversations", "hermes_context_installed"):
+                self._db.execute("DELETE FROM robot_state WHERE name=?", (name,))
+            self._db.execute("INSERT OR REPLACE INTO robot_state VALUES ('builtin_bots_enabled', 'false')")
+
     def values(self, assistant_id: str) -> dict:
-        assistant = self.find(assistant_id)
+        # Hidden built-ins still supply the robot's internal configuration, never a public bot.
+        assistant = self.find(assistant_id) or BY_ID.get(assistant_id)
+        if assistant is None:
+            raise ValueError("Assistant introuvable")
         stored = {name: json.loads(value) for name, value in self._db.execute(
             "SELECT name, value FROM assistant_settings WHERE assistant = ?", (assistant_id,))}
         return {s.key: stored.get(s.key, s.default) for s in assistant.settings}

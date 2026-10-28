@@ -340,6 +340,15 @@ class MissionStore:
         self._save(mission)
         mission.notify()
 
+    async def clear_history(self) -> None:
+        tasks = [m.task for m in self._missions.values() if m.status == RUNNING and m.task]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        with self._db:
+            self._db.execute("DELETE FROM missions")
+        self._missions.clear()
+
     def forget(self, mission_id: str) -> None:
         """Erases a finished mission (a private conversation's reply)."""
         if (mission := self._missions.get(mission_id)) and mission.status == RUNNING:

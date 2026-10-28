@@ -42,6 +42,10 @@ class HermesSessions:
             self._db.execute("INSERT OR REPLACE INTO hermes_sessions VALUES (?, ?, ?, ?, ?, ?)",
                              (endpoint, bot, conversation_id, session_id, len(messages), fingerprint(messages)))
 
+    def clear(self) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM hermes_sessions")
+
     @asynccontextmanager
     async def turn(self, endpoint: str, bot: str, conversation_id: str):
         """Serialize turns of one conversation, including two simultaneous first messages."""

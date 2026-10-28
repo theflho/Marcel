@@ -82,6 +82,12 @@ nonisolated enum AttachmentStore {
         return attachment
     }
 
+    static func clear() throws {
+        for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            try FileManager.default.removeItem(at: file)
+        }
+    }
+
     static func delete(_ attachments: [Attachment]) {
         for attachment in attachments {
             try? FileManager.default.removeItem(at: url(for: attachment))

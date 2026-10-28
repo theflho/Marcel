@@ -291,6 +291,11 @@ class RoutineStore:
         self._db.execute("UPDATE routines SET last_run_at = ? WHERE id = ?", (at, routine_id))
         self._db.commit()
 
+    def clear_history(self) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM routine_runs")
+            self._db.execute("UPDATE routines SET status='paused', conversation_id='' ")
+
     def delete(self, routine_id: str) -> None:
         self._db.execute("DELETE FROM routine_runs WHERE routine_id = ?", (routine_id,))
         self._db.execute("DELETE FROM routines WHERE id = ?", (routine_id,))

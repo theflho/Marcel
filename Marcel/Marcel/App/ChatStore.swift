@@ -1,3 +1,4 @@
+import UserNotifications
 import Foundation
 import Observation
 
@@ -36,6 +37,7 @@ final class ChatStore {
     private let cache = ConversationCache()
     /// One task per conversation following its reply, so switching conversations never cuts an answer.
     private var streamTasks: [UUID: Task<Void, Never>] = [:]
+    private var applyingReset = false
     /// The web search question the next message carries, once the user validated it.
     @ObservationIgnored private var pendingSearch: String?
 
@@ -375,6 +377,7 @@ final class ChatStore {
         let health = await api.health()
         switch health?.status {
         case 200:
+            guard await applyResetIfNeeded(health?.resetID) else { return }
             serverStatus = .reachable
             unseenIdeas = health?.unseenIdeas ?? 0
             tokenUsage = health?.tokens
@@ -393,6 +396,46 @@ final class ChatStore {
         case 401, 403: serverStatus = .unauthorized
         default: serverStatus = .unreachable
         }
+    }
+
+    /// A reset explicitly requested on the server also erases offline copies on this iPhone.
+    private func applyResetIfNeeded(_ resetID: String?) async -> Bool {
+        guard let resetID, !resetID.isEmpty else { return true }
+        let key = "chatReset-\(settings.activeID.uuidString)"
+        guard UserDefaults.standard.string(forKey: key) != resetID else { return true }
+        guard !applyingReset else { return false }
+        applyingReset = true
+        defer { applyingReset = false }
+        let tasks = Array(streamTasks.values)
+        for task in tasks { task.cancel() }
+        for task in tasks { await task.value }
+        streamTasks.removeAll()
+        speaker.stop()
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+        do {
+            try cache.clear()
+            try AttachmentStore.clear()
+        } catch {
+            report("Remise à zéro locale incomplète : \(error.localizedDescription)", action: .retry)
+            return false
+        }
+        let fresh = Conversation()
+        conversations = [fresh]
+        projects = []
+        currentID = fresh.id
+        draft = ""
+        pendingAttachments = []
+        pendingSearch = nil
+        assistants = []
+        goalProposals = []
+        lastError = nil
+        for name in [Self.draftKey, BotPrefs.pinnedKey, BotPrefs.hiddenKey, BotPrefs.mutedKey] {
+            UserDefaults.standard.removeObject(forKey: name)
+        }
+        cache.save(fresh)
+        UserDefaults.standard.set(resetID, forKey: key)
+        return true
     }
 
     func useServer(_ profile: ServerProfile) {
