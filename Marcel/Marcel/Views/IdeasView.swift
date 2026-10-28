@@ -16,13 +16,13 @@ struct IdeasView: View {
         Group {
             if store.emergencyActive {
                 ContentUnavailableView("Arrêt d'urgence actif", systemImage: "exclamationmark.octagon",
-                                       description: Text("Aucune requête n'est envoyée au serveur, et Marcel ne vérifie plus rien."))
+                                       description: Text("Aucune requête n'est envoyée au serveur, et Hermes ne vérifie plus rien."))
             } else if let error, ideas.isEmpty {
                 ContentUnavailableView("Idées indisponibles", systemImage: "wifi.exclamationmark",
                                        description: Text(error))
             } else if loaded && ideas.isEmpty {
                 ContentUnavailableView("Aucune idée pour l'instant", systemImage: "lightbulb",
-                                       description: Text("Marcel vérifie tes objectifs suivis à leur rythme et te prévient ici quand il trouve quelque chose d'utile."))
+                                       description: Text("Hermes vérifie tes objectifs suivis à leur rythme et te prévient ici quand il trouve quelque chose d'utile."))
             } else {
                 list
             }
@@ -226,12 +226,12 @@ private struct ApprovalSheet: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(Theme.surface, in: .rect(cornerRadius: 12))
                         } else {
-                            Label("Marcel n'a pas précisé le texte exact : il te le montrera et attendra ton accord avant d'envoyer quoi que ce soit.",
+                            Label("Hermes n'a pas précisé le texte exact : il te le montrera et attendra ton accord avant d'envoyer quoi que ce soit.",
                                   systemImage: "info.circle")
                                 .font(.callout)
                         }
                     }
-                    Label("Marcel le fait dans une conversation, où tu suis chaque étape. Si quelque chose a changé (prix, disponibilité, destinataire), il s'arrête et t'explique.",
+                    Label("Hermes le fait dans une conversation, où tu suis chaque étape. Si quelque chose a changé (prix, disponibilité, destinataire), il s'arrête et t'explique.",
                           systemImage: "checkmark.shield")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -280,7 +280,7 @@ struct ProactiveSettingsView: View {
                     }
                     .pickerStyle(.segmented)
                 } header: {
-                    Text("Marcel proactif")
+                    Text("Hermes proactif")
                 } footer: {
                     Text(Self.levelFooter(settings.level))
                 }
@@ -290,7 +290,7 @@ struct ProactiveSettingsView: View {
                             LabeledContent("Idées par jour, au plus", value: "\(settings.dailyLimit)")
                         }
                     } footer: {
-                        Text("Au-delà, Marcel garde ce qu'il trouve pour plus tard au lieu de te déranger.")
+                        Text("Au-delà, Hermes garde ce qu'il trouve pour plus tard au lieu de te déranger.")
                     }
                 }
                 Section {
@@ -309,7 +309,7 @@ struct ProactiveSettingsView: View {
                 } header: {
                     Text("Coût")
                 } footer: {
-                    Text("Chaque vérification est une mission de Marcel sur le serveur : ce plafond limite la dépense. "
+                    Text("Chaque vérification est une mission de Hermes sur le serveur : ce plafond limite la dépense. "
                          + "Les vérifications automatiques ont lieu entre \(Self.hours(settings.hours)) (heure du serveur) "
                          + "et jamais pendant un arrêt d'urgence.")
                 }
@@ -372,9 +372,9 @@ struct ProactiveSettingsView: View {
 
     private static func levelFooter(_ level: String) -> String {
         switch level {
-        case "off": "Marcel ne vérifie plus rien de lui-même. Tu peux toujours lancer une vérification depuis Objectifs."
-        case "quiet": "Marcel vérifie tes objectifs mais ne te prévient que pour l'important, une fois par jour au plus."
-        default: "Marcel vérifie tes objectifs à leur rythme et te propose une idée quand il trouve du nouveau."
+        case "off": "Hermes ne vérifie plus rien de lui-même. Tu peux toujours lancer une vérification depuis Objectifs."
+        case "quiet": "Hermes vérifie tes objectifs mais ne te prévient que pour l'important, une fois par jour au plus."
+        default: "Hermes vérifie tes objectifs à leur rythme et te propose une idée quand il trouve du nouveau."
         }
     }
 

@@ -44,7 +44,7 @@ struct SidebarView: View {
                             titleVisibility: .visible, presenting: deleting) { bot in
             Button("Supprimer", role: .destructive) { Task { await store.deleteAssistant(bot) } }
         } message: { _ in
-            Text("Ses conversations restent, avec Marcel.")
+            Text("Ses conversations restent, avec Hermes.")
         }
     }
 
@@ -85,7 +85,7 @@ struct SidebarView: View {
     /// Marcel then the assistants, pinned ones first (like Grok Bot's Pin), hidden ones apart.
     private var bots: (shown: [BotItem], hidden: [BotItem]) {
         _ = botPrefsVersion
-        let every = [BotItem(id: nil, name: "Marcel")]
+        let every = [BotItem(id: nil, name: "Hermes")]
             + store.assistants.map { BotItem(id: $0.id, name: $0.name) }
         let pinned = BotPrefs.list(BotPrefs.pinnedKey), hidden = Set(BotPrefs.list(BotPrefs.hiddenKey))
         let shown = every.filter { !hidden.contains($0.key) }
@@ -144,7 +144,7 @@ struct SidebarView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Conversation privée")
                             .font(.body.weight(store.conversation.isPrivate ? .semibold : .regular))
-                        Text("Avec Marcel, rien n'est gardé")
+                        Text("Avec Hermes, rien n'est gardé")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -273,7 +273,7 @@ struct SidebarView: View {
                         .font(.body.weight(conversation.id == store.currentID ? .semibold : .regular))
                         .lineLimit(1)
                     HStack(spacing: 6) {
-                        let name = assistant?.name ?? "Marcel"
+                        let name = assistant?.name ?? "Hermes"
                         let current = store.thread(ofBot: conversation.assistantID)?.id == conversation.id
                         Text(current ? name : "\(name) · ancienne")
                                 .font(.caption2.weight(.semibold))
@@ -318,7 +318,7 @@ struct SidebarView: View {
     }
 
     private func transcript(of conversation: Conversation) -> String {
-        let name = store.assistant(for: conversation)?.name ?? "Marcel"
+        let name = store.assistant(for: conversation)?.name ?? "Hermes"
         return conversation.messages
             .map { "\($0.role == .user ? "Moi" : name) : \(AutoBlocks.strip($0.content))" }
             .joined(separator: "\n\n")

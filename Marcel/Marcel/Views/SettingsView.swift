@@ -121,9 +121,15 @@ struct SettingsView: View {
 
                 Section {
                     NavigationLink {
+                        HermesCapabilitiesView()
+                    } label: {
+                        Label("Outils et skills de Hermes", systemImage: "wrench.and.screwdriver")
+                    }
+                    .disabled(store.emergencyActive)
+                    NavigationLink {
                         MemoryView()
                     } label: {
-                        Label("Mémoire de Marcel", systemImage: "brain")
+                        Label("Anciens souvenirs (archives)", systemImage: "brain")
                     }
                     .disabled(store.emergencyActive)
                     NavigationLink {
@@ -141,25 +147,25 @@ struct SettingsView: View {
                     NavigationLink {
                         RulesView()
                     } label: {
-                        Label("Règles « demande d'abord »", systemImage: "hand.raised")
+                        Label("Autorisations de l’app", systemImage: "hand.raised")
                     }
                     .disabled(store.emergencyActive)
                     NavigationLink {
                         CodeRequestsView()
                     } label: {
-                        Label("Code de Marcel", systemImage: "hammer")
+                        Label("Code de l’app", systemImage: "hammer")
                     }
                     .disabled(store.emergencyActive)
                     NavigationLink {
                         ProactiveSettingsView()
                     } label: {
-                        Label("Marcel proactif", systemImage: "lightbulb")
+                        Label("Vérifications d’objectifs", systemImage: "lightbulb")
                     }
                     .disabled(store.emergencyActive)
                 } header: {
-                    Text("Mémoire")
+                    Text("Hermes et les données de l’app")
                 } footer: {
-                    Text("Ce que Marcel retient de vous, sur le serveur actif : un noyau envoyé à chaque mission et des archives sans limite, rangés chaque nuit. Les objectifs suivis sont vérifiés automatiquement selon les réglages de Marcel proactif ; les routines partent seules à leur heure.")
+                    Text("Tu discutes avec Hermes, qui utilise ses outils, ses skills et la mémoire de son profil. Marcel transporte les échanges et conserve les données de l’app. Les objectifs suivis et les anciennes routines restent consultables ici ; les tâches planifiées par Hermes se gèrent dans la conversation.")
                 }
 
                 Section {
@@ -514,9 +520,9 @@ private struct DeviceSection: View {
         } footer: {
             Text("La voix est celle de l'iPhone, sans Internet ; appui long sur une réponse pour l'écouter. "
                  + "Les notifications signalent les idées et les réponses terminées quand l'app est fermée ; iOS choisit le moment, souvent avec une heure de retard ou plus. "
-                 + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Marcel ne peut rien y modifier. "
-                 + "Les rappels de pointage suivent ton planning RMA : quelques minutes avant (5 par défaut, réglable avec l’assistant Pointage), Marcel prépare « RMA OK » ou « RMA fin » pour le 38200 et te demande s'il envoie ; rien ne part sans ton « Oui », à donner une fois sur place. "
-                 + "Les missions vont dans un calendrier à part, « Missions RMA » : Marcel n'écrit nulle part ailleurs, saute une mission que tu as déjà notée, et suit les déplacements et annulations.")
+                 + "L'agenda des 7 prochains jours accompagne tes messages, en lecture seule : Hermes peut le lire. "
+                 + "Les rappels de pointage suivent ton planning RMA : quelques minutes avant (5 par défaut, réglable avec l’assistant Pointage), l’app prépare « RMA OK » ou « RMA fin » pour le 38200 et te demande s'il envoie ; rien ne part sans ton « Oui », à donner une fois sur place. "
+                 + "Les missions vont dans un calendrier à part, « Missions RMA » : l’app n’écrit nulle part ailleurs, saute une mission que tu as déjà notée, et suit les déplacements et annulations.")
         }
     }
 }

@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The launch screen, in the app's own style: Marcel's drawn face, asleep on the dark background,
 /// wakes up (a hop, the eyes open and smile) while his bots drop in one by one underneath, each with
-/// its own head and colour; then "Marcel", "Tes bots se réveillent…" and a thin progress bar.
+/// its own head and colour; then "Marcel", "Hermes, dans ton app" and a thin progress bar.
 /// It follows the icon (the same face on the same dark tile). A tap skips it.
 struct SplashView: View {
     var onFinish: () -> Void
@@ -95,7 +95,7 @@ struct SplashView: View {
     private func footer(t: Double, scale: CGFloat) -> some View {
         let shown = min(1, max(0, (t - 0.9) / 0.4))
         return VStack(spacing: 18 * scale) {
-            Text("Tes bots se réveillent…")
+            Text("Hermes, dans ton app")
                 .font(.system(size: 15 * scale, weight: .medium, design: .rounded))
                 .foregroundStyle(.white.opacity(0.55))
             ZStack(alignment: .leading) {

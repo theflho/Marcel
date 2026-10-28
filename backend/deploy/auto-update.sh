@@ -3,7 +3,7 @@
 # Sur le VPS, depuis backend/, toutes les 5 minutes (crontab -e) :
 #   */5 * * * * cd ~/marcel/backend && ./deploy/auto-update.sh >> ~/marcel-auto-update.log 2>&1
 # Applique aussi les réglages de Hermes que Marcel a changés (deploy/hermes-overrides.yaml, voir
-# app/hermes_config.py) et ses skills, redémarre Hermes et remet l'ancienne config s'il ne répond
+# app/hermes_config.py), ses skills et ses plugins, redémarre Hermes et remet l'ancienne config s'il ne répond
 # plus. Où est Hermes, dans .env : MARCEL_HERMES_HOME (son dossier, /home/hermes/.hermes s'il existe,
 # sinon ~/.hermes) et MARCEL_HERMES_SERVICE (service systemd de l'utilisateur à qui appartient ce
 # dossier, hermes-gateway par défaut), ou MARCEL_HERMES_CONTAINER pour un Hermes en conteneur. Hermes redémarre
@@ -62,6 +62,15 @@ skills() {  # Les skills de Marcel pour Hermes (skills/marcel/ du profil princip
   done
 }
 
+plugins() {  # Les plugins de Marcel pour Hermes (plugins/ du profil principal : le gateway les charge pour tous).
+  local name
+  for name in $(ls deploy/hermes-plugins); do
+    sudo mkdir -p "$hermes_home/plugins/$name"
+    sudo cp -R "deploy/hermes-plugins/$name/." "$hermes_home/plugins/$name/"
+    sudo chown -R "$hermes_owner" "$hermes_home/plugins/$name"
+  done
+}
+
 restart_hermes() {  # its container if there is one, else its user's systemd service
   if [[ -n "$hermes_container" ]]; then
     docker restart "$hermes_container" >/dev/null
@@ -91,13 +100,13 @@ hermes_cli() {  # une commande hermes, sous l'utilisateur de Hermes (ou dans son
   fi
 }
 
-profiles_tool() {  # plan|prepare : app/hermes_profiles.py, avec la liste voulue et le dossier de Hermes montés
+profiles_tool() {  # plan|prepare|verify : liste voulue et dossier de Hermes montés
   docker compose run --rm --no-deps -T --user "$hermes_owner" -v "$hermes_home:/hermes" -v "$work:/work:ro" \
     marcel-api python -m app.hermes_profiles "$1" /work/profiles.json /hermes
 }
 
 profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés, finis, retirés.
-  # Hermes les sert à chaud (gateway.multiplex_profiles) : aucun redémarrage.
+  # Hermes les sert sur le gateway multiplexé ; les nouveaux contrats attendent un redémarrage confirmé.
   curl -fsS -m 10 -H "Authorization: Bearer $token" "$api/v1/hermes/profiles" -o "$work/profiles.json" 2>/dev/null \
     || return 0  # serveur arrêté, ou trop ancien pour les profils
   chmod 755 "$work" && chmod 644 "$work/profiles.json"
@@ -106,6 +115,10 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
   digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml" "$hermes_home/.env") app/hermes_profiles.py \
     | sha256sum | cut -d' ' -f1)
   [[ "$digest" == "$(cat .hermes-profiles-applied 2>/dev/null)" ]] && return 0
+  # Revoke an earlier acknowledgment before changing files or retrying a failed sync.
+  curl -fsS -m 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data '{"revisions":{}}' "$api/v1/hermes/profiles/applied" >/dev/null \
+    || { echo "$(date '+%F %T') profils : synchronisation différée, contexte conservé"; return 0; }
   plan=$(profiles_tool plan 2>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
   while read -r action name; do
     case "$action" in
@@ -115,7 +128,19 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
                 && echo "$(date '+%F %T') profil Hermes retiré : $name" ;;
     esac
   done <<< "$plan"
+  # The context contract includes the installed skills; copy them before writing/acknowledging SOUL.
+  skills
   profiles_tool prepare >/dev/null 2>>"$work/profiles.err" || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  # Always restart an unacknowledged contract, even when prepare is now unchanged: a previous
+  # attempt may have written the files but failed its restart, or only the skills may have changed.
+  echo "$(date '+%F %T') Hermes redémarre (profils, consignes ou plateforme marcel)."
+  restart_hermes || { echo "$(date '+%F %T') profils : redémarrage refusé, ancien contexte conservé"; return 0; }
+  hermes_answers || { echo "$(date '+%F %T') profils : Hermes ne répond pas, ancien contexte conservé"; return 0; }
+  profiles_tool verify >"$work/profiles-applied.json" 2>>"$work/profiles.err" \
+    || { echo "$(date '+%F %T') profils : vérification des consignes ratée"; return 0; }
+  curl -fsS -m 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+    --data-binary "@$work/profiles-applied.json" "$api/v1/hermes/profiles/applied" >/dev/null \
+    || { echo "$(date '+%F %T') profils : accusé de synchronisation refusé, ancien contexte conservé"; return 0; }
   echo "$digest" > .hermes-profiles-applied
 }
 
@@ -134,8 +159,9 @@ hermes_answers() {
 
 hermes_update() {  # après un déploiement réussi de $current → $target
   local skills_changed=0 config_changed=0 applied overlay
-  git diff --quiet "$current" "$target" -- deploy/hermes-skills || skills_changed=1
+  git diff --quiet "$current" "$target" -- deploy/hermes-skills deploy/hermes-plugins || skills_changed=1
   skills
+  plugins
   # A config Hermes already refused isn't tried again; the next change of the file is.
   overlay=$(git hash-object deploy/hermes-overrides.yaml)
   if grep -qx "$overlay" .hermes-overrides-refused 2>/dev/null; then

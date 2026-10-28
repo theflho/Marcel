@@ -37,13 +37,13 @@ struct CodeRequestsView: View {
                             Text("Qui fait les gros chantiers")
                         } footer: {
                             Text(list.agent == "marcel"
-                                 ? "Marcel code tout lui-même, même les gros chantiers, en plusieurs pull requests s'il le faut : rien à configurer."
-                                 : "Marcel modifie son code lui-même. Pour un gros chantier, il peut préparer une demande que tu envoies à cet agent, sur GitHub. Sur le dépôt : secret ANTHROPIC_API_KEY pour Claude Code, OPENAI_API_KEY pour Codex.")
+                                 ? "Hermes code tout lui-même, même les gros chantiers, en plusieurs pull requests s'il le faut : rien à configurer."
+                                 : "Hermes modifie son code lui-même. Pour un gros chantier, il peut préparer une demande que tu envoies à cet agent, sur GitHub. Sur le dépôt : secret ANTHROPIC_API_KEY pour Claude Code, OPENAI_API_KEY pour Codex.")
                         }
                     }
                     if list.requests.isEmpty, log.isEmpty {
                         Section {
-                            Text("Rien pour l'instant. Dis à Marcel ce qui manque à l'app ou ce qui ne marche pas : il modifie son code lui-même, ouvre la pull request et la fusionne ; le serveur se met à jour seul.")
+                            Text("Rien pour l'instant. Dis à Hermes ce qui manque à l'app ou ce qui ne marche pas : il modifie son code lui-même, ouvre la pull request et attend ton accord pour la fusionner après les vérifications ; le serveur se met ensuite à jour seul.")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -53,7 +53,7 @@ struct CodeRequestsView: View {
                                 CodeLogRow(entry: entry) { number in await revert(number) }
                             }
                         } header: {
-                            Text("Ce que Marcel a fait")
+                            Text("Ce que Hermes a fait")
                         } footer: {
                             Text("Après une fusion, le serveur se met à jour seul en quelques minutes et revient à la version précédente s'il ne répond plus. Un changement de l'app iPhone se compile dans Xcode.")
                         }
@@ -74,7 +74,7 @@ struct CodeRequestsView: View {
                 ProgressView()
             }
         }
-        .navigationTitle("Code de Marcel")
+        .navigationTitle("Code de l’app")
         .alert("Annulation impossible", isPresented: Binding { revertError != nil } set: { if !$0 { revertError = nil } }) {
             Button("OK") {}
         } message: {
@@ -170,7 +170,7 @@ private struct CodeLogRow: View {
                 }
             }
         } message: {
-            Text("Marcel ouvre une pull request qui la défait et la fusionne ; le serveur revient en arrière dans quelques minutes.")
+            Text("Cette action demande à Hermes de revenir sur ce changement via une nouvelle pull request et sa fusion au vert ; le serveur se met ensuite à jour.")
         }
     }
 
@@ -262,13 +262,13 @@ struct CodeRequestCard: View {
             Text(draft.titre).font(.headline)
             Text(draft.demande).font(.footnote)
             Text(bySelf
-                 ? "Marcel le code lui-même avec ses outils (branche, vérification, pull request, fusion au vert), même si c'est gros."
+                 ? "Hermes le code lui-même avec ses outils (branche, vérification, pull request, fusion après ton accord et CI verte), même si c'est gros."
                  : "Envoyée, elle devient une issue sur GitHub : \(agentName) prépare une pull request que tu relis et fusionnes toi-même.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             switch message.proposalDecision {
             case "applied"? where bySelf:
-                Label("Demandé à Marcel", systemImage: "checkmark.circle.fill")
+                Label("Demandé à Hermes", systemImage: "checkmark.circle.fill")
                     .font(.footnote)
                     .foregroundStyle(.green)
             case nil where bySelf:
@@ -326,24 +326,24 @@ struct HandoffCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 MarcelAvatar(size: 26, bot: nil)
-                Text("Pour Marcel")
+                Text("Pour Hermes")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
             }
             Text(handoff.demande).font(.footnote)
-            Text("Ce bot n'a pas d'outils. Marcel, lui, peut changer l'app, régler les bots, créer un objectif… La demande part dans sa conversation.")
+            Text("Cet échange avec Hermes lisait des e-mails en mode protégé. Ce bouton ouvre une conversation ordinaire avec ses outils pour poursuivre la demande.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             switch message.proposalDecision {
             case "applied"?:
-                Label("Demandé à Marcel", systemImage: "checkmark.circle.fill")
+                Label("Demandé à Hermes", systemImage: "checkmark.circle.fill")
                     .font(.footnote)
                     .foregroundStyle(.green)
             case "cancelled"?:
                 Label("Pas demandé", systemImage: "xmark.circle").font(.footnote).foregroundStyle(.secondary)
             default:
                 HStack {
-                    Button("Demander à Marcel") { store.askMarcel(handoff, from: message.id) }
+                    Button("Demander à Hermes") { store.askMarcel(handoff, from: message.id) }
                         .buttonStyle(.borderedProminent)
                         .disabled(store.isStreaming || store.emergencyActive)
                     Button("Non merci") { store.cancelProposal(message.id) }

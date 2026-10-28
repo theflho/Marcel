@@ -355,7 +355,7 @@ def test_a_bot_hands_to_marcel_what_it_cannot_do():
                        json={"name": "Relais test", "mission": "Aider sur le planning", "mood": "tree"}).json()
     try:
         told = bot_context(assistants.find(made["id"]))[0]
-        assert "```pour-marcel" in told and "Demander à Marcel" in told and "Théo doit" not in told
+        assert "```pour-marcel" in told and "Demander à Hermes" in told and "Théo doit" not in told
         reply = 'Je ne peux pas.\n```pour-marcel\n{"demande": "Ajoute un bouton"}\n```'
         assert "pour-marcel" not in plain_reply(reply) and "depuis l'app" in plain_reply(reply)
     finally:
@@ -380,7 +380,7 @@ def test_a_hand_over_is_only_proposed_and_waits_for_the_user():
 def test_marcel_codes_big_work_himself_unless_an_agent_is_chosen():
     from app.main import app_context, assistants
     shown = client.get("/v1/code-requests", headers=AUTH).json()
-    assert shown["agents"][0] == {"id": "marcel", "name": "Marcel lui-même"}
+    assert shown["agents"][0] == {"id": "marcel", "name": "Hermes"}
     before = assistants.state("code_agent", None)
     try:
         assistants.set_state("code_agent", "marcel")
@@ -393,8 +393,8 @@ def test_marcel_codes_big_work_himself_unless_an_agent_is_chosen():
         assistants.set_state("code_agent", before or "marcel")
 
 
-def test_bots_get_marcels_tools_by_default_never_with_mails():
-    from app.main import assistants, bot_context, bot_tools, mail_needed
+def test_bots_always_get_marcels_tools_never_with_mails():
+    from app.main import assistants, bot_context, bot_tools, mail_needed, rules
     planning = assistants.find("planning")
     assert bot_tools(planning) and bot_tools(assistants.find("mails"))
     assert not bot_tools(planning, mail="un e-mail") and not bot_tools(assistants.find("mails"), mail="un e-mail")
@@ -402,13 +402,10 @@ def test_bots_get_marcels_tools_by_default_never_with_mails():
     assert mail_needed("mails", "quoi de neuf ?") and mail_needed("mails", "un script pour trier mes mails")
     assert not mail_needed("mails", "écris-moi un script Python") and not mail_needed("planning", "quoi de neuf ?")
     with_tools, web = bot_context(planning, tools=True)
-    assert "les mêmes outils que Marcel" in with_tools and "```pour-marcel" not in with_tools and not web
+    assert "tes outils et skills" in with_tools and "```pour-marcel" not in with_tools and not web
     assert "```pour-marcel" in bot_context(planning)[0]
-    try:
-        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": "off"}, "assistant": "planning"})
-        assert not bot_tools(planning) and bot_tools(assistants.find("pointage"))
-    finally:
-        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": ""}, "assistant": "planning"})
+    # No rule turns them off: a bot is a Hermes profile.
+    assert bot_tools(planning) and bot_tools(assistants.find("pointage")) and "outils" not in rules()
 
 
 def test_a_bot_has_its_own_memory(tmp_path):
@@ -426,20 +423,23 @@ def test_a_bot_has_its_own_memory(tmp_path):
 
 
 
-def test_a_fact_is_remembered_for_a_bot_and_moved():
-    from app.main import ToolError, assistants, bot_context, tool_remember
-    planning = assistants.find("planning")
-    assert f"mémoire de {planning.name}" in tool_remember({"texte": "Préfère les créneaux du matin", "bot": "planning"})
-    assert '"bot": "planning"' in bot_context(planning, tools=True)[0]
-    fact = next(f for f in client.get("/v1/memory", headers=AUTH, params={"q": "créneaux matin"}).json()["items"]
-                if f["owner"] == "planning")
-    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": ""}).json()["owner"] == ""
-    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": "inconnu"}).status_code == 404
-    try:
-        tool_remember({"texte": "Quelque chose", "bot": "inconnu"})
-        raise AssertionError("an unknown bot is refused")
-    except ToolError:
-        pass
+def test_the_memory_is_hermes_own():
+    """Nothing of Marcel's memory goes to Hermes, nothing is learnt by Marcel: each profile keeps its own."""
+    import asyncio
+
+    from app import main
+    main.memory.add("Aime le café serré.", tier=main.CORE)
+    request = main.ChatRequest(conversation_id="C0FFEE00-0000-4000-8000-0000000000C1",
+                               messages=[main.Message(role="user", content="Que sais-tu de moi ?")])
+
+    async def go():
+        mission = main.missions.get((await main.start_mission(request))["id"])
+        await mission.task
+        return mission
+
+    mission = asyncio.run(go())
+    assert not any(a["id"] == "memory" for a in mission.actions)
+    assert "marcel_retenir" not in main.bot_context(main.assistants.find("planning"), tools=True)[0]
 
 
 def test_accounts_and_purchases_follow_the_rules_and_the_cap():
@@ -501,3 +501,22 @@ def test_each_bot_has_a_hermes_profile_and_its_tools_follow_its_rules():
         assert as_planning["isError"] and "bloqué" in as_planning["content"][0]["text"]
     finally:
         client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"objectif": ""}})
+
+
+def test_what_hermes_sends_on_its_own_reaches_the_bot_in_the_app():
+    """The « marcel » platform plugin: a cron job's result, each profile to its own bot."""
+    deliver = lambda body, key="mcp-test": client.post(  # noqa: E731
+        "/v1/hermes/deliver", headers={"Authorization": f"Bearer {key}"}, json=body)
+    assert deliver({"bot": "planning", "text": "x"}, key="test").status_code == 401  # the app's key is not Hermes'
+    assert deliver({"bot": "nobody", "text": "x"}).status_code == 404
+    first = deliver({"bot": "planning", "text": "**Point du matin** : deux missions."}).json()["id"]
+    second = deliver({"bot": "planning", "text": "Point du soir."}).json()["id"]
+    main = deliver({"bot": "marcel", "text": "Rappel : facture EDF."}).json()["id"]
+    pending = {e["id"]: e for e in client.get("/v1/bot-messages", headers=AUTH).json()}
+    entry = pending[first]
+    assert entry["assistant"] == "planning" and entry["via"] == "Hermes" and entry["question"] == ""
+    assert entry["text"] == "**Point du matin** : deux missions." and entry["status"] == "done"
+    assert pending[second]["conversation_id"] == entry["conversation_id"]  # one conversation per bot
+    assert pending[main]["assistant"] == "" and pending[main]["assistant_name"] == "Hermes"
+    for entry_id in (first, second, main):
+        assert client.post(f"/v1/bot-messages/{entry_id}/delivered", headers=AUTH).status_code == 200

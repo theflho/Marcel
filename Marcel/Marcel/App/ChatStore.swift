@@ -675,11 +675,10 @@ final class ChatStore {
     func askMarcelToCode(_ draft: CodeRequestDraft, from messageID: UUID) {
         guard !isStreaming, !emergencyActive,
               let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
-        let from = assistant(for: conversation).map { "De la part de \($0.name) : " } ?? ""
         updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
         persist(conversation.id, touch: false)
-        openBot(nil)
-        sendSuggestion("\(from)fais-le toi-même avec tes outils de code, même si c'est gros (en plusieurs étapes s'il "
+        openBot(conversation.assistantID)
+        sendSuggestion("Fais-le toi-même avec tes outils de code, même si c'est gros (en plusieurs étapes s'il "
                        + "le faut) : « \(draft.titre) ».\n\n\(draft.demande)")
     }
 
@@ -962,7 +961,8 @@ final class ChatStore {
         }
     }
 
-    /// Puts what the user said to a bot on Telegram, and its reply, in that bot's conversation.
+    /// Puts what the user said to a bot on Telegram, and its reply, in that bot's conversation;
+    /// and what Hermes sent on its own (a cron job's result: no question), alone.
     func importBotMessages() async {
         guard !emergencyActive, let api = settings.api, let entries = try? await api.pendingBotMessages() else { return }
         for entry in entries {
@@ -977,11 +977,12 @@ final class ChatStore {
             if conversations.contains(where: { $0.id == id }) {
                 mutate(id) { conversation in
                     guard !conversation.messages.contains(where: { $0.missionID == entry.missionID }) else { return }
-                    conversation.messages += [question, reply]
+                    conversation.messages += entry.question.isEmpty ? [reply] : [question, reply]
                 }
             } else {
                 conversations.append(Conversation(id: id, title: "\(entry.assistantName) · \(entry.via)",
-                                                  messages: [question, reply], assistantID: entry.assistant))
+                                                  messages: entry.question.isEmpty ? [reply] : [question, reply],
+                                                  assistantID: entry.assistant.isEmpty ? nil : entry.assistant))
             }
             persist(id)
             try? await api.markBotMessageDelivered(id: entry.id)
@@ -1034,7 +1035,7 @@ final class ChatStore {
             message += "\n\nMontre-moi d'abord le texte exact et attends mon accord avant d'envoyer quoi que ce soit."
         }
         guard !isStreaming else {
-            report("Marcel répond encore dans cette conversation : valide à nouveau quand il a fini.", action: nil)
+            report("Hermes répond encore dans cette conversation : valide à nouveau quand il a fini.", action: nil)
             return
         }
         // What was waiting in the composer stays there and doesn't leave with the approval.

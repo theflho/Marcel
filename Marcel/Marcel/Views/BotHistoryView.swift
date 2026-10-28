@@ -76,7 +76,7 @@ struct BotHistorySheet: View {
                     dismiss()
                 }
             }
-            .navigationTitle("Historique · \(store.assistants.first { $0.id == assistantID }?.name ?? "Marcel")")
+            .navigationTitle("Historique · \(store.assistants.first { $0.id == assistantID }?.name ?? "Hermes")")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

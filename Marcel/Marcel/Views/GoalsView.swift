@@ -23,7 +23,7 @@ struct GoalsView: View {
                                        description: Text(error))
             } else if loaded && goals.isEmpty {
                 ContentUnavailableView("Aucun objectif", systemImage: "scope",
-                                       description: Text("Dis à Marcel ce que tu cherches ou veux accomplir : il te proposera de le suivre."))
+                                       description: Text("Dis à Hermes ce que tu cherches ou veux accomplir : il te proposera de le suivre."))
             } else {
                 list
             }
@@ -71,10 +71,10 @@ struct GoalsView: View {
 
     private var list: some View {
         List {
-            section("Proposés par Marcel", status: "proposed",
+            section("Proposés par Hermes", status: "proposed",
                     footer: "Repérés dans tes conversations. Rien n'est suivi sans ton accord.")
             section("Suivis", status: "active",
-                    footer: "Marcel connaît ces objectifs dans chaque conversation et les vérifie de lui-même au rythme choisi. Ce qui vaut la peine arrive dans Idées.")
+                    footer: "Hermes peut consulter ces objectifs avec ses outils. Le service de vérification de l’app les contrôle au rythme choisi et propose les changements utiles dans Idées.")
             section("En pause", status: "paused")
             section("Terminés", status: "done")
         }
@@ -147,7 +147,7 @@ struct GoalsView: View {
         guard !store.emergencyActive, let api = store.settings.api else { return }
         do {
             _ = try await api.checkGoal(id: goal.id)
-            notice = "Marcel regarde où en est « \(goal.title) ». S'il trouve quelque chose qui vaut la peine, ce sera dans Idées."
+            notice = "Hermes regarde où en est « \(goal.title) ». S'il trouve quelque chose qui vaut la peine, ce sera dans Idées."
         } catch {
             actionError = error.localizedDescription
         }
@@ -227,7 +227,7 @@ struct GoalProposalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Marcel peut suivre ça pour toi", systemImage: "scope")
+            Label("Hermes peut suivre ça pour toi", systemImage: "scope")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.accentColor)
             GoalSummary(goal: goal)
@@ -283,8 +283,8 @@ private struct GoalEditor: View {
                     }
                 } footer: {
                     Text(cadence == "hourly"
-                         ? "Pour ce qui part vite (vente flash, places). Chaque vérification compte dans le plafond du jour : réglable dans Marcel proactif."
-                         : "À quelle fréquence Marcel vérifie de lui-même où ça en est.")
+                         ? "Pour ce qui part vite (vente flash, places). Chaque vérification compte dans le plafond du jour : réglable dans Hermes proactif."
+                         : "À quelle fréquence Hermes vérifie de lui-même où ça en est.")
                 }
                 if !checks.isEmpty {
                     Section("Dernières vérifications") {

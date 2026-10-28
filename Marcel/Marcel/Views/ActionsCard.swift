@@ -314,7 +314,7 @@ struct ResultRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Theme.surface.opacity(0.7), in: .rect(cornerRadius: 12))
-        .confirmationDialog("Annuler ce que Marcel a fait ?", isPresented: $confirming, titleVisibility: .visible) {
+        .confirmationDialog("Annuler ce que Hermes a fait ?", isPresented: $confirming, titleVisibility: .visible) {
             Button("Oui, annuler", role: .destructive) {
                 undoing = true
                 Task {

@@ -47,6 +47,7 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
 
     /// Something Marcel carried out at the end of his reply, shown as its result.
     var isResult: Bool { id.hasPrefix("auto-") }
+    var isHermesApproval: Bool { id.hasPrefix("hermes-approval-") && status == "pending" }
     /// Waits for "Valider" under an "ask first" rule.
     /// Waits for the user: a card under « Demander », or an iPhone request the app could not do
     /// at once (it was closed when the reply ended).
@@ -1046,6 +1047,26 @@ nonisolated struct TokenUsage: Decodable, Equatable, Sendable {
     }
 }
 
+nonisolated struct HermesCapabilities: Decodable, Sendable {
+    struct Toolset: Decodable, Sendable {
+        let name: String
+        let label: String
+        let enabled: Bool
+        let configured: Bool
+        let tools: [String]
+    }
+    struct Skill: Decodable, Sendable {
+        let name: String
+        let description: String
+        let category: String
+    }
+    let profile: String
+    let ready: Bool
+    let toolsets: [Toolset]
+    let skills: [Skill]
+    let issues: [String]
+}
+
 nonisolated struct ServerHealth: Sendable {
     let status: Int
     /// The server-side emergency stop is on: it refuses every mission.
@@ -1281,6 +1302,15 @@ nonisolated struct MarcelAPI: Sendable {
     }
 
     // MARK: Rules
+
+    func hermesCapabilities(assistant: String? = nil) async throws -> HermesCapabilities {
+        try await call("GET", "v1/hermes/capabilities",
+                       query: assistant.map { [URLQueryItem(name: "assistant", value: $0)] } ?? [])
+    }
+
+    func hermesApproval(mission: String, action: String, choice: String) async throws -> MissionAction {
+        try await call("POST", "v1/missions/\(mission)/hermes-approval/\(action)", body: ["choice": choice])
+    }
 
     func rules() async throws -> ActionRules {
         try await call("GET", "v1/rules")

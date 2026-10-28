@@ -222,7 +222,7 @@ struct ChatView: View {
                 // the history; other bots are in the side menu.
                 if store.conversation.isPrivate {
                     Section("Rien n'est gardé de cette conversation") {
-                        Button("Revenir à Marcel", systemImage: "bubble.left.and.bubble.right") { store.openBot(nil) }
+                        Button("Revenir à Hermes", systemImage: "bubble.left.and.bubble.right") { store.openBot(nil) }
                     }
                 } else {
                     Section("Une seule conversation avec \(botName)") {
@@ -288,7 +288,7 @@ struct ChatView: View {
 
     /// Who this conversation is with, as named in the side menu.
     private var botName: String {
-        store.conversation.isPrivate ? "Conversation privée" : store.mode?.name ?? "Marcel"
+        store.conversation.isPrivate ? "Conversation privée" : store.mode.map { "Hermes · \($0.name)" } ?? "Hermes"
     }
 
     /// Ideas, missions, assistants and the illustration, behind one button (a dot when something waits).

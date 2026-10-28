@@ -84,8 +84,8 @@ struct BotTaskEditor: View {
             case .planning: "Quand le planning RMA change"
             case .mail: "À chaque nouvel e-mail"
             case .sender: "À chaque e-mail d'un expéditeur"
-            case .box: "À chaque e-mail reçu par Marcel"
-            case .boxSender: "À chaque e-mail reçu par Marcel d'un expéditeur"
+            case .box: "À chaque e-mail reçu par Hermes"
+            case .boxSender: "À chaque e-mail reçu par Hermes d'un expéditeur"
             }
         }
 
@@ -109,7 +109,7 @@ struct BotTaskEditor: View {
                 } header: {
                     Text("Ce qu'il fait")
                 } footer: {
-                    Text("Avec ce qu'il lit ici (sa fiche › « Ce que Marcel lit ici »), ses consignes, ses skills et les tâches que tu lui as apprises.")
+                    Text("Avec ce qu'il lit ici (sa fiche › « Ce que Hermes lit ici »), ses consignes, ses skills et les tâches que tu lui as apprises.")
                 }
                 Section("Quand") {
                     Picker("Déclencheur", selection: $when) {
@@ -477,7 +477,7 @@ struct BotNotificationsSection: View {
             Text("Notifications")
         } footer: {
             Text(allowed ? "Quand il a fini ou qu'il attend ton accord."
-                 : "Les notifications de Marcel sont coupées sur cet iPhone.")
+                 : "Les notifications de Hermes sont coupées sur cet iPhone.")
         }
         .task {
             on = BotPrefs.notifies(assistantID)

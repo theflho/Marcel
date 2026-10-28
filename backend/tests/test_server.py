@@ -35,15 +35,15 @@ def test_mcp_needs_its_own_token():
 def test_mcp_tools_never_delete():
     tools = mcp("tools/list").json()["result"]["tools"]
     names = {t["name"] for t in tools}
-    assert {"marcel_chercher", "marcel_retenir", "marcel_code_proposer", "marcel_code_fusionner"} <= names
+    assert {"marcel_chercher", "marcel_code_proposer", "marcel_code_fusionner"} <= names
+    # The memory is Hermes' own: Marcel has no memory tool any more.
+    assert not names & {"marcel_retenir", "marcel_memoire"}
     assert not any(word in name for name in names for word in ("supprim", "epingl", "delete", "pin"))
     reading = {t["name"] for t in tools if t["annotations"]["readOnlyHint"]}
     assert "marcel_code_lire" in reading and "marcel_code_ecrire" not in reading
 
 
-def test_mcp_remember_and_routine():
-    text = mcp("tools/call", {"name": "marcel_retenir", "arguments": {"texte": "Aime le café serré."}})
-    assert "Retenu" in text.json()["result"]["content"][0]["text"]
+def test_mcp_routine():
     made = mcp("tools/call", {"name": "marcel_creer_routine",
                               "arguments": {"titre": "Point", "consigne": "Résume.", "jours": ["lundi"]}})
     assert "Chaque lundi" in made.json()["result"]["content"][0]["text"]
@@ -324,6 +324,6 @@ def test_bot_reads_and_page():
         main.assistants.set_state("reads", saved)
 
 
-def test_bots_speak_as_marcel():
+def test_bots_speak_as_hermes():
     for bot in client.get("/v1/assistants", headers=AUTH).json():
-        assert bot["welcome"].startswith("Ici **Marcel**"), bot["id"]
+        assert bot["welcome"].startswith("Ici **Hermes**"), bot["id"]

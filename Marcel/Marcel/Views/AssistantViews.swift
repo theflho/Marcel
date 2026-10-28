@@ -97,7 +97,7 @@ private struct OfferCard: View {
             }
             Button("Non", role: .cancel) {}
         } message: {
-            Text("Marcel répondra dans le portail RMA dans les 10 minutes, puis te dira si c'est fait.")
+            Text("Hermes répondra dans le portail RMA dans les 10 minutes, puis te dira si c'est fait.")
         }
     }
 
@@ -207,7 +207,7 @@ struct ProposalCard: View {
             switch message.autoApplied("reglage") ? Optional("applied")
                 : message.blocked("reglage") ? "blocked" : message.proposalDecision {
             case "applied"?:
-                Label(message.autoApplied("reglage") ? "Fait par Marcel" : "Appliqué",
+                Label(message.autoApplied("reglage") ? "Fait par Hermes" : "Appliqué",
                       systemImage: "checkmark.circle.fill").font(.footnote).foregroundStyle(.green)
             case "blocked"?:
                 Label("Bloqué par tes règles", systemImage: "nosign").font(.footnote).foregroundStyle(.secondary)

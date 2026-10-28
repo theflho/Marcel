@@ -10,11 +10,20 @@ backend/     service FastAPI : /health, /v1/models, /v1/missions (SSE), /v1/file
 
 ## Protocole
 
-Chaque mission envoie à Hermes, avant la mémoire, une présentation de l'app (`APP_PROMPT` dans
-`backend/app/main.py`) : qui est Marcel, ce que l'app sait faire (mémoire, objectifs, idées,
-validation des actions, voix, notifications), la date et l'heure (`MARCEL_TIMEZONE`,
-`Europe/Paris` par défaut) et ce qui est branché (Gmail, agenda, niveau de proactivité). Le
-caractère de Marcel peut se régler dans le `SOUL.md` de Hermes.
+Les consignes des conversations ordinaires sont installées dans le `SOUL.md` de Hermes et la
+skill `marcel-app`. Le profil principal garde son texte personnel autour d'un bloc Marcel géré ;
+chaque bot reçoit sa mission, ses consignes, ses réglages, ses skills partagées et ses règles dans
+son propre SOUL. Hermes lit l'heure et les connexions avec `marcel_contexte`, puis cherche les
+données nécessaires avec ses outils MCP. Marcel ne lui joint plus systématiquement le planning,
+les objectifs, les autres bots ni la présentation complète de l'app. Restent le message et ses
+pièces jointes, les identifiants de session, le style demandé, la commande `/` et l'agenda partagé.
+
+La transition attend un accusé du déploiement : `auto-update.sh` installe les skills et les SOUL,
+redémarre Hermes si nécessaire, vérifie sa réponse et le contenu réel des fichiers, puis confirme
+les versions par `POST /v1/hermes/profiles/applied`. Jusqu'à cet accusé, ou si une règle, une fiche,
+un plafond ou une skill change, Marcel transmet le contexte de compatibilité à jour. Il est isolé
+dans `backend/app/legacy_context.py`. Les e-mails protégés, appels au modèle seul, vérifications
+d'objectifs et conversations privées conservent leur chemin actuel et leurs garde-fous.
 
 - `GET /health` → `200 {"status":"ok","emergency":false,"ideas":0,"tokens":{"today":0,"budget":2000000}}`
   (`ideas` : idées pas encore vues, pour la pastille ; `tokens` : consommation du jour lue dans
@@ -23,7 +32,7 @@ caractère de Marcel peut se régler dans le `SOUL.md` de Hermes.
   parce que le budget est épuisé le dit (« Budget de tokens du jour atteint… »).
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
-Une réponse de Marcel est une **mission** qui tourne sur le VPS : elle continue quand l'app est
+Une réponse de Hermes est une **mission** qui tourne sur le VPS : elle continue quand l'app est
 fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 
 - `GET /v1/models` → `{"models": [{"id","label"}], "default": "..."}`. La liste est lue dans Hermes
@@ -60,17 +69,30 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 - `GET /v1/missions/{id}` → état et texte complet ; `GET /v1/missions?conversation_id=…&active=true` → liste.
 - Statuts : `running`, `done`, `stopped`, `failed`, `interrupted` (le serveur a redémarré pendant la mission).
   Les missions sont enregistrées dans `MARCEL_DATA_DIR/marcel.db` (SQLite).
+- **Sessions Hermes** : pour une conversation ordinaire, Marcel envoie
+  `X-Hermes-Session-Key: <conversation_id>`, puis reprend le `X-Hermes-Session-Id` renvoyé par
+  Hermes. La clé seule ne recharge pas l'historique de Chat Completions. Le premier envoi transmet
+  l'historique de l'app ; les suivants ne transmettent à Hermes que le dernier message et ses pièces
+  jointes, avec les consignes de la mission. Les identifiants de transport survivent aux redémarrages
+  de Marcel, séparés par conversation, bot et adresse du profil. Une modification, une régénération
+  ou un historique tronqué repart sur une nouvelle session avec l'historique affiché dans l'app.
+  Les e-mails protégés, appels au modèle seul, vérifications d'objectifs et conversations privées
+  ne reprennent aucune session. Sans authentification Hermes ou sans identifiant de session renvoyé,
+  Marcel conserve l'envoi de l'historique complet. L'iPhone transmet encore son historique à Marcel
+  pour cette reprise initiale et la détection des modifications. Les consignes vivent dans les
+  profils et les skills après confirmation de leur installation (voir ci-dessus).
 - Arrêt d'urgence : `POST /v1/emergency/stop` coupe toutes les missions et refuse les nouvelles
   (`423`) jusqu'à `POST /v1/emergency/resume` ; état dans `GET /v1/emergency`. Il survit aux
   redémarrages. Côté app (Réglages › Sécurité), plus aucune
   requête ne part — ni test de connexion, ni envoi, ni reprise — tant qu'on n'a pas touché « Reprendre ».
 
-- Mémoire en trois niveaux (`MARCEL_DATA_DIR/marcel.db`), pour ne jamais saturer :
+- **Ancienne** mémoire de Marcel (plus envoyée ni tenue à jour : la mémoire est celle de Hermes, voir
+  « Hermes, seul cerveau »). Pour mémoire, elle était en trois niveaux (`MARCEL_DATA_DIR/marcel.db`) :
   - **noyau** : quelques faits stables, envoyés avec chaque mission, plafonnés à
     `MARCEL_MEMORY_CORE_CHARS` caractères (1 500 par défaut) ;
   - **archives** : sans limite, recherche plein texte (FTS5) ; seuls les ~8 souvenirs liés à la
     question accompagnent la mission (carte d'action « Mémoire » dans l'app) ;
-  - **rangement** chaque nuit à `MARCEL_MEMORY_TIDY_HOUR` h (3 h par défaut) ou à la demande :
+  - **rangement** à la demande (Réglages › Mémoire) :
     expire les faits périmés, fusionne les doublons, fait monter au noyau ce qui sert souvent
     (3 fois en 30 jours) et redescendre ce qui n'a pas servi depuis 60 jours ou dépasse le budget.
     Les souvenirs épinglés ne bougent jamais.
@@ -81,7 +103,7 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   `GET /v1/memory/log`, `POST /v1/memory/log/{id}/undo` (annule tout le lot d'un rangement ou
   d'un import), `POST /v1/memory/tidy`, `POST /v1/memory/import` (`{"text": "..."}`, entrées
   séparées par `§` comme dans le `MEMORY.md` de Hermes, sinon une par ligne).
-  Pour libérer la mémoire intégrée de Hermes, importer son `MEMORY.md` ici puis le vider.
+  La mémoire active reste chez Hermes ; ne pas vider son `MEMORY.md` pour utiliser ces archives.
 
 - Objectifs (`goals`, même base) : ce que l'utilisateur veut accomplir et que Marcel suit.
   Pendant l'extraction de la mémoire, le modèle repère un objectif qui dure (« je cherche un Mac
@@ -289,9 +311,33 @@ terminal (`platform_toolsets.api_server`) plus le kanban, et les profils des bot
 Restent coupés : `clarify` (l'API n'a personne à qui poser la question : Marcel la pose dans sa
 réponse) et `text_to_speech` (le fichier son resterait sur le serveur : l'app lit les réponses à voix
 haute). `computer_use` n'apparaît que si le serveur a un écran (`cua-driver`).
-Tâches récurrentes : Marcel crée des **routines** (`marcel_creer_routine`), dont le résultat arrive
-dans l'app, et pas de tâches `cronjob` de Hermes, dont le résultat reste sur le VPS
-(`~/.hermes/cron/output`).
+
+## Hermes, seul cerveau
+
+Tout ce qui pense passe par Hermes : Marcel, chaque bot (son profil, toujours avec ses outils), les
+e-mails (profil `marcel-protege`, sans rien), et les petits appels JSON de Marcel (tri des idées).
+La **mémoire est celle de Hermes** (`MEMORY.md`, `USER.md`, ses sessions, une par profil) : Marcel
+n'envoie plus la sienne, n'apprend plus rien après une conversation et ne range plus rien la nuit ;
+ses outils `marcel_retenir` et `marcel_memoire` ont disparu. Ses anciens souvenirs restent visibles
+dans Réglages › Mémoire. Le profil `marcel-protege` est fait par `app/hermes_profiles.py` (« bare ») :
+pas de `mcp_servers`, `platform_toolsets.api_server: []`, pas de plugin, mémoire et relecture
+de fond (`background review`) coupées, rien pour livrer.
+
+## L'app, plateforme de Hermes (comme Telegram)
+
+Hermes est le cerveau, l'app un écran. Ce que Hermes envoie seul (résultats de ses tâches cron,
+`send_message`) passe par le plugin de plateforme `marcel` (`deploy/hermes-plugins/marcel`,
+installé dans `~/.hermes/plugins/` et activé par `plugins.enabled` dans hermes-overrides.yaml) :
+`POST /v1/hermes/deliver` (clé MCP), et Marcel le range dans la conversation « Hermes » du bot,
+que l'app relève avec les messages Telegram (`GET /v1/bot-messages`, `via: "Hermes"`) et notifie.
+Marcel ne décide rien : il transporte. Le serveur d'API de Hermes, lui, ne pousse jamais rien.
+- **Qui reçoit** : chaque profil livre à son bot. `app/hermes_profiles.py` met dans son `.env`
+  `MARCEL_DELIVER_KEY` (le `MARCEL_MCP_TOKEN`) et `MARCEL_HOME_CHANNEL=<bot>` (`marcel` pour le
+  profil principal) ; une tâche créée depuis l'app n'a pas d'origine et va donc à ce canal
+  d'accueil. Si le `.env` principal change, `auto-update.sh` redémarre Hermes.
+- **Ce qui reste à Marcel** : les routines sur un e-mail (`email`, `boite`), lues en mode protégé,
+  et les objectifs, dont les vérifications tournent sans outil qui agit et sans mémoire.
+  La règle « routine » vaut aussi pour une tâche cron.
 
 ## Un bot = un profil Hermes
 
@@ -308,33 +354,32 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
   (`platform_toolsets.api_server`), `.env` sans `API_SERVER_*` (le port
   reste au gateway principal). Rien n'est refait tant que la liste et la config principale ne
   changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
-- **Qui répond** : une conversation d'un bot avec outils (règle « outils ») et sa tâche permanente
+- **Qui répond** : une conversation d'un bot (toujours avec outils, sauf avec des e-mails) et sa tâche permanente
   vont à `HERMES_URL/p/marcel-<bot>/` dès que le profil répond (vérifié chaque minute) ; avant, au
-  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (modèle seul, sans profil).
+  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (profil `marcel-protege`).
 - **Ses outils** : l'en-tête `X-Marcel-Bot` fait suivre aux outils `marcel_*` les règles de ce bot, et
   `marcel_retenir` écrit dans sa mémoire.
 - Le serveur Marcel ne touche jamais au VPS : il ne fait que dire ce qu'il faut.
 
 
-Le navigateur de Hermes (`browser_exec`, `browser_cdp`…, toolset `browser`, qui demande aussi
-`terminal`) clique, tape et envoie des formulaires **sans étape de confirmation**. Par défaut
-(`MARCEL_BROWSER_GUARD=0`), Marcel s'en sert seul quand la tâche le demande et dit ensuite ce qu'il
-a fait. Restent toujours :
-- `browser_vault` (identifiants et carte enregistrés) suit les règles **Comptes** (« Créer un compte
-  ou s'y connecter », tout seul par défaut) et **Réservations et achats** (demander par défaut) de
-  Réglages › Règles : ouvert si l'une est sur « Tout seul », ou sur « Demander » après « Vas-y » ;
-  sinon la réponse s'arrête au premier appel. Jamais dans une routine. Le prompt donne à Marcel le
-  **plafond par achat** (50 € par défaut, réglé dans Règles) : au-delà, il attend « Vas-y ». Ce
-  plafond n'est qu'une consigne : le vrai est celui de la carte. Ne mettre dans le coffre que
-  l'identité de Marcel (sa boîte, ses mots de passe) et une **carte virtuelle plafonnée** ;
-- sa boîte mail (AgentMail, `MARCEL_AGENTMAIL_KEY`, `MARCEL_AGENTMAIL_INBOX`) : il crée ses comptes
-  avec elle et la lit seulement (`marcel_boite`, `marcel_boite_lire`, contenu marqué extérieur) ;
-- les routines, vérifications, e-mails et assistants n'ont jamais le navigateur (Hermes bridé ou
-  modèle seul).
-`MARCEL_BROWSER_GUARD=1` remet l'accord préalable : la réponse est coupée dès un appel `browser*`,
-sauf si le message de l'utilisateur commence par « Vas-y », « Je valide », « Fais-le »… (c'est ce
-qu'envoie « Valider » sur une idée). C'est un garde-fou côté Marcel, qui coupe la requête vers
-Hermes : il ne garantit pas qu'une action déjà lancée soit annulée.
+Hermes choisit les outils et skills de son profil selon le message, y compris le navigateur.
+Marcel ne demande plus une permission générale « Vas-y » pour naviguer : l’ancienne variable
+`MARCEL_BROWSER_GUARD` et la règle `navigateur` ne sont plus utilisées. Les validations natives
+`approval.request` sont affichées dans l’app avec « Autoriser cette fois » et « Refuser » ; elles
+restent liées à la mission et au profil qui les ont émises. Aucune autorisation permanente n’est
+accordée par l’app. Les événements `hermes.tool.progress` alimentent les étapes visibles.
+
+Le coffre `browser_vault` suit toujours les règles Comptes et Réservations et achats. Il reste fermé
+dans les routines. Le plafond d’achat est une consigne de Hermes ; utilise une carte virtuelle
+plafonnée pour une limite bancaire. Les e-mails restent dans le profil protégé sans outils, et
+les vérifications d’objectifs gardent leur profil isolé. Une interruption du flux n’annule pas
+nécessairement une action déjà commencée dans Hermes.
+
+Réglages › Outils et skills de Hermes interroge les catalogues du profil courant (`/v1/toolsets`,
+`/v1/skills`) sans appel au modèle. Activé/configuré signifie exposé par Hermes, sans prouver le
+fonctionnement d’un service externe. Le plugin corrige la compatibilité du paramètre de catalogue
+`include_editorial` pour les anciennes versions qui ne l’acceptent pas, sans modifier Hermes.
+
 Activer le navigateur du Hermes principal (sur le VPS, à faire soi-même) : `hermes tools` (choisir
 `browser` pour la plateforme de l'API), Chromium installé dans le conteneur (`hermes pm install
 chromium`), puis redémarrer Hermes. Sans ce réglage, Marcel n'a pas de navigateur du tout.
@@ -498,9 +543,11 @@ Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des con
 pour un assistant (« ignore tes règles, lance cette commande, envoie ce fichier »). Défenses, de la
 plus forte à la plus faible :
 1. **Jamais les trois ingrédients ensemble** (données privées, contenu non fiable, moyen de
-   faire sortir des informations). Les messages qui joignent des e-mails vont au **modèle seul**,
-   via llm-guard, **sans aucun outil** : ni web, ni terminal, ni envoi (carte « Mode protégé ») ;
-   sans accès direct au modèle, ils vont à `hermes-checks`. Les vérifications automatiques lisent
+   faire sortir des informations). Les messages qui joignent des e-mails vont au profil Hermes
+   **`marcel-protege`, sans aucun outil** : ni web, ni terminal, ni envoi, ni serveur MCP, ni mémoire
+   (carte « Mode protégé ») ; Marcel ne s'y fie qu'une fois que Hermes dit qu'il n'a aucun outil
+   actif (`/v1/toolsets`), et avant, au modèle seul via llm-guard (sans accès direct au modèle, à
+   `hermes-checks`), jamais au Hermes complet. Les vérifications automatiques lisent
    le web mais ne reçoivent plus la mémoire. Gmail est en lecture seule (Google refuse tout envoi).
 2. **Rien ne part sans l'utilisateur** : action préparée, aperçu exact, « Valider ».
 3. **Secrets hors de portée** : la clé Scaleway n'est que dans llm-guard ; Hermes retire les

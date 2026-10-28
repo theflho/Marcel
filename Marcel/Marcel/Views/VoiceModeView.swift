@@ -104,7 +104,7 @@ struct VoiceModeView: View {
         switch phase {
         case .listening: dictation.isRecording ? "Je t'écoute…" : "Un instant…"
         case .waiting: (store.headerStatus?.text).map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? "Réflexion…"
-        case .speaking: "Marcel te répond"
+        case .speaking: "Hermes te répond"
         }
     }
 
