@@ -46,6 +46,16 @@ pendant la réception termine l’état « en cours » de l’app et permet de c
 Les libellés d’avancement des outils (parfois le seul nom générique `tool_call`) ne déclenchent
 aucun arrêt pour répétition : Hermes gère sa boucle d’outils et peut poursuivre ses recherches.
 
+La jauge et Réglages › **Tokens et limite quotidienne** ouvrent le suivi de consommation et
+la modification du plafond partagé par Hermes sur Marcel et Telegram et les vérifications.
+`GET /v1/tokens/budget` renvoie `{"today":1000,"budget":2000000}` ; `PUT` sur la même route
+avec `{"budget":5000000}` enregistre un entier de 1 à 1 000 000 000. Le changement est immédiat,
+persiste dans `guard.db` après redémarrage et les jours suivants, sans effacer la consommation.
+Seule la clé de l’app autorise cette route, absente des outils MCP. Le backend utilise sa clé
+llm-guard « marcel » pour `PUT /budget` (`{"daily_tokens":5000000}`) ; les clés Hermes et checks
+ne peuvent pas modifier ce réglage. Le plafond des vérifications reste proportionnel à
+`GUARD_CHECKS_SHARE` et les modèles renfort conservent leurs budgets séparés.
+
 - `GET /v1/models` → `{"models": [{"id","label"}], "default": "..."}`. La liste est lue dans Hermes
   (`/v1/models`, gardée 5 min) et les ids sont rendus lisibles (`deepseek-r1-distill-llama-70b` →
   « DeepSeek R1 Distill Llama 70B »). `MARCEL_MODELS="id=Libellé,id2=Libellé 2"` la remplace :
@@ -664,7 +674,7 @@ aucun son ne part chez Apple ; si la reconnaissance locale en français manque, 
    répond `429` au-delà du budget du jour (minuit, heure du serveur) ; les vérifications
    automatiques s'arrêtent dès `GUARD_CHECKS_SHARE` (60 %) du budget, pour garder le reste aux
    messages de l'utilisateur. Consommation : `GET /usage` (clé llm-guard), et dans l'app
-   Réglages › Marcel proactif. Chaque fichier modifié est sauvegardé ; retour arrière :
+   Réglages › Tokens et limite quotidienne (plafond modifiable). Chaque fichier modifié est sauvegardé ; retour arrière :
    `./deploy/install-guard.sh --annuler <date>`. Si llm-guard est arrêté, Hermes (Telegram compris)
    ne peut plus joindre le modèle. En plus, créer une alerte de facturation dans la console Scaleway.
 3c. Essayer avec le vrai modèle, sans toucher aux données de Marcel :

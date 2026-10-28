@@ -87,6 +87,15 @@ struct SettingsView: View {
                 DeviceSection()
 
                 Section {
+                    NavigationLink {
+                        TokenBudgetView()
+                    } label: {
+                        Label("Tokens et limite quotidienne", systemImage: "gauge.with.dots.needle.67percent")
+                    }
+                    .disabled(store.emergencyActive)
+                }
+
+                Section {
                     if store.emergencyActive {
                         Button {
                             resuming = true
@@ -236,6 +245,8 @@ struct SettingsView: View {
                     }
                 case .proactive:
                     ProactiveSettingsView()
+                case .tokens:
+                    TokenBudgetView()
                 }
             }
             .onAppear {

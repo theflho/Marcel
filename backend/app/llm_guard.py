@@ -26,6 +26,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 UPSTREAM_URL = os.environ.get("GUARD_UPSTREAM_URL", "https://api.scaleway.ai/v1").rstrip("/")
 UPSTREAM_KEY = os.environ.get("GUARD_UPSTREAM_KEY", "")
@@ -100,7 +101,16 @@ class Usage:
                 PRIMARY KEY (day, route, client)
             )"""
         )
+        self._db.execute("CREATE TABLE IF NOT EXISTS guard_settings (name TEXT PRIMARY KEY, value INTEGER NOT NULL)")
         self._db.commit()
+
+    def daily_budget(self) -> int:
+        row = self._db.execute("SELECT value FROM guard_settings WHERE name='daily_tokens'").fetchone()
+        return row[0] if row else DAILY_TOKENS
+
+    def set_daily_budget(self, tokens: int) -> None:
+        with self._db:
+            self._db.execute("INSERT OR REPLACE INTO guard_settings VALUES ('daily_tokens', ?)", (tokens,))
 
     @staticmethod
     def today() -> str:
@@ -141,8 +151,9 @@ class Usage:
         clients = {client: {"prompt_tokens": p, "completion_tokens": c, "requests": r, "refused": f}
                    for client, p, c, r, f in rows}
         routes = {r["prefix"]: {"tokens": self.spent_routed(r["prefix"]), "budget": r["budget"]} for r in ROUTES}
-        return {"day": self.today(), "tokens": self.spent(), "budget": DAILY_TOKENS,
-                "checks_budget": int(DAILY_TOKENS * CHECKS_SHARE), "clients": clients, "routes": routes}
+        budget = self.daily_budget()
+        return {"day": self.today(), "tokens": self.spent(), "budget": budget,
+                "checks_budget": int(budget * CHECKS_SHARE), "clients": clients, "routes": routes}
 
 
 usage = Usage(DATA_DIR / "guard.db")
@@ -180,9 +191,10 @@ def refusal(client: str, route: dict | None = None) -> str | None:
             return f"Budget du jour du modèle renfort atteint ({spent} tokens sur {route['budget']}). Reprise à minuit."
         return None
     spent = usage.spent()
-    if spent >= DAILY_TOKENS:
-        return f"Budget du jour atteint ({spent} tokens sur {DAILY_TOKENS}). Reprise à minuit."
-    if client == CHECKS_CLIENT and spent >= DAILY_TOKENS * CHECKS_SHARE:
+    budget = usage.daily_budget()
+    if spent >= budget:
+        return f"Budget du jour atteint ({spent} tokens sur {budget}). Reprise à minuit."
+    if client == CHECKS_CLIENT and spent >= budget * CHECKS_SHARE:
         return "Budget du jour réservé aux messages de l'utilisateur : vérifications automatiques en pause."
     return None
 
@@ -208,6 +220,19 @@ async def health() -> dict:
 @app.get("/usage")
 async def get_usage(authorization: str = Header(default="")) -> dict:
     caller(authorization)
+    return usage.report()
+
+
+class BudgetChange(BaseModel):
+    daily_tokens: int = Field(strict=True, ge=1, le=1_000_000_000)
+
+
+@app.put("/budget")
+async def set_budget(body: BudgetChange, authorization: str = Header(default="")) -> dict:
+    # Only the backend's separate key can change this user setting. Hermes/checks keep read access.
+    if caller(authorization) != "marcel":
+        raise HTTPException(403, "Seule l'app peut modifier la limite quotidienne.")
+    usage.set_daily_budget(body.daily_tokens)
     return usage.report()
 
 

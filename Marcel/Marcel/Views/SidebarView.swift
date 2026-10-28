@@ -244,7 +244,7 @@ struct SidebarView: View {
             .tint(.primary)
             if let usage = store.tokenUsage {
                 Button {
-                    store.openSettings(.proactive)
+                    store.openSettings(.tokens)
                 } label: {
                     TokenGauge(usage: usage)
                         .padding(.horizontal)

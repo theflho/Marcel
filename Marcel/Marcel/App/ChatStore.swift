@@ -10,6 +10,7 @@ enum ServerStatus: Equatable {
 enum SettingsRoute: Hashable {
     case server(UUID)
     case proactive
+    case tokens
 }
 
 /// What the user can do about the last error, shown as a button next to it.
@@ -530,12 +531,18 @@ final class ChatStore {
         case MarcelAPIError.notConfigured:
             .openSettings(.server(settings.activeID), label: "Régler le serveur")
         case MarcelAPIError.http(429, let body) where body.contains("Budget"):
-            .openSettings(.proactive, label: "Voir la consommation")
+            .openSettings(.tokens, label: "Voir la consommation")
         case is URLError:
             .retry
         default:
             nil
         }
+    }
+
+    /// Updates the shared gauge after reading or saving a budget for the active server.
+    func updateTokenUsage(_ usage: TokenUsage, serverID: UUID) {
+        guard serverID == settings.activeID else { return }
+        tokenUsage = usage
     }
 
     /// Asks the server for the badge and token counters again, without the rest of a health check.
@@ -1405,7 +1412,7 @@ final class ChatStore {
         }
         guard let error, conversationID == currentID else { return }
         if error.hasPrefix("Budget de tokens") {
-            report(error, action: .openSettings(.proactive, label: "Voir la consommation"))
+            report(error, action: .openSettings(.tokens, label: "Voir la consommation"))
             Task { await refreshCounters() }
         } else {
             report(error, action: action)

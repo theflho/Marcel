@@ -1319,6 +1319,14 @@ nonisolated struct MarcelAPI: Sendable {
 
     // MARK: Rules
 
+    func tokenBudget() async throws -> TokenUsage {
+        try await call("GET", "v1/tokens/budget")
+    }
+
+    func setTokenBudget(_ budget: Int) async throws -> TokenUsage {
+        try await call("PUT", "v1/tokens/budget", body: ["budget": budget])
+    }
+
     func hermesCapabilities(assistant: String? = nil) async throws -> HermesCapabilities {
         try await call("GET", "v1/hermes/capabilities",
                        query: assistant.map { [URLQueryItem(name: "assistant", value: $0)] } ?? [])

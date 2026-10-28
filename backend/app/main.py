@@ -2117,6 +2117,37 @@ async def guard_usage(fresh: bool = False) -> dict | None:
     return usage
 
 
+class TokenBudgetChange(BaseModel):
+    budget: int = Field(strict=True, ge=1, le=1_000_000_000)
+
+
+@app.get("/v1/tokens/budget", dependencies=[Depends(require_token)])
+async def get_token_budget() -> dict:
+    spent = await guard_usage(fresh=True)
+    if spent is None:
+        raise HTTPException(503, "La consommation et la limite quotidienne sont indisponibles. Réessaie dans un instant.")
+    return {"today": spent["tokens"], "budget": spent["budget"]}
+
+
+@app.put("/v1/tokens/budget", dependencies=[Depends(require_token)])
+async def set_token_budget(body: TokenBudgetChange) -> dict:
+    global _guard_cache
+    if not GUARD_URL:
+        raise HTTPException(503, "Le plafond de tokens n'est pas configuré sur ce serveur.")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.put(f"{GUARD_URL}/budget", json={"daily_tokens": body.budget},
+                headers={"Authorization": f"Bearer {MEMORY_LLM_KEY}"})
+            response.raise_for_status()
+            spent = response.json()
+            result = {"today": spent["tokens"], "budget": spent["budget"]}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
+        _guard_cache = (0.0, None)
+        raise HTTPException(502, "La modification du plafond n'a pas été confirmée. Actualise pour vérifier la limite en vigueur.") from error
+    _guard_cache = (time.monotonic(), spent)
+    return result
+
+
 async def run_due_checks() -> int:
     """One pass of the scheduler: checks the due goals one after the other. Returns how many ran."""
     if missions.emergency or ideas.settings()["level"] == "off" or not in_hours(PROACTIVE_HOURS, time.time()):

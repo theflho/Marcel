@@ -495,7 +495,7 @@ private struct TokenBanner: View {
     var body: some View {
         let spent = usage.fraction >= 1
         Button {
-            store.openSettings(.proactive)
+            store.openSettings(.tokens)
         } label: {
             HStack(spacing: 8) {
                 Label(spent ? "Budget de tokens du jour épuisé : reprise à minuit."
