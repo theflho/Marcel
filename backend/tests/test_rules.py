@@ -72,6 +72,8 @@ def test_guard_cant_be_overwritten_from_another_file():
 def test_bot_profiles_are_planned_and_finished(tmp_path):
     import json
 
+    from ruamel.yaml import YAML
+
     from app.hermes_profiles import plan, prepare
 
     home = tmp_path / "hermes"
@@ -89,10 +91,21 @@ def test_bot_profiles_are_planned_and_finished(tmp_path):
     wanted.write_text(json.dumps({"prefix": "marcel-", "profiles": [
         {"name": "marcel-planning", "bot": "planning", "soul": "Tu es Planning."},
         {"name": "marcel-veille", "bot": "veille", "soul": "Tu es Veille."},
+        {"name": "marcel-protege", "bot": "", "soul": "Mode protégé.", "bare": True},
         {"name": "Pas valide!", "bot": "x", "soul": ""}]}))
+    shield = home / "profiles" / "marcel-protege"
+    shield.mkdir()
+    (shield / "config.yaml").write_text('mcp_servers:\n  marcel:\n    url: "http://127.0.0.1:8000/mcp"\n'
+                                        'platform_toolsets:\n  api_server: [web, terminal]\n')
+    (shield / ".env").write_text("API_SERVER_PORT=8642\nMARCEL_DELIVER_KEY=cle-mcp\n")
 
     assert plan(wanted, home) == ["create marcel-veille", "delete marcel-old"]
-    assert prepare(wanted, home) == ["changed marcel-planning"]
+    assert prepare(wanted, home) == ["changed marcel-planning", "changed marcel-protege"]
+    # The protected profile: no MCP server, no tool, no plugin, no memory, nothing to deliver with.
+    bare = YAML(typ="safe").load((shield / "config.yaml").read_text())
+    assert "mcp_servers" not in bare and bare["platform_toolsets"]["api_server"] == []
+    assert bare["plugins"]["enabled"] == [] and bare["memory"]["memory_enabled"] is False
+    assert (shield / ".env").read_text() == "API_SERVER_KEY=cle-principale\n"
     assert (bot / "SOUL.md").read_text() == "Tu es Planning."
     assert (bot / ".env").read_text() == "KEY=1\nAPI_SERVER_KEY=cle-principale\n"
     assert prepare(wanted, home) == []  # nothing changes twice
@@ -104,7 +117,6 @@ def test_bot_profiles_are_planned_and_finished(tmp_path):
                                            "MARCEL_DELIVER_KEY=cle-mcp\nMARCEL_HOME_CHANNEL=marcel\n")
     config = (bot / "config.yaml").read_text()
     assert "X-Marcel-Bot: planning" in config and "Bearer k" in config and "default: m" in config
-    from ruamel.yaml import YAML
     assert YAML(typ="safe").load(config)["platform_toolsets"]["api_server"] == ["web", "kanban"]
     assert YAML(typ="safe").load(config)["plugins"]["enabled"] == ["marcel"]
     assert prepare(wanted, home, "cle-mcp") == []  # nothing changes twice

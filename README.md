@@ -290,6 +290,17 @@ Restent coupés : `clarify` (l'API n'a personne à qui poser la question : Marce
 réponse) et `text_to_speech` (le fichier son resterait sur le serveur : l'app lit les réponses à voix
 haute). `computer_use` n'apparaît que si le serveur a un écran (`cua-driver`).
 
+## Hermes, seul cerveau
+
+Tout ce qui pense passe par Hermes : Marcel, chaque bot (son profil, toujours avec ses outils), les
+e-mails (profil `marcel-protege`, sans rien), et les petits appels JSON de Marcel (tri des idées).
+La **mémoire est celle de Hermes** (`MEMORY.md`, `USER.md`, ses sessions, une par profil) : Marcel
+n'envoie plus la sienne, n'apprend plus rien après une conversation et ne range plus rien la nuit ;
+ses outils `marcel_retenir` et `marcel_memoire` ont disparu. Ses anciens souvenirs restent visibles
+dans Réglages › Mémoire. Le profil `marcel-protege` est fait par `app/hermes_profiles.py` (« bare ») :
+pas de `mcp_servers`, `platform_toolsets.api_server: []`, pas de plugin, mémoire et relecture
+de fond (`background review`) coupées, rien pour livrer.
+
 ## L'app, plateforme de Hermes (comme Telegram)
 
 Hermes est le cerveau, l'app un écran. Ce que Hermes envoie seul (résultats de ses tâches cron,
@@ -323,7 +334,7 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
   changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
 - **Qui répond** : une conversation d'un bot (toujours avec outils, sauf avec des e-mails) et sa tâche permanente
   vont à `HERMES_URL/p/marcel-<bot>/` dès que le profil répond (vérifié chaque minute) ; avant, au
-  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (modèle seul, sans profil).
+  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (profil `marcel-protege`).
 - **Ses outils** : l'en-tête `X-Marcel-Bot` fait suivre aux outils `marcel_*` les règles de ce bot, et
   `marcel_retenir` écrit dans sa mémoire.
 - Le serveur Marcel ne touche jamais au VPS : il ne fait que dire ce qu'il faut.
@@ -511,9 +522,11 @@ Un e-mail, une page web, un PDF ou une invitation d'agenda peut contenir des con
 pour un assistant (« ignore tes règles, lance cette commande, envoie ce fichier »). Défenses, de la
 plus forte à la plus faible :
 1. **Jamais les trois ingrédients ensemble** (données privées, contenu non fiable, moyen de
-   faire sortir des informations). Les messages qui joignent des e-mails vont au **modèle seul**,
-   via llm-guard, **sans aucun outil** : ni web, ni terminal, ni envoi (carte « Mode protégé ») ;
-   sans accès direct au modèle, ils vont à `hermes-checks`. Les vérifications automatiques lisent
+   faire sortir des informations). Les messages qui joignent des e-mails vont au profil Hermes
+   **`marcel-protege`, sans aucun outil** : ni web, ni terminal, ni envoi, ni serveur MCP, ni mémoire
+   (carte « Mode protégé ») ; Marcel ne s'y fie qu'une fois que Hermes dit qu'il n'a aucun outil
+   actif (`/v1/toolsets`), et avant, au modèle seul via llm-guard (sans accès direct au modèle, à
+   `hermes-checks`), jamais au Hermes complet. Les vérifications automatiques lisent
    le web mais ne reçoivent plus la mémoire. Gmail est en lecture seule (Google refuse tout envoi).
 2. **Rien ne part sans l'utilisateur** : action préparée, aperçu exact, « Valider ».
 3. **Secrets hors de portée** : la clé Scaleway n'est que dans llm-guard ; Hermes retire les

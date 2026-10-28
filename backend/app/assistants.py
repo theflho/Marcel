@@ -214,8 +214,7 @@ toi-même, en suivant ses règles et les skills de Marcel, au lieu de l'envoyer 
 Code, Codex ou Théo. Ce que dit plus haut ta mission sur l'absence d'outil ne vaut pas ici. Une action
 réelle (envoyer, acheter, publier, supprimer) attend toujours son accord explicite ; tu ne remplis jamais
 un mot de passe ni une carte bancaire.
-Ta mémoire est à toi : pour retenir un fait durable, appelle marcel_retenir avec "bot": "{bot}" (sans lui,
-il irait dans la mémoire partagée de Marcel, que lisent tous les bots)."""
+Ta mémoire est à toi : celle de ton profil Hermes ({bot}), avec ton outil memory."""
 CUSTOM_ROLE = (
     "Ici, l'utilisateur t'a donné cette mission : {mission}\n"
     "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "

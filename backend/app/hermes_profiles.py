@@ -14,6 +14,10 @@ the ones whose bot is gone, then runs this module to finish each one:
   is skipped), with the main profile's API_SERVER_KEY (requests under /p/<profile>/ check the
   profile's own key, and Marcel only has the main one).
 
+A "bare" profile (marcel-protege, for e-mails) is the opposite: no MCP server, no tool, no plugin,
+no memory and no background review, and nothing to deliver with, so what strangers wrote can't make
+it act, send or remember anything.
+
 Only profiles named with the prefix are ever touched, so the user's own profiles are never touched.
 
     python -m app.hermes_profiles plan <desired.json> <hermes home>     → "create <name>" / "delete <name>"
@@ -39,6 +43,8 @@ SETTING_ENV = re.compile(r"^\s*(export\s+)?([A-Z_]+)=")
 # app, and the « marcel » platform plugin.
 COPIED = (("platform_toolsets", "api_server"), ("plugins", "enabled"))
 MAIN_CHANNEL = "marcel"
+DELIVERY = ("MARCEL_DELIVER_KEY", "MARCEL_HOME_CHANNEL")
+BARE_MEMORY = {"memory_enabled": False, "user_profile_enabled": False, "nudge_interval": 0}
 
 
 def desired(path: Path) -> tuple[str, list[dict]]:
@@ -64,8 +70,14 @@ def prepare(desired_path: Path, home: Path, deliver_key: str = "") -> list[str]:
     changed = ["changed main"] if finish_env(home, None, delivery(deliver_key, MAIN_CHANNEL), bot=False) else []
     for profile in profiles:
         folder = home / "profiles" / profile["name"]
-        if folder.is_dir() and (finish_soul(folder, profile["soul"]) | finish_config(folder, profile["bot"], main)
-                                | finish_env(folder, key, delivery(deliver_key, profile["bot"]))):
+        if not folder.is_dir():
+            continue
+        if profile.get("bare"):
+            done = finish_soul(folder, profile["soul"]) | finish_bare(folder) | finish_env(folder, key, {}, drop=DELIVERY)
+        else:
+            done = (finish_soul(folder, profile["soul"]) | finish_config(folder, profile["bot"], main)
+                    | finish_env(folder, key, delivery(deliver_key, profile["bot"])))
+        if done:
             changed.append(f"changed {profile['name']}")
     return changed
 
@@ -73,7 +85,29 @@ def prepare(desired_path: Path, home: Path, deliver_key: str = "") -> list[str]:
 def delivery(deliver_key: str, bot: str) -> dict[str, str]:
     """The « marcel » platform's settings (deploy/hermes-plugins/marcel): Marcel's key, and the bot
     this profile's cron jobs and messages go to. None without the key: nothing to deliver with."""
-    return {"MARCEL_DELIVER_KEY": deliver_key, "MARCEL_HOME_CHANNEL": bot} if deliver_key else {}
+    return dict(zip(DELIVERY, (deliver_key, bot))) if deliver_key else {}
+
+
+def finish_bare(folder: Path) -> bool:
+    """The protected profile: nothing to act with, nothing to remember with."""
+    path = folder / "config.yaml"
+    if not path.exists():
+        return False
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    config = yaml.load(path.read_text()) or {}
+    before = json.dumps(config, sort_keys=True, default=str)
+    config.pop("mcp_servers", None)
+    config.setdefault("platform_toolsets", {})["api_server"] = []
+    config.setdefault("plugins", {})["enabled"] = []
+    config.setdefault("memory", {}).update(BARE_MEMORY)
+    config.setdefault("skills", {})["creation_nudge_interval"] = 0
+    if json.dumps(config, sort_keys=True, default=str) == before:
+        return False
+    out = io.StringIO()
+    yaml.dump(config, out)
+    path.write_text(out.getvalue())
+    return True
 
 
 def finish_soul(folder: Path, soul: str) -> bool:
@@ -125,7 +159,8 @@ def main_key(home: Path) -> str | None:
     return found[-1] if found else None
 
 
-def finish_env(folder: Path, key: str | None, settings: dict[str, str], bot: bool = True) -> bool:
+def finish_env(folder: Path, key: str | None, settings: dict[str, str], bot: bool = True,
+               drop: tuple[str, ...] = ()) -> bool:
     """A bot's .env: without the port lines, with the main API_SERVER_KEY. The main profile's own
     (bot False) keeps its port and key. Both: the « marcel » platform's settings."""
     path = folder / ".env"
@@ -135,7 +170,7 @@ def finish_env(folder: Path, key: str | None, settings: dict[str, str], bot: boo
     owned = SETTING_ENV.match
     kept = [line for line in lines
             if not (bot and (PORT_ENV.match(line) or (key is not None and KEY_ENV.match(line))))
-            and not ((m := owned(line)) and m.group(2) in settings)]
+            and not ((m := owned(line)) and (m.group(2) in settings or m.group(2) in drop))]
     wanted = ([f"API_SERVER_KEY={key}\n"] if bot and key is not None else []) + [f"{k}={v}\n" for k, v in settings.items()]
     if kept and wanted and not kept[-1].endswith("\n"):
         kept[-1] += "\n"

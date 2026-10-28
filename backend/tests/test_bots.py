@@ -423,20 +423,23 @@ def test_a_bot_has_its_own_memory(tmp_path):
 
 
 
-def test_a_fact_is_remembered_for_a_bot_and_moved():
-    from app.main import ToolError, assistants, bot_context, tool_remember
-    planning = assistants.find("planning")
-    assert f"mémoire de {planning.name}" in tool_remember({"texte": "Préfère les créneaux du matin", "bot": "planning"})
-    assert '"bot": "planning"' in bot_context(planning, tools=True)[0]
-    fact = next(f for f in client.get("/v1/memory", headers=AUTH, params={"q": "créneaux matin"}).json()["items"]
-                if f["owner"] == "planning")
-    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": ""}).json()["owner"] == ""
-    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": "inconnu"}).status_code == 404
-    try:
-        tool_remember({"texte": "Quelque chose", "bot": "inconnu"})
-        raise AssertionError("an unknown bot is refused")
-    except ToolError:
-        pass
+def test_the_memory_is_hermes_own():
+    """Nothing of Marcel's memory goes to Hermes, nothing is learnt by Marcel: each profile keeps its own."""
+    import asyncio
+
+    from app import main
+    main.memory.add("Aime le café serré.", tier=main.CORE)
+    request = main.ChatRequest(conversation_id="C0FFEE00-0000-4000-8000-0000000000C1",
+                               messages=[main.Message(role="user", content="Que sais-tu de moi ?")])
+
+    async def go():
+        mission = main.missions.get((await main.start_mission(request))["id"])
+        await mission.task
+        return mission
+
+    mission = asyncio.run(go())
+    assert not any(a["id"] == "memory" for a in mission.actions)
+    assert "marcel_retenir" not in main.bot_context(main.assistants.find("planning"), tools=True)[0]
 
 
 def test_accounts_and_purchases_follow_the_rules_and_the_cap():

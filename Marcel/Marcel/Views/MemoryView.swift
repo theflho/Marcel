@@ -158,8 +158,8 @@ struct MemoryView: View {
     }
 
     private func footer(_ stats: MemoryStats) -> String {
-        var text = "Le noyau accompagne chaque mission ; les archives n'envoient que les souvenirs liés à la question. "
-            + "Chaque nuit, Marcel fusionne les doublons, oublie ce qui a expiré et fait monter ou descendre les souvenirs selon leur usage."
+        var text = "Les anciens souvenirs de Marcel, gardés pour mémoire : ils ne sont plus envoyés. "
+            + "La mémoire est celle de Hermes (un profil par bot), qui retient et range lui-même."
         if let last = stats.lastTidy {
             text += " Dernier rangement : \(last.formatted(.relative(presentation: .named)))."
         }
