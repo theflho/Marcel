@@ -4,7 +4,10 @@
 #   */5 * * * * cd ~/marcel/backend && ./deploy/auto-update.sh >> ~/marcel-auto-update.log 2>&1
 # Applique aussi les réglages de Hermes que Marcel a changés (deploy/hermes-overrides.yaml, voir
 # app/hermes_config.py) et ses skills, redémarre Hermes et remet l'ancienne config s'il ne répond
-# plus. Conteneur de Hermes : MARCEL_HERMES_CONTAINER dans .env (hermes par défaut).
+# plus. Conteneur de Hermes : MARCEL_HERMES_CONTAINER dans .env (hermes par défaut). Hermes redémarre
+# après chaque déploiement : il se reconnecte ainsi au serveur MCP de Marcel, qui vient de redémarrer
+# (sinon il peut perdre tous les outils marcel_*). Les missions en cours, elles, sont déjà coupées
+# par le redémarrage de marcel-api.
 # Rien ne part pendant l'arrêt d'urgence. Une version qui a raté n'est plus retentée
 # (.auto-update-refused) ; la suivante, oui. Ce script est protégé : Marcel ne peut pas le modifier.
 set -euo pipefail
@@ -69,21 +72,19 @@ hermes_update() {  # après un déploiement réussi de $current → $target
   # A config Hermes already refused isn't tried again; the next change of the file is.
   overlay=$(git hash-object deploy/hermes-overrides.yaml)
   if grep -qx "$overlay" .hermes-overrides-refused 2>/dev/null; then
-    [[ $skills_changed == 1 ]] || return 0
+    :
   elif ! applied=$(config_tool apply /deploy/hermes-overrides.yaml /hermes/config.yaml 2>"$work/config.err"); then
     local why
     why=$(grep -v -E '^ *(Container|Network|Volume) ' "$work/config.err" | tail -n 3)
     echo "$(date '+%F %T') config de Hermes non appliquée : $why"
     echo "$overlay" >> .hermes-overrides-refused
     report skipped "$target" "Config de Hermes non appliquée : ${why:0:400}"
-    return 0
   fi
   [[ "$(tail -n 1 <<< "${applied:-}")" == changed ]] && config_changed=1
-  [[ $config_changed == 1 || $skills_changed == 1 ]] || return 0
   echo "$(date '+%F %T') Hermes redémarre (config changée : $config_changed, skills changées : $skills_changed)."
   docker restart "$hermes_container" >/dev/null
   if hermes_answers; then
-    report deployed "$target" "Hermes redémarré avec sa nouvelle config"
+    [[ $config_changed == 1 ]] && report deployed "$target" "Hermes redémarré avec sa nouvelle config"
     return 0
   fi
   local hermes_log

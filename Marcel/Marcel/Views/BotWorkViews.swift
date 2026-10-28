@@ -9,7 +9,9 @@ import UserNotifications
 struct BotTaskSection: View {
     @Environment(ChatStore.self) private var store
     let assistant: Assistant
-    @State private var editing = false
+    /// Held by the card, which shows the editor: a sheet hung on a List section is torn down
+    /// whenever the list redraws (a refresh of the bots), closing it under the user's fingers.
+    @Binding var editing: Bool
     @State private var running = false
 
     var body: some View {
@@ -55,13 +57,10 @@ struct BotTaskSection: View {
         } footer: {
             Text("Il la fait seul, l'app fermée, et revient ici avec le résultat. Il peut changer ses propres réglages selon tes Règles ; tout le reste, il le prépare et c'est toi qui le fais.")
         }
-        .sheet(isPresented: $editing) {
-            BotTaskEditor(assistant: assistant)
-        }
     }
 }
 
-private struct BotTaskEditor: View {
+struct BotTaskEditor: View {
     @Environment(ChatStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let assistant: Assistant

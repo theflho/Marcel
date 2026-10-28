@@ -13,12 +13,8 @@ struct AssistantsView: View {
             List {
                 Section {
                     ForEach(store.assistants) { assistant in
-                        NavigationLink {
-                            AssistantDetailView(assistantID: assistant.id, onStart: start) { id in
-                                store.select(id)
-                                dismiss()
-                            }
-                        } label: {
+                        // By value: a link holding its screen is popped when the bots refresh.
+                        NavigationLink(value: assistant.id) {
                             HStack(spacing: 12) {
                                 MarcelAvatar(size: 40, bot: assistant.id, state: store.face(ofBot: assistant.id))
                                 VStack(alignment: .leading, spacing: 2) {
@@ -45,6 +41,12 @@ struct AssistantsView: View {
                                            description: Text("Ils arrivent quand le serveur répond."))
                 }
             }
+            .navigationDestination(for: String.self) { assistantID in
+                AssistantDetailView(assistantID: assistantID, onStart: start) { id in
+                    store.select(id)
+                    dismiss()
+                }
+            }
             .navigationTitle("Bots de Marcel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -69,6 +71,7 @@ private struct AssistantDetailView: View {
     /// Opens one of its conversations, then closes the screen.
     let onOpen: (UUID) -> Void
     @State private var confirmingDelete = false
+    @State private var editingTask = false
 
     var body: some View {
         // Read from the store each time, so a saved setting shows at once.
@@ -108,7 +111,7 @@ private struct AssistantDetailView: View {
 
                 BotPageSection(assistantID: assistant.id)
 
-                BotTaskSection(assistant: assistant)
+                BotTaskSection(assistant: assistant, editing: $editingTask)
 
                 BotRunsSection(assistantID: assistant.id, onOpen: onOpen)
 
@@ -180,6 +183,9 @@ private struct AssistantDetailView: View {
                         Button("Supprimer le bot", role: .destructive) { confirmingDelete = true }
                     }
                 }
+            }
+            .sheet(isPresented: $editingTask) {
+                BotTaskEditor(assistant: assistant)
             }
             .navigationTitle(assistant.name)
             .navigationBarTitleDisplayMode(.inline)

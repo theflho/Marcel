@@ -269,7 +269,8 @@ def sse(payload: dict) -> str:
 async def health() -> dict:
     spent = await guard_usage()
     return {"status": "ok", "mock": MOCK, "emergency": missions.emergency, "ideas": ideas.unseen(),
-            "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}, "mail": gmail.connected}
+            "tokens": spent and {"today": spent["tokens"], "budget": spent["budget"]}, "mail": gmail.connected,
+            "mcp": dict(mcp_contact) if MCP_TOKEN else None}
 
 
 @app.get("/v1/models", dependencies=[Depends(require_token)])
@@ -890,10 +891,13 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   Un
   assistant créé n'a aucun outil (ni web, ni envoi) : il conseille, rédige et prépare. Tu ne
   supprimes et n'épingles jamais rien, et tu n'ouvres pas de session sur le serveur (VPS) : ça,
-  c'est l'utilisateur.
+  c'est l'utilisateur. L'app le fait déjà : un bot qu'il a créé se supprime dans sa fiche (tout en
+  bas) ou par un appui long sur son nom dans le menu ; épingler et masquer, aussi par appui long.
 - Tes outils marcel_* : tes données (marcel_resume, marcel_chercher, marcel_historique…), et des
   outils qui agissent : marcel_retenir, marcel_creer_objectif, marcel_creer_routine,
-  marcel_lancer_routine. Tes skills (marcel-code, marcel-donnees, marcel-routines-objectifs)
+  marcel_lancer_routine. S'ils manquent tous (aucun outil marcel_*), ce n'est pas que la
+  fonction n'existe pas : Hermes a perdu sa connexion au serveur Marcel. Dis-le en une phrase, et
+  qu'il se répare au prochain déploiement ou avec « docker restart hermes » sur le VPS. Tes skills (marcel-code, marcel-donnees, marcel-routines-objectifs)
   disent comment t'en servir.
 - Ton propre code : tu peux modifier toi-même l'app et son serveur avec les outils marcel_code_*
   (suis la skill marcel-code) : branche, modification, vérification, pull request, puis fusion ; le
@@ -3480,21 +3484,41 @@ async def mcp_endpoint(request: Request, authorization: str = Header(default="")
     if not MCP_TOKEN:
         raise HTTPException(404, "Not found")
     if scheme.lower() != "bearer" or not secrets.compare_digest(token, MCP_TOKEN):
+        mcp_contact["refused"] = time.time()
+        log.warning("MCP: clé refusée (le MARCEL_MCP_TOKEN de la config de Hermes n'est pas celui du .env ?)")
         raise HTTPException(401, "Invalid token")
-    if missions.emergency:
-        raise HTTPException(423, "Arrêt d'urgence actif.")
     try:
         body = await request.json()
     except ValueError:
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "JSON invalide"}},
                             status_code=400)
+    mcp_contact["seen"] = time.time()
     if isinstance(body, list):
-        answers = [a for m in body if isinstance(m, dict) and (a := await mcp.handle(m))]
+        answers = [a for m in body if isinstance(m, dict) and (a := await mcp_answer(m))]
         return JSONResponse(answers) if answers else Response(status_code=202)
     if not isinstance(body, dict):
         raise HTTPException(400, "Message JSON-RPC attendu")
-    answer = await mcp.handle(body)
+    answer = await mcp_answer(body)
     return JSONResponse(answer) if answer else Response(status_code=202)
+
+
+# When Hermes last reached the MCP server, and last came with a wrong key: shown by /health, so a
+# Hermes that lost Marcel's tools shows up.
+mcp_contact: dict[str, float | None] = {"seen": None, "refused": None}
+
+
+# garde-fou : arrêt d'urgence des outils
+async def mcp_answer(message: dict) -> dict | None:
+    """During the emergency stop no tool runs, but the connection stays up (initialize, ping, the
+    list): refusing those too made Hermes drop Marcel's tools for good, even after « Reprendre »."""
+    if missions.emergency and message.get("method") == "tools/call":
+        if message.get("id") is None:
+            return None
+        return {"jsonrpc": "2.0", "id": message["id"],
+                "result": {"content": [{"type": "text", "text": "Arrêt d'urgence actif : aucun outil ne tourne."}],
+                           "isError": True}}
+    return await mcp.handle(message)
+# fin garde-fou : arrêt d'urgence des outils
 
 
 @app.get("/mcp", include_in_schema=False)
