@@ -43,6 +43,8 @@ Une réponse de Hermes est une **mission** qui tourne sur le VPS : elle continue
 fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée. Une fermeture du flux sans
 `[DONE]` est une erreur explicite avec conservation du texte partiel. Un refus d’authentification
 pendant la réception termine l’état « en cours » de l’app et permet de corriger le jeton.
+Les libellés d’avancement des outils (parfois le seul nom générique `tool_call`) ne déclenchent
+aucun arrêt pour répétition : Hermes gère sa boucle d’outils et peut poursuivre ses recherches.
 
 - `GET /v1/models` → `{"models": [{"id","label"}], "default": "..."}`. La liste est lue dans Hermes
   (`/v1/models`, gardée 5 min) et les ids sont rendus lisibles (`deepseek-r1-distill-llama-70b` →

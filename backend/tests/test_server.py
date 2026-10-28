@@ -99,25 +99,29 @@ def test_routine_waits_for_a_new_offer(monkeypatch):
     main.routines.delete(routine.id)
 
 
-def test_a_mission_going_in_circles_asks_for_help(tmp_path):
+def test_repeated_tool_labels_do_not_stop_hermes(tmp_path):
     import asyncio
 
-    from app.missions import FAILED, STUCK_PREFIX, MissionStore
+    from app.missions import DONE, MissionStore
 
-    async def circles():
+    async def progress():
         for n in range(5):
-            yield {"id": f"t{n}", "name": "terminal", "detail": '{"cmd": "ls"}', "status": "running"}
+            yield {"id": f"t{n}", "name": "tool_call", "detail": "", "status": "running"}
+            # Completion can be delivered more than once for the same call.
             yield {"id": f"t{n}", "status": "done"}
+            yield {"id": f"t{n}", "status": "done"}
+        yield "Voici le résultat."
 
     async def go():
         store = MissionStore(tmp_path / "m.db")
-        mission = store.start("C", circles)
+        mission = store.start("C", progress)
         await mission.task
         return mission
 
     mission = asyncio.run(go())
-    assert mission.status == FAILED and mission.error.startswith(STUCK_PREFIX)
-    assert len(mission.actions) == 3
+    assert mission.status == DONE and mission.error is None
+    assert mission.text == "Voici le résultat."
+    assert len([a for a in mission.actions if a["id"].startswith("t")]) == 5
 
 
 def test_a_routine_says_what_it_looked_at():

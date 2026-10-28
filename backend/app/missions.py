@@ -38,9 +38,9 @@ class MissionError(Exception):
     """A failure whose message is meant for the user (shown instead of the generic one)."""
 
 
-# A mission going in circles stops and asks for help instead of retrying for ever: the same step
-# (same tool, same arguments) finished this many times, or running this long.
-STUCK_REPEATS = 3
+# Keep the transport's duration limit. Tool progress is display metadata, often just
+# "tool_call" with a shortened label: it cannot prove that Hermes is repeating without progress.
+# Hermes owns its tool loop; Marcel must not stop it based on these labels.
 STUCK_SECONDS = 30 * 60
 STUCK_PREFIX = "Je bloque"
 
@@ -210,18 +210,10 @@ class MissionStore:
 
     async def _run(self, mission: Mission, source: Source) -> None:
         last_save = time.monotonic()
-        finished_steps: dict[tuple[str, str], int] = {}
         try:
             async for item in source():
                 if isinstance(item, dict):
                     mission.record(item)
-                    if item.get("status") == "done" and (step := next(
-                            (a for a in mission.actions if a["id"] == item.get("id") and a.get("name")), None)):
-                        signature = (step["name"], step.get("detail", ""))
-                        finished_steps[signature] = finished_steps.get(signature, 0) + 1
-                        if finished_steps[signature] >= STUCK_REPEATS:
-                            raise MissionError(stuck_message(
-                                f"j'ai lancé {STUCK_REPEATS} fois « {step['name']} » de la même façon sans avancer"))
                     if time.time() - mission.created_at > STUCK_SECONDS:
                         raise MissionError(stuck_message(f"ça tourne depuis plus de {STUCK_SECONDS // 60} minutes"))
                 else:

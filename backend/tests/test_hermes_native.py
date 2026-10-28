@@ -65,6 +65,29 @@ def test_native_tools_and_legacy_text_are_visible_and_completed(native):
     assert items[2]["id"] == "native-1" and items[2]["status"] == "done"
 
 
+def test_repeated_native_tool_labels_complete_reply_and_remember_session(native):
+    replies, _ = native
+    frames = []
+    for n in range(5):
+        event = {"toolCallId": f"native-{n}", "tool": "tool_call", "label": ""}
+        frames += [frame("hermes.tool.progress", event | {"status": "running"}),
+                   frame("hermes.tool.progress", event | {"status": "completed"})]
+    frames += [frame("", {"choices": [{"delta": {"content": "Voici le résultat."}}]}), "data: [DONE]\n\n"]
+    replies.append(httpx.Response(200, text="".join(frames), headers={"X-Hermes-Session-Id": "session-ok"}))
+    remembered = []
+
+    async def go():
+        mission = main.missions.start("CONVERSATION", lambda: main.hermes_events(
+            "http://hermes", AUTH, {}, True, False, remembered.append, "CONVERSATION"))
+        await mission.task
+        assert mission.status == "done" and mission.error is None
+        assert mission.text == "Voici le résultat."
+        steps = [a for a in mission.actions if a["id"].startswith("native-")]
+        assert len(steps) == 5 and all(a["status"] == "done" for a in steps)
+    asyncio.run(go())
+    assert remembered == ["session-ok"]
+
+
 @pytest.mark.parametrize("tool,browser,vault,blocked", [
     ("browser_navigate", True, False, False), ("browser_navigate", False, False, True),
     ("browser_vault", True, False, True), ("browser_vault", True, True, False)])
