@@ -8,7 +8,8 @@ the ones whose bot is gone, then runs this module to finish each one:
 
 - SOUL.md: who the bot is;
 - config.yaml: Marcel's MCP server as in the main profile (address, key), saying which bot is
-  calling (X-Marcel-Bot), so its tools follow that bot's rules and memory;
+  calling (X-Marcel-Bot), so its tools follow that bot's rules and memory; and the main profile's
+  API toolsets (platform_toolsets.api_server), so a bot has the same Hermes tools as Marcel;
 - .env: without API_SERVER_ENABLED/HOST/PORT (the main gateway's port: a second profile binding it
   is skipped), with the main profile's API_SERVER_KEY (requests under /p/<profile>/ check the
   profile's own key, and Marcel only has the main one).
@@ -52,7 +53,7 @@ def plan(desired_path: Path, home: Path) -> list[str]:
 
 def prepare(desired_path: Path, home: Path) -> list[str]:
     _, profiles = desired(desired_path)
-    main = main_server(home)
+    main = main_settings(home)
     key = main_key(home)
     changed = []
     for profile in profiles:
@@ -71,26 +72,32 @@ def finish_soul(folder: Path, soul: str) -> bool:
     return True
 
 
-def main_server(home: Path) -> dict | None:
-    """Marcel's MCP server in the main profile, which every bot's profile copies."""
+def main_settings(home: Path) -> tuple[dict | None, list | None]:
+    """What every bot's profile copies from the main one: Marcel's MCP server, the API toolsets."""
     path = home / "config.yaml"
-    config = YAML(typ="safe").load(path.read_text()) if path.exists() else None
-    server = ((config or {}).get("mcp_servers") or {}).get("marcel")
-    return server if isinstance(server, dict) else None
+    config = (YAML(typ="safe").load(path.read_text()) if path.exists() else None) or {}
+    server = (config.get("mcp_servers") or {}).get("marcel")
+    toolsets = (config.get("platform_toolsets") or {}).get("api_server")
+    return (server if isinstance(server, dict) else None), (toolsets if isinstance(toolsets, list) else None)
 
 
-def finish_config(folder: Path, bot: str, main: dict | None) -> bool:
+def finish_config(folder: Path, bot: str, main: tuple[dict | None, list | None]) -> bool:
     path = folder / "config.yaml"
-    if not path.exists() or main is None:
+    server, toolsets = main
+    if not path.exists() or server is None:
         return False  # the main profile has no Marcel server yet: nothing to copy
-    wanted = dict(main) | {"headers": dict(main.get("headers") or {}) | {"X-Marcel-Bot": bot}}
+    wanted = dict(server) | {"headers": dict(server.get("headers") or {}) | {"X-Marcel-Bot": bot}}
     yaml = YAML()
     yaml.preserve_quotes = True
     config = yaml.load(path.read_text()) or {}
     servers = config.setdefault("mcp_servers", {})
-    if dict(servers.get("marcel") or {}) == wanted:
+    platforms = config.setdefault("platform_toolsets", {}) if toolsets is not None else {}
+    same_tools = toolsets is None or list(platforms.get("api_server") or []) == toolsets
+    if dict(servers.get("marcel") or {}) == wanted and same_tools:
         return False
     servers["marcel"] = wanted
+    if toolsets is not None:
+        platforms["api_server"] = list(toolsets)
     out = io.StringIO()
     yaml.dump(config, out)
     path.write_text(out.getvalue())
