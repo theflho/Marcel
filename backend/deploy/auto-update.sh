@@ -53,10 +53,13 @@ hermes_service=${hermes_service:-hermes-gateway}
 # Its folder belongs to Hermes' user (hermes, or 10000 in a container), not to ubuntu.
 hermes_owner=$(sudo stat -c %u:%g "$hermes_home")
 
-skills() {  # Les skills de Marcel pour Hermes ($hermes_home/skills/marcel/), lues au prochain lancement.
-  sudo mkdir -p "$hermes_home/skills/marcel"
-  sudo cp -R deploy/hermes-skills/. "$hermes_home/skills/marcel/"
-  sudo chown -R "$hermes_owner" "$hermes_home/skills/marcel"
+skills() {  # Les skills de Marcel pour Hermes (skills/marcel/ du profil principal et de ceux des bots).
+  local home
+  for home in "$hermes_home" $(sudo find "$hermes_home/profiles" -mindepth 1 -maxdepth 1 -type d -name 'marcel-*' 2>/dev/null); do
+    sudo mkdir -p "$home/skills/marcel"
+    sudo cp -R deploy/hermes-skills/. "$home/skills/marcel/"
+    sudo chown -R "$hermes_owner" "$home/skills/marcel"
+  done
 }
 
 restart_hermes() {  # its container if there is one, else its user's systemd service
@@ -75,6 +78,43 @@ hermes_logs() {
   else
     sudo journalctl --no-pager -n 80 _UID="$(sudo stat -c %u "$hermes_home")" 2>&1 || true
   fi
+}
+
+hermes_cli() {  # une commande hermes, sous l'utilisateur de Hermes (ou dans son conteneur)
+  if [[ -n "$hermes_container" ]]; then
+    docker exec "$hermes_container" hermes "$@"
+  else
+    local bin
+    bin=$(setting MARCEL_HERMES_BIN)
+    bin=${bin:-$hermes_home/hermes-agent/.hermes/bin/hermes}
+    sudo -u "$(sudo stat -c %U "$hermes_home")" env HERMES_HOME="$hermes_home" "$bin" "$@"
+  fi
+}
+
+profiles_tool() {  # plan|prepare : app/hermes_profiles.py, avec la liste voulue et le dossier de Hermes montés
+  docker compose run --rm --no-deps -T --user "$hermes_owner" -v "$hermes_home:/hermes" -v "$work:/work:ro" \
+    marcel-api python -m app.hermes_profiles "$1" /work/profiles.json /hermes
+}
+
+profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés, finis, retirés.
+  # Hermes les sert à chaud (gateway.multiplex_profiles) : aucun redémarrage.
+  curl -fsS -m 10 -H "Authorization: Bearer $token" "$api/v1/hermes/profiles" -o "$work/profiles.json" 2>/dev/null \
+    || return 0  # serveur arrêté, ou trop ancien pour les profils
+  chmod 755 "$work" && chmod 644 "$work/profiles.json"
+  local digest plan action name
+  digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml") | sha256sum | cut -d' ' -f1)
+  [[ "$digest" == "$(cat .hermes-profiles-applied 2>/dev/null)" ]] && return 0
+  plan=$(profiles_tool plan 2>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  while read -r action name; do
+    case "$action" in
+      create) hermes_cli profile create "$name" --clone-from default --no-alias >/dev/null \
+                && echo "$(date '+%F %T') profil Hermes créé : $name" ;;
+      delete) hermes_cli profile delete -y "$name" >/dev/null \
+                && echo "$(date '+%F %T') profil Hermes retiré : $name" ;;
+    esac
+  done <<< "$plan"
+  profiles_tool prepare >/dev/null 2>>"$work/profiles.err" || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  echo "$digest" > .hermes-profiles-applied
 }
 
 config_tool() {  # apply|restore … : app/hermes_config.py, avec le dossier de Hermes et deploy/ montés, sous son utilisateur
@@ -124,6 +164,8 @@ hermes_update() {  # après un déploiement réussi de $current → $target
     report failed "$target" "Hermes ne répond plus après le changement de skills" "$hermes_log"
   fi
 }
+
+profiles_sync || echo "$(date '+%F %T') profils : synchronisation ratée"
 
 git fetch --quiet origin main
 current=$(git rev-parse HEAD)

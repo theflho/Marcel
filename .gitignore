@@ -23,4 +23,5 @@ backend/rma.env
 # Déploiement automatique (deploy/auto-update.sh)
 backend/.auto-update.lock
 backend/.auto-update-refused
+backend/.hermes-profiles-applied
 backend/.hermes-overrides-refused

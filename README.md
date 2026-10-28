@@ -275,7 +275,27 @@ fusionner), `marcel-donnees` (où chercher avant de redemander), `marcel-routine
 `marcel-bots` (« /planning … » sur Telegram → `marcel_bot`).
 Hermes les lit à son prochain lancement (`hermes skills list` pour vérifier).
 
-## Navigateur
+## Un bot = un profil Hermes
+
+Chaque bot (Planning, Pointage, Offres, Mails, Veille et ceux que l'utilisateur crée) est un
+**profil Hermes** `marcel-<bot>` : son `SOUL.md`, sa mémoire, ses sessions et ses skills à lui.
+Le gateway principal les sert tous sur son port, sous `/p/<profil>/` (`gateway.multiplex_profiles`),
+et les prend à chaud : créer ou retirer un profil ne redémarre rien.
+- **Qui décide** : `GET /v1/hermes/profiles` donne les profils voulus, un par bot, avec leur `SOUL.md`.
+  `deploy/auto-update.sh` les synchronise à chaque passage (toutes les 5 min, avant de chercher une
+  nouvelle version) : il crée les manquants avec `hermes profile create --clone-from default`
+  (modèle, outils, MCP et skills du profil principal, jamais ses jetons de messagerie), retire ceux
+  dont le bot n'existe plus, puis `app/hermes_profiles.py` finit chacun : `SOUL.md`, serveur MCP
+  `marcel` copié du profil principal avec `X-Marcel-Bot: <bot>`, `.env` sans `API_SERVER_*` (le port
+  reste au gateway principal). Rien n'est refait tant que la liste et la config principale ne
+  changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
+- **Qui répond** : une conversation d'un bot avec outils (règle « outils ») et sa tâche permanente
+  vont à `HERMES_URL/p/marcel-<bot>/` dès que le profil répond (vérifié chaque minute) ; avant, au
+  Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (modèle seul, sans profil).
+- **Ses outils** : l'en-tête `X-Marcel-Bot` fait suivre aux outils `marcel_*` les règles de ce bot, et
+  `marcel_retenir` écrit dans sa mémoire.
+- Le serveur Marcel ne touche jamais au VPS : il ne fait que dire ce qu'il faut.
+
 
 Le navigateur de Hermes (`browser_exec`, `browser_cdp`…, toolset `browser`, qui demande aussi
 `terminal`) clique, tape et envoie des formulaires **sans étape de confirmation**. Par défaut
