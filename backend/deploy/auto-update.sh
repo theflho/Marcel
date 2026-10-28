@@ -65,9 +65,9 @@ skills() {  # Les skills de Marcel pour Hermes (skills/marcel/ du profil princip
 plugins() {  # Les plugins de Marcel pour Hermes (plugins/ du profil principal : le gateway les charge pour tous).
   local name
   for name in $(ls deploy/hermes-plugins); do
-    sudo mkdir -p "$hermes_home/plugins/$name"
-    sudo cp -R "deploy/hermes-plugins/$name/." "$hermes_home/plugins/$name/"
-    sudo chown -R "$hermes_owner" "$hermes_home/plugins/$name"
+    sudo mkdir -p "$hermes_home/plugins/$name" || return 1
+    sudo cp -R "deploy/hermes-plugins/$name/." "$hermes_home/plugins/$name/" || return 1
+    sudo chown -R "$hermes_owner" "$hermes_home/plugins/$name" || return 1
   done
 }
 
@@ -113,7 +113,7 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
   local digest plan action name
   # Redone when the list, the main config or this way of doing it changes.
   digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml" "$hermes_home/.env") app/hermes_profiles.py \
-    | sha256sum | cut -d' ' -f1)
+    <(git rev-parse HEAD:backend/deploy/hermes-plugins) | sha256sum | cut -d' ' -f1)
   [[ "$digest" == "$(cat .hermes-profiles-applied 2>/dev/null)" ]] && return 0
   # Revoke an earlier acknowledgment before changing files or retrying a failed sync.
   curl -fsS -m 10 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
@@ -130,6 +130,9 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
   done <<< "$plan"
   # The context contract includes the installed skills; copy them before writing/acknowledging SOUL.
   skills
+  # A previous release may have deployed this script without its new plugin installer.
+  # Heal that first-deployment gap before restart/ack, even with no newer main commit.
+  plugins || { echo "$(date '+%F %T') profils : installation du plugin ratée, contexte conservé"; return 0; }
   profiles_tool prepare >/dev/null 2>>"$work/profiles.err" || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
   # Always restart an unacknowledged contract, even when prepare is now unchanged: a previous
   # attempt may have written the files but failed its restart, or only the skills may have changed.

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("case", ["", "revoke", "prepare", "restart", "health", "verify", "ack", "skills-only"])
+@pytest.mark.parametrize("case", ["", "revoke", "plugins", "prepare", "restart", "health", "verify", "ack", "skills-only"])
 def test_context_ack_follows_install_restart_health_and_file_verification(tmp_path, case):
     failure = case if case != "skills-only" else ""
     backend = tmp_path / "backend"
@@ -20,6 +20,9 @@ def test_context_ack_follows_install_restart_health_and_file_verification(tmp_pa
     (backend / "app").mkdir()
     (backend / "app" / "hermes_profiles.py").write_text("# test source identity\n")
     (deploy / "hermes-skills").mkdir()
+    plugin = deploy / "hermes-plugins" / "marcel"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text("# plugin fixture\n")
     home = tmp_path / "hermes"
     home.mkdir()
     (home / "config.yaml").write_text("{}\n")
@@ -51,6 +54,8 @@ if name == "sudo":
         print("hermes" if args[2] == "%U" else "1000:1000")
     elif args[0] == "cat":
         sys.exit(subprocess.call(["/bin/cat", *args[1:]]))
+    elif args[0] == "cp" and any("hermes-plugins/" in arg for arg in args):
+        record("plugins")
     elif args[0] == "systemctl":
         record("restart")
 elif name == "docker":
@@ -88,7 +93,7 @@ elif name == "sha256sum":
                                text=True, timeout=15)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     stages = trace.read_text().splitlines()
-    expected = ["revoke", "prepare", "restart", "health", "verify", "ack"]
+    expected = ["revoke", "plugins", "prepare", "restart", "health", "verify", "ack"]
     expected_stages = expected[:expected.index(failure) + 1] if failure else expected
     assert stages == expected_stages
     assert (backend / ".hermes-profiles-applied").exists() == (not failure)
