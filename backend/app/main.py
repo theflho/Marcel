@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import time
+from contextvars import ContextVar
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
@@ -800,7 +801,8 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
             # The browser as in Marcel's conversations: only once the user said go (rule « navigateur »).
             browser = rule("navigateur", assistant.id) != "off" and (
                 approves(title) or rule("navigateur", assistant.id) == "auto")
-            return hermes_stream(req, model, text, browser=browser, vault=browser and vault_open(title, assistant.id))
+            return hermes_stream(req, model, text, browser=browser, vault=browser and vault_open(title, assistant.id),
+                                 profile=assistant.id)
         if MEMORY_LLM_URL != HERMES_URL:
             return hermes_stream(req, MEMORY_LLM_MODEL, text, MEMORY_LLM_URL, MEMORY_LLM_KEY)
         return hermes_stream(req, CHECK_HERMES_MODEL or model, text, CHECK_HERMES_URL, CHECK_HERMES_KEY)
@@ -1103,9 +1105,14 @@ def bot_rules() -> dict[str, dict[str, str]]:
             for bot, levels in saved.items() if isinstance(levels, dict) and assistants.find(bot)}
 
 
+# The bot whose Hermes profile is calling the MCP tools (header X-Marcel-Bot of its config); "" for Marcel.
+mcp_bot: ContextVar[str] = ContextVar("mcp_bot", default="")
+
+
 def rule(kind: str, assistant: str | None = None) -> str:
-    """The level for this kind of action, in this bot's conversation (or Marcel's)."""
-    return bot_rules().get(assistant or "", {}).get(kind) or rules()[kind]
+    """The level for this kind of action, in this bot's conversation (or Marcel's). Called by a
+    tool, the bot whose profile called it."""
+    return bot_rules().get(assistant or mcp_bot.get(), {}).get(kind) or rules()[kind]
 
 
 ASK_CARD = "auto-ask-"
@@ -1403,13 +1410,17 @@ def vault_open(message: str, assistant: str | None = None) -> bool:
 
 async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                         url: str = HERMES_URL, key: str = HERMES_API_KEY,
-                        browser: bool = True, vault: bool = False) -> AsyncIterator[str | dict]:
+                        browser: bool = True, vault: bool = False,
+                        profile: str = "") -> AsyncIterator[str | dict]:
     """Calls Hermes' OpenAI-compatible endpoint and yields text deltas.
 
     Tool calls streamed by Hermes become actions, so the app can show what the agent does.
     Without `browser`, the first browser tool call ends the reply (and the request to Hermes);
-    without `vault`, the first call to the saved logins and cards (browser_vault) does.
+    without `vault`, the first call to the saved logins and cards (browser_vault) does. With a bot's
+    `profile`, its own Hermes profile answers once it exists (else the main Hermes, as before).
     """
+    if profile and url == HERMES_URL:
+        url = await profile_url(profile)
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     body = {
         "model": model,
@@ -1417,7 +1428,7 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
         "messages": ([{"role": "system", "content": memory_note}] if memory_note else [])
         + [{"role": m.role, "content": hermes_content(m)} for m in request.messages],
     }
-    if url in (HERMES_URL, CHECK_HERMES_URL):
+    if url.startswith(HERMES_URL) or url == CHECK_HERMES_URL:
         # Hermes keeps one session per conversation; the model provider has no use for it.
         body["user"] = request.conversation_id
     tools: dict[int, dict] = {}
@@ -2403,7 +2414,7 @@ async def run_routine(routine, event: str = ""):
         mail, extra = await mail_context(routine.prompt, force=task)
     # A bot's task has its tools, like its conversations (rule « outils »), unless e-mails are in front of it.
     tools = task and bot_tools(bot, mail or (from_mail and event))
-    browser = True
+    browser, profile = True, ""
     if task:
         # A bot's standing task: what that bot knows and reads, nothing more (no web search). Its
         # e-mails, if any, are added below, in protected mode.
@@ -2426,7 +2437,7 @@ async def run_routine(routine, event: str = ""):
         # The browser only if the rule « navigateur » lets it go alone: nobody is there to say go.
         note, _ = memory.context(routine.prompt, owner=bot.id)
         model, url, key = (await base_models())[0]["id"], HERMES_URL, HERMES_API_KEY
-        browser = rule("navigateur", bot.id) == "auto"
+        browser, profile = rule("navigateur", bot.id) == "auto", bot.id
         parts.append(note)
         extra.append({"id": "routine", "name": "Tâche permanente", "status": "done",
                       "detail": f"{routine.schedule} · {bot.name}, avec les outils de Marcel ; une action réelle attend ton accord"})
@@ -2451,7 +2462,8 @@ async def run_routine(routine, event: str = ""):
     async def source() -> AsyncIterator[str | dict]:
         for action in extra:
             yield action
-        inner = mock_routine_stream(routine) if MOCK else hermes_stream(request, model, note, url, key, browser)
+        inner = mock_routine_stream(routine) if MOCK else hermes_stream(request, model, note, url, key, browser,
+                                                                                profile=profile)
         async for item in inner:
             yield item
         # Written by the server, not the model: what was really in front of it.
@@ -3353,6 +3365,56 @@ async def delete_instruction(assistant_id: str, note_id: str) -> dict:
     return assistant_public(assistant)
 
 
+# MARK: Each bot is a Hermes profile
+
+# A bot answers through its own Hermes profile (its SOUL, memory, sessions and skills), served by the
+# main gateway under /p/<profile>/ (gateway.multiplex_profiles). Marcel can't touch the VPS: he says
+# which profiles there should be (GET /v1/hermes/profiles), and deploy/auto-update.sh creates,
+# updates and deletes them (app/hermes_profiles.py). Until a bot's profile exists, it answers
+# through the main Hermes, as before.
+PROFILE_PREFIX = "marcel-"
+PROFILE_PROBE_EVERY = 60
+profile_probes: dict[str, tuple[float, bool]] = {}
+
+
+def profile_name(bot_id: str) -> str:
+    return PROFILE_PREFIX + (re.sub(r"[^a-z0-9_-]+", "-", bot_id.lower()).strip("-_")[:50] or "bot")
+
+
+def profile_soul(bot: bots.Assistant) -> str:
+    """Who the bot is, for its profile's SOUL.md; its card, rules and data come with each message."""
+    return (f"Tu es {bot.name}, un bot de Marcel, l'assistant personnel de l'utilisateur, qui te parle dans "
+            f"l'app iPhone Marcel.\n\n{bot.summary}\n\n{bot.role}\n\n"
+            "À chaque message, le serveur Marcel te joint ta fiche à jour (réglages, consignes, tâches "
+            "apprises, ce que tu lis) et les règles de l'utilisateur : elles passent avant ce fichier. Tes "
+            f"outils marcel_* travaillent pour toi ({bot.id}) : ta mémoire, tes règles. Réponds en "
+            "français, en tutoyant, court et lisible sur un téléphone.\n")
+
+
+@app.get("/v1/hermes/profiles", dependencies=[Depends(require_token)])
+async def hermes_profiles() -> dict:
+    """The Hermes profiles there should be, one per bot, read by deploy/auto-update.sh."""
+    return {"prefix": PROFILE_PREFIX,
+            "profiles": [{"name": profile_name(bot.id), "bot": bot.id, "soul": profile_soul(bot)}
+                         for bot in assistants.all()]}
+
+
+async def profile_url(bot_id: str) -> str:
+    """The bot's own profile on the main gateway once it exists, else the main Hermes."""
+    name = profile_name(bot_id)
+    checked, ready = profile_probes.get(name, (0.0, False))
+    if time.time() - checked >= PROFILE_PROBE_EVERY:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(f"{HERMES_URL}/p/{name}/v1/models",
+                                        headers={"Authorization": f"Bearer {HERMES_API_KEY}"} if HERMES_API_KEY else {})
+            ready = resp.status_code == 200
+        except httpx.HTTPError:
+            ready = False
+        profile_probes[name] = (time.time(), ready)
+    return f"{HERMES_URL}/p/{name}" if ready else HERMES_URL
+
+
 # MARK: A bot's standing task, the tasks it was taught, the skills shared between bots
 
 
@@ -3478,8 +3540,10 @@ mcp = MCPServer()
 
 
 @app.post("/mcp", include_in_schema=False)
-async def mcp_endpoint(request: Request, authorization: str = Header(default="")) -> Response:
-    """MCP "streamable HTTP" endpoint, JSON answers only (no SSE stream, no session)."""
+async def mcp_endpoint(request: Request, authorization: str = Header(default=""),
+                       x_marcel_bot: str = Header(default="")) -> Response:
+    """MCP "streamable HTTP" endpoint, JSON answers only (no SSE stream, no session). A bot's Hermes
+    profile says which bot it is (X-Marcel-Bot): its tools then follow that bot's rules and memory."""
     scheme, _, token = authorization.partition(" ")
     if not MCP_TOKEN:
         raise HTTPException(404, "Not found")
@@ -3493,6 +3557,7 @@ async def mcp_endpoint(request: Request, authorization: str = Header(default="")
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "JSON invalide"}},
                             status_code=400)
     mcp_contact["seen"] = time.time()
+    mcp_bot.set(x_marcel_bot if x_marcel_bot and assistants.find(x_marcel_bot) else "")
     if isinstance(body, list):
         answers = [a for m in body if isinstance(m, dict) and (a := await mcp_answer(m))]
         return JSONResponse(answers) if answers else Response(status_code=202)
@@ -4170,7 +4235,7 @@ def tool_remember(args: dict) -> str:
     text = " ".join(str(args.get("texte", "")).split())[:300]
     if len(text) < 3:
         raise ToolError("Rien à retenir.")
-    owner = str(args.get("bot") or "").strip()
+    owner = str(args.get("bot") or mcp_bot.get()).strip()
     if owner and not assistants.find(owner):
         raise ToolError(f"Bot inconnu : {owner}. Les bots : " + ", ".join(a.id for a in assistants.all()))
     fact = memory.add(text, tier=CORE if args.get("important") else ARCHIVE, importance=4 if args.get("important") else 3,

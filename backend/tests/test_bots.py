@@ -484,3 +484,20 @@ def test_mcp_stays_connected_during_the_emergency_stop_but_runs_no_tool():
         missions.emergency_resume()
     assert client.get("/health", headers=AUTH).json()["mcp"]["seen"]
     assert not mcp_call("marcel_regles", {})["isError"]
+
+
+def test_each_bot_has_a_hermes_profile_and_its_tools_follow_its_rules():
+    profiles = client.get("/v1/hermes/profiles", headers=AUTH).json()
+    names = {p["bot"]: p["name"] for p in profiles["profiles"]}
+    assert names["planning"] == "marcel-planning" and all(n.startswith(profiles["prefix"]) for n in names.values())
+    assert "Planning RMA" in next(p["soul"] for p in profiles["profiles"] if p["bot"] == "planning")
+
+    client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"objectif": "off"}})
+    try:
+        call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "marcel_creer_objectif", "arguments": {"titre": "Suivre un prix"}}}
+        as_planning = client.post("/mcp", headers={"Authorization": "Bearer mcp-test", "X-Marcel-Bot": "planning"},
+                                  json=call).json()["result"]
+        assert as_planning["isError"] and "bloqué" in as_planning["content"][0]["text"]
+    finally:
+        client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"objectif": ""}})
