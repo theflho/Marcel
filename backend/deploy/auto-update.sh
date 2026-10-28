@@ -102,7 +102,9 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
     || return 0  # serveur arrêté, ou trop ancien pour les profils
   chmod 755 "$work" && chmod 644 "$work/profiles.json"
   local digest plan action name
-  digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml") | sha256sum | cut -d' ' -f1)
+  # Redone when the list, the main config or this way of doing it changes.
+  digest=$(cat "$work/profiles.json" <(sudo cat "$hermes_home/config.yaml" "$hermes_home/.env") app/hermes_profiles.py \
+    | sha256sum | cut -d' ' -f1)
   [[ "$digest" == "$(cat .hermes-profiles-applied 2>/dev/null)" ]] && return 0
   plan=$(profiles_tool plan 2>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
   while read -r action name; do

@@ -9,7 +9,9 @@ the ones whose bot is gone, then runs this module to finish each one:
 - SOUL.md: who the bot is;
 - config.yaml: Marcel's MCP server as in the main profile (address, key), saying which bot is
   calling (X-Marcel-Bot), so its tools follow that bot's rules and memory;
-- .env: without API_SERVER_* (the main gateway's port: a second profile binding it is skipped).
+- .env: without API_SERVER_ENABLED/HOST/PORT (the main gateway's port: a second profile binding it
+  is skipped), with the main profile's API_SERVER_KEY (requests under /p/<profile>/ check the
+  profile's own key, and Marcel only has the main one).
 
 Only profiles named with the prefix are ever touched, so the user's own profiles are never touched.
 
@@ -28,7 +30,8 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-PORT_ENV = re.compile(r"^\s*(export\s+)?API_SERVER_[A-Z_]*=")
+PORT_ENV = re.compile(r"^\s*(export\s+)?API_SERVER_(ENABLED|HOST|PORT)=")
+KEY_ENV = re.compile(r"^\s*(export\s+)?API_SERVER_KEY=(.*)$")
 
 
 def desired(path: Path) -> tuple[str, list[dict]]:
@@ -50,11 +53,12 @@ def plan(desired_path: Path, home: Path) -> list[str]:
 def prepare(desired_path: Path, home: Path) -> list[str]:
     _, profiles = desired(desired_path)
     main = main_server(home)
+    key = main_key(home)
     changed = []
     for profile in profiles:
         folder = home / "profiles" / profile["name"]
         if folder.is_dir() and (finish_soul(folder, profile["soul"]) | finish_config(folder, profile["bot"], main)
-                                | finish_env(folder)):
+                                | finish_env(folder, key)):
             changed.append(f"changed {profile['name']}")
     return changed
 
@@ -93,12 +97,24 @@ def finish_config(folder: Path, bot: str, main: dict | None) -> bool:
     return True
 
 
-def finish_env(folder: Path) -> bool:
+def main_key(home: Path) -> str | None:
+    """The main profile's API_SERVER_KEY line value, the one Marcel calls Hermes with."""
+    path = home / ".env"
+    found = [m.group(2) for line in (path.read_text().splitlines() if path.exists() else [])
+             if (m := KEY_ENV.match(line))]
+    return found[-1] if found else None
+
+
+def finish_env(folder: Path, key: str | None) -> bool:
     path = folder / ".env"
     if not path.exists():
         return False
     lines = path.read_text().splitlines(keepends=True)
-    kept = [line for line in lines if not PORT_ENV.match(line)]
+    kept = [line for line in lines if not PORT_ENV.match(line) and not (key is not None and KEY_ENV.match(line))]
+    if key is not None:
+        if kept and not kept[-1].endswith("\n"):
+            kept[-1] += "\n"
+        kept.append(f"API_SERVER_KEY={key}\n")
     if kept == lines:
         return False
     path.write_text("".join(kept))
