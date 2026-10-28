@@ -21,7 +21,7 @@ struct MissionsView: View {
                                            description: Text(error))
                 } else if loaded && missions.isEmpty && routines.isEmpty {
                     ContentUnavailableView("Rien pour l'instant", systemImage: "checklist",
-                                           description: Text("Ce que Marcel fait, même app fermée, et ce qu'il fera à heure fixe apparaîtront ici."))
+                                           description: Text("Ce que Hermes fait, même app fermée, et ce qu'il fera à heure fixe apparaîtront ici."))
                 } else {
                     list
                 }

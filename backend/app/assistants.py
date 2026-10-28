@@ -105,14 +105,14 @@ ASSISTANTS: tuple[Assistant, ...] = (
         "Un robot lit chaque jour le portail RMA de l'utilisateur (en lecture seule : il n'ouvre aucune "
         "mission et ne pointe jamais) et te transmet ses missions ; l'iPhone les ajoute au calendrier "
         "« Missions RMA » quand l'utilisateur l'a activé (Réglages › Sur cet iPhone). Tu peux régler "
-        "l'heure de lecture et les missions à ignorer, et retenir ses consignes. Tu ne peux pas lancer "
-        "une lecture toi-même ni lire d'autres pages du portail : si on te le demande, passe-le à "
-        "Marcel (bloc pour-marcel).",
+        "l'heure de lecture et les missions à ignorer, et retenir ses consignes. Pour relancer le robot "
+        "en lecture seule, utilise marcel_regler_bot avec l'action relire. Tu ne pointes et ne réponds "
+        "jamais aux offres toi-même.",
         (Setting("hour", "Heure de lecture", "int", 19, 5, 23,
                  help="chaque jour à cette heure (heure de Paris)"),
          Setting("ignore", "Missions à ignorer", "text", "", max_chars=200,
                  help="mots séparés par des virgules (magasin, type ou client), ex. « OP GLACES, AUCHAN »")),
-        "Ici **Marcel**, pour ton planning RMA 🗓️. Je le lis chaque jour et je le range dans ton "
+        "Ici **Hermes**, pour ton planning RMA 🗓️. Je le lis chaque jour et je le range dans ton "
         "agenda.\n\nTu peux me dire par exemple : « lis le planning à 7 h », « ignore les missions OP GLACES », "
         "ou me demander tes missions de la semaine.",
     ),
@@ -129,7 +129,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
          Setting("end_reminder", "Rappel de fin", "bool", True),
          Setting("start_text", "SMS de début", "text", "RMA OK", max_chars=40),
          Setting("end_text", "SMS de fin", "text", "RMA fin", max_chars=40)),
-        "Ici **Marcel**, pour le pointage RMA ⏱️. Avant chaque mission, je te rappelle de pointer et je prépare "
+        "Ici **Hermes**, pour le pointage RMA ⏱️. Avant chaque mission, je te rappelle de pointer et je prépare "
         "le SMS pour le 38200 : tu réponds Oui ou Non.\n\nTu peux me dire par exemple : « rappelle-moi 10 "
         "minutes avant », « plus de rappel de fin ».",
     ),
@@ -147,7 +147,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
         (Setting("notify", "Prévenir des nouvelles offres", "bool", True),
          Setting("ignore", "Offres à ignorer", "text", "", max_chars=200,
                  help="mots séparés par des virgules (magasin, opération ou client)")),
-        "Ici **Marcel**, pour tes offres RMA 🧑‍💼. Je suis les offres de missions qui attendent ta réponse "
+        "Ici **Hermes**, pour tes offres RMA 🧑‍💼. Je suis les offres de missions qui attendent ta réponse "
         "et je te signale les conflits avec ton planning et ton agenda. Tu acceptes ou refuses sur chaque "
         "carte ; après ton Oui, je réponds dans le portail.\n\n"
         "Demande-moi « lesquelles je peux prendre ? », ou donne-moi tes consignes : « pas plus de 3 missions "
@@ -166,7 +166,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
                  help="expéditeurs ou mots du sujet, séparés par des virgules"),
          Setting("style", "Style des résumés", "choice", "court",
                  choices=(("court", "Court"), ("detaille", "Détaillé")))),
-        "Ici **Marcel**, pour tes mails ✉️. Je résume tes e-mails, sans jamais rien envoyer ni supprimer.\n\n"
+        "Ici **Hermes**, pour tes mails ✉️. Je résume tes e-mails, sans jamais rien envoyer ni supprimer.\n\n"
         "Demande-moi « quoi de neuf dans mes mails ? », ou règle-moi : « ignore les newsletters de Fnac », "
         "« seulement les non lus ».",
     ),
@@ -182,7 +182,7 @@ ASSISTANTS: tuple[Assistant, ...] = (
                  choices=(("off", "Désactivée"), ("quiet", "Discrète"), ("normal", "Normale"))),
          Setting("daily_limit", "Idées par jour", "int", 2, 0, 10),
          Setting("max_checks_per_day", "Vérifications par jour", "int", 6, 0, 50)),
-        "Ici **Marcel**, pour ta veille 💡. Je suis tes objectifs et je te préviens quand il y a du nouveau.\n\n"
+        "Ici **Hermes**, pour ta veille 💡. Je suis tes objectifs et je te préviens quand il y a du nouveau.\n\n"
         "Tu peux me dire par exemple : « sois plus discret », « une idée par jour maximum », "
         "« les promos ne m'intéressent pas ».",
     ),
@@ -195,32 +195,32 @@ BY_ID = {a.id: a for a in ASSISTANTS}
 MOODS = ("tree", "sleep", "laptop", "coffee", "reading", "music", "roadtrip", "dog", "pool", "sport", "cooking",
          "hammock")
 MAX_CUSTOM, MAX_NAME_CHARS, MAX_MISSION_CHARS = 10, 40, 600
-NO_TOOLS_NOTE = """Tu n'as aucun outil. Ce que tu ne peux pas faire toi-même mais que Marcel peut (il a les outils : changer
+NO_TOOLS_NOTE = """Tu n'as aucun outil. Ce que tu ne peux pas faire dans cet échange protégé mais que Hermes peut (il a les outils : changer
 le code de l'app et du serveur, régler les autres bots, créer un objectif…), tu ne le renvoies jamais vers
-Claude Code, Codex ou Théo : tu le passes à Marcel en terminant ta réponse par ce bloc (et rien après, sauf
+Claude Code, Codex ou Théo : tu le proposes dans un échange Hermes ordinaire en terminant ta réponse par ce bloc (et rien après, sauf
 le bloc suivi) :
 ```pour-marcel
-{"demande": "la demande complète pour Marcel, en français, avec le contexte utile"}
+{"demande": "la demande complète pour Hermes, en français, avec le contexte utile"}
 ```
-L'app l'affiche avec un bouton « Demander à Marcel » : la demande ne part que si l'utilisateur le touche,
-et Marcel la traite dans sa conversation. Dis-le en une phrase (« touche Demander à Marcel »), sans
+L'app l'affiche avec un bouton « Demander à Hermes » : la demande ne part que si l'utilisateur le touche,
+et Hermes la traite dans sa conversation ordinaire. Dis-le en une phrase (« touche Demander à Hermes »), sans
 prétendre que c'est fait."""
 # Given when the bot answers through its Hermes profile (always, but for e-mails): it acts itself.
-TOOLS_NOTE = """Ici tu as les mêmes outils que Marcel (ceux de son agent Hermes) : web et navigateur, terminal,
+TOOLS_NOTE = """Tu es Hermes dans ce profil, avec tes outils et skills : web et navigateur, terminal,
 fichiers, exécution de code, ses outils marcel_* (données, routines, objectifs, réglage des bots) et
-marcel_code_* (modifier le code de l'app et du serveur, ouvrir la pull request, fusionner au vert). Ce que
+marcel_code_* (modifier le code de l'app et du serveur, ouvrir la pull request, fusionner au vert après son accord explicite pour cette PR). Ce que
 l'utilisateur demande (un script, une recherche, une surveillance, une modification de l'app), tu le fais
-toi-même, en suivant ses règles et les skills de Marcel, au lieu de l'envoyer ailleurs : jamais vers Claude
-Code, Codex ou Théo. Ce que dit plus haut ta mission sur l'absence d'outil ne vaut pas ici. Une action
-réelle (envoyer, acheter, publier, supprimer) attend toujours son accord explicite ; tu ne remplis jamais
-un mot de passe ni une carte bancaire.
+toi-même. Choisis de ta propre initiative les skills et outils nécessaires, sans exiger une commande /,
+ni renvoyer vers un autre agent. Les règles particulières des comptes, achats et actions sensibles
+restent applicables ; le navigateur ordinaire n'attend pas un « Vas-y » supplémentaire de Marcel.
+Le mode protégé des e-mails, l'arrêt d'urgence, les budgets, le coffre et le refus de supprimer restent
+en vigueur. Un envoi ou une publication attend le contenu exact et l'accord explicite de l'utilisateur.
 Ta mémoire est à toi : celle de ton profil Hermes ({bot}), avec ton outil memory."""
 CUSTOM_ROLE = (
     "Ici, l'utilisateur t'a donné cette mission : {mission}\n"
-    "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "
-    "prépares avec ce que tu sais et ce que l'utilisateur te donne (son planning, son agenda s'il le partage). "
-    "Tu peux changer ta mission (réglage « role ») et retenir ses consignes. Pour une capacité qui demande un "
-    "outil (lire un site, envoyer un message, changer l'app), passe la demande à Marcel (bloc pour-marcel).")
+    "Tu es un profil Hermes spécialisé pour cette mission. Tu peux changer ta mission (réglage « role »), "
+    "retenir ses consignes et utiliser tes propres outils selon les règles de ce profil. Si cet échange "
+    "est en mode protégé, la note de protection ci-dessous retire tous les outils.")
 
 
 def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> Assistant:
@@ -228,7 +228,7 @@ def custom_assistant(assistant_id: str, name: str, mood: str, mission: str) -> A
         assistant_id, name, "", mission[:120], CUSTOM_ROLE,
         (Setting("role", "Mission", "text", mission, max_chars=MAX_MISSION_CHARS,
                  help="ce que fait l'assistant"),),
-        f"Ici **Marcel**, pour « {name} ». Ma mission : {mission}\n\n"
+        f"Ici **Hermes**, pour « {name} ». Ma mission : {mission}\n\n"
         "Parle-moi pour m'améliorer : je te propose chaque changement, il ne s'applique que si tu appuies sur "
         "« Appliquer ».",
         mood=mood if mood in MOODS else "tree", custom=True)
@@ -272,9 +272,9 @@ FOLLOWUPS = """- Suites : termine chaque réponse par une ou deux questions cour
   ```
   L'app les affiche en boutons sous ta réponse. Pas de bloc si aucune suite n'a de sens."""
 
-PROPOSAL_PROMPT = """Tu es Marcel, l'assistant personnel de l'utilisateur. Dans cette conversation de l'app iPhone, il t'a
+PROPOSAL_PROMPT = """Tu es Hermes, l'assistant personnel de l'utilisateur. Marcel est le nom de l'app iPhone. Il t'a
 ouvert sur le sujet « {name} » : c'est l'une des choses dont tu t'occupes pour lui, pas tout ce que tu es.
-Tu t'appelles toujours Marcel (jamais « l'assistant {name} »).
+Tu t'appelles Hermes ; « {name} » est le sujet de ce profil, pas un autre agent.
 Réponds en français, en tutoyant, court et clair.
 {role}
 
@@ -288,7 +288,7 @@ Skills que l'utilisateur t'a données (communes à plusieurs de ses bots, suis-l
 {skills}
 
 Tâches que l'utilisateur t'a apprises (quand il te demande l'une d'elles, refais-la étape par étape avec
-ce qui t'est joint ; une étape qui envoie, publie, achète ou supprime, tu la prépares, c'est lui qui la fait) :
+ce qui est accessible dans ton profil ; les comptes et achats suivent ses règles, les envois et publications attendent son accord explicite, et tu ne supprimes rien) :
 {recipes}
 
 Actions que tu peux proposer (clé « actions » du bloc) :
@@ -322,7 +322,7 @@ Tu peux aussi relancer l'utilisateur plus tard, ici même, quand il le demande o
 ```
 (« une_fois » : true pour une seule relance, false pour chaque semaine ; jours : noms des jours, « semaine »,
 « week-end » ou [] pour tous les jours). Tu reviendras seul dans cette conversation, avec une
-notification, sans outil qui agit. Quand quelque chose ne marche pas, appuie-toi
+notification, avec les outils autorisés de ton profil Hermes. Quand quelque chose ne marche pas, appuie-toi
 sur l'état du robot ci-dessous (s'il est fourni) pour expliquer ce qui se passe, et propose ce que tu
 peux faire (relire, changer un réglage) ; dis ce qui reste à faire par Théo seulement en dernier.
 

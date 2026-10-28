@@ -24,7 +24,7 @@ agent:
     - yuanbao
     - image_gen
     - video_gen
-    - memory          # la mémoire est celle de Marcel, envoyée avec chaque vérification
+    - memory          # les vérifications isolées n’apprennent pas en mémoire
 
 approvals:
   mode: manual        # si une commande dangereuse passait quand même, elle attendrait un humain

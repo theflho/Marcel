@@ -9,8 +9,8 @@ struct RulesView: View {
     @State private var error: String?
     @State private var newWord = ""
 
-    private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "navigateur", "compte", "achat",
-                                "recherche", "iphone", "iphone_ecriture"]
+    private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "compte", "achat",
+                                "iphone", "iphone_ecriture"]
     private static let caps = [0, 20, 50, 100, 200, 500]
 
     var body: some View {
@@ -23,7 +23,7 @@ struct RulesView: View {
                         }
                     }
                 } footer: {
-                    Text("« Tout seul » : Marcel le fait et te montre « Annuler ». « Demander » : il te le propose et attend « Valider ». « Bloqué » : il ne le fait pas. Un bot peut avoir ses propres règles, dans sa fiche.")
+                    Text("Ces autorisations concernent les données et actions de l’app. Hermes choisit ses outils et skills de sa propre initiative, sans commande spéciale ni permission générale de navigation. Ses validations natives restent applicables. Un profil de bot peut avoir ses propres règles.")
                 }
                 Section {
                     Picker("Plafond par achat", selection: capBinding) {
@@ -35,7 +35,7 @@ struct RulesView: View {
                 } header: {
                     Text("Comptes et achats")
                 } footer: {
-                    Text("Marcel crée ses comptes avec sa propre adresse et ses identifiants, rangés dans le coffre de son navigateur. Pour payer, mets-y une carte virtuelle plafonnée, jamais ta vraie carte : ce plafond-là, la banque l'applique quoi qu'il arrive.")
+                    Text("Hermes crée ses comptes avec sa propre adresse et ses identifiants, rangés dans le coffre de son navigateur. Pour payer, mets-y une carte virtuelle plafonnée, jamais ta vraie carte : ce plafond-là, la banque l'applique quoi qu'il arrive.")
                 }
                 Section {
                     ForEach(rules.privateWords ?? [], id: \.self) { word in
@@ -54,9 +54,9 @@ struct RulesView: View {
                             .disabled(newWord.trimmingCharacters(in: .whitespaces).count < 3)
                     }
                 } header: {
-                    Text("Mots privés")
+                    Text("Recherche isolée (compatibilité)")
                 } footer: {
-                    Text("Une recherche web d'un bot qui contient l'un de ces mots, une adresse, un e-mail ou un téléphone est bloquée avant de partir. Les noms que Marcel retient sur toi comptent aussi. Le chercheur, lui, ne reçoit que la question : il ne sait rien de toi.")
+                    Text("Ces mots filtrent uniquement l’ancien circuit de recherche isolée de l’app. Ils ne filtrent pas les outils web natifs de Hermes.")
                 }
             } else if let error {
                 Text(error).foregroundStyle(.secondary)
@@ -66,16 +66,16 @@ struct RulesView: View {
             Section {
                 Label("Jamais supprimer ni épingler", systemImage: "lock")
                 Label("Jamais tes mots de passe ni ta vraie carte : son identité à lui", systemImage: "lock")
-                Label("Jamais tout seul si un e-mail ou un fichier est en jeu", systemImage: "lock")
+                Label("E-mails lus dans le profil protégé", systemImage: "lock")
                 Label("Jamais d'envoi d'e-mail : brouillon seulement", systemImage: "lock")
             } header: {
                 Text("Toujours")
             } footer: {
-                Text("Ces limites-là ne se règlent pas : le serveur les applique quoi que dise le modèle.")
+                Text("Les protections de l’app et les consignes de Hermes restent en place : arrêt d’urgence, budgets, e-mails protégés et coffre.")
             }
             .foregroundStyle(.secondary)
         }
-        .navigationTitle("Règles")
+        .navigationTitle("Autorisations de l’app")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
@@ -166,7 +166,7 @@ struct BotRulesSection: View {
     let assistantID: String
     @State private var rules: ActionRules?
 
-    private static let kinds = ["reglage", "routine", "recette", "recherche", "compte", "achat", "iphone",
+    private static let kinds = ["reglage", "routine", "recette", "compte", "achat", "iphone",
                                 "iphone_ecriture"]
 
     var body: some View {

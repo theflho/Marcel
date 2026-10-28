@@ -29,6 +29,8 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms._shared import get_scoped_secret, send_error, seed_extra_from_env
 from gateway.platforms.send_targets import parse_nonempty
 
+from .compat import skills_api_compat
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_URL = "http://127.0.0.1:8000"
@@ -120,6 +122,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 
 
 def register(ctx) -> None:
+    skills_api_compat()
     ctx.register_platform(
         target_ref_syntax_fn=parse_nonempty,
         name="marcel", label="Marcel", adapter_factory=lambda cfg: MarcelAdapter(cfg),

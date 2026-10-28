@@ -61,9 +61,9 @@ struct WelcomeView: View {
     /// How conversations work here, said once where it matters: on the empty conversation.
     private func threadLine(_ mode: Assistant?) -> String {
         if store.conversation.isPrivate {
-            return "Rien de ce que tu écris ici n'est gardé, ni dans la liste, ni dans la mémoire de Marcel."
+            return "Rien de ce que tu écris ici n'est gardé, ni dans la liste, ni dans la mémoire de Hermes."
         }
-        let name = mode?.name ?? "Marcel"
+        let name = mode?.name ?? "Hermes"
         return store.history(ofBot: mode?.id).isEmpty
             ? "Ta conversation avec \(name) continue d'un jour à l'autre : pas besoin d'en ouvrir une nouvelle. Touche son nom en haut pour repartir de zéro."
             : "Nouveau départ avec \(name). Les anciennes conversations sont gardées : touche son nom en haut › Anciennes conversations."
@@ -74,7 +74,7 @@ struct WelcomeView: View {
         VStack(spacing: 16) {
             VStack(spacing: 8) {
                 MarcelAvatar(size: 56, bot: mode?.id)
-                Text(store.conversation.isPrivate ? "Conversation privée" : "\(greeting) Ici \(mode?.name ?? "Marcel").")
+                Text(store.conversation.isPrivate ? "Conversation privée" : "\(greeting) Ici Hermes.")
                     .font(.title3.weight(.semibold))
                 Text(mode.map { "\($0.name) : \($0.summary)" } ?? "Qu'est-ce que je fais pour toi ?")
                     .font(.subheadline)

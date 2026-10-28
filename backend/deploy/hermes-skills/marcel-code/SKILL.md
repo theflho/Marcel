@@ -24,7 +24,8 @@ Le dépôt contient l'app iPhone (`Marcel/Marcel/`, Swift 6 / SwiftUI, iOS 18) e
 6. La CI de GitHub tourne seule sur la pull request : tests du serveur et compilation de l'app iPhone
    (environ 10 minutes pour l'app). `marcel_code_ci` donne le résultat et la fin du journal de ce qui
    a échoué : corrige, repropose, jusqu'au vert.
-7. Fusionne (`marcel_code_fusionner`) quand tout est vert et que le diff est compris ; l'outil refuse
+7. Présente la PR et attends l’accord explicite de l’utilisateur pour cette PR, puis fusionne
+   (`marcel_code_fusionner`) quand tout est vert et que le diff est compris ; l’outil refuse
    tant que ce n'est pas vert. Un changement d'app compilé n'arrive sur l'iPhone qu'une fois
    réinstallé depuis Xcode : dis-le à l'utilisateur.
 8. Après une fusion, le VPS se met à jour seul en quelques minutes et revient en arrière si le serveur
@@ -56,6 +57,6 @@ de deviner la cause d'une panne.
 - Jamais de clé, de mot de passe ou de jeton dans le code.
 - Ne touche pas à la mascotte de Marcel.
 - Un gros chantier se fait quand même, par toi : découpe-le en étapes et en plusieurs pull requests
-  (chacune vérifiée et fusionnée au vert), et dis à chaque fois où tu en es. Tes consignes disent si
-  l'utilisateur préfère Claude Code ou Codex (Réglages › Code de Marcel) ; sinon, ne les propose que
+  (chacune vérifiée, approuvée explicitement puis fusionnée au vert), et dis à chaque fois où tu en es. Tes consignes disent si
+  l'utilisateur préfère Claude Code ou Codex (Réglages › Code de l’app) ; sinon, ne les propose que
   s'il les demande lui-même (bloc ```demande-code dans ta réponse).

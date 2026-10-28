@@ -355,7 +355,7 @@ def test_a_bot_hands_to_marcel_what_it_cannot_do():
                        json={"name": "Relais test", "mission": "Aider sur le planning", "mood": "tree"}).json()
     try:
         told = bot_context(assistants.find(made["id"]))[0]
-        assert "```pour-marcel" in told and "Demander à Marcel" in told and "Théo doit" not in told
+        assert "```pour-marcel" in told and "Demander à Hermes" in told and "Théo doit" not in told
         reply = 'Je ne peux pas.\n```pour-marcel\n{"demande": "Ajoute un bouton"}\n```'
         assert "pour-marcel" not in plain_reply(reply) and "depuis l'app" in plain_reply(reply)
     finally:
@@ -380,7 +380,7 @@ def test_a_hand_over_is_only_proposed_and_waits_for_the_user():
 def test_marcel_codes_big_work_himself_unless_an_agent_is_chosen():
     from app.main import app_context, assistants
     shown = client.get("/v1/code-requests", headers=AUTH).json()
-    assert shown["agents"][0] == {"id": "marcel", "name": "Marcel lui-même"}
+    assert shown["agents"][0] == {"id": "marcel", "name": "Hermes"}
     before = assistants.state("code_agent", None)
     try:
         assistants.set_state("code_agent", "marcel")
@@ -402,7 +402,7 @@ def test_bots_always_get_marcels_tools_never_with_mails():
     assert mail_needed("mails", "quoi de neuf ?") and mail_needed("mails", "un script pour trier mes mails")
     assert not mail_needed("mails", "écris-moi un script Python") and not mail_needed("planning", "quoi de neuf ?")
     with_tools, web = bot_context(planning, tools=True)
-    assert "les mêmes outils que Marcel" in with_tools and "```pour-marcel" not in with_tools and not web
+    assert "tes outils et skills" in with_tools and "```pour-marcel" not in with_tools and not web
     assert "```pour-marcel" in bot_context(planning)[0]
     # No rule turns them off: a bot is a Hermes profile.
     assert bot_tools(planning) and bot_tools(assistants.find("pointage")) and "outils" not in rules()
@@ -517,6 +517,6 @@ def test_what_hermes_sends_on_its_own_reaches_the_bot_in_the_app():
     assert entry["assistant"] == "planning" and entry["via"] == "Hermes" and entry["question"] == ""
     assert entry["text"] == "**Point du matin** : deux missions." and entry["status"] == "done"
     assert pending[second]["conversation_id"] == entry["conversation_id"]  # one conversation per bot
-    assert pending[main]["assistant"] == "" and pending[main]["assistant_name"] == "Marcel"
+    assert pending[main]["assistant"] == "" and pending[main]["assistant_name"] == "Hermes"
     for entry_id in (first, second, main):
         assert client.post(f"/v1/bot-messages/{entry_id}/delivered", headers=AUTH).status_code == 200

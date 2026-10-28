@@ -32,7 +32,7 @@ d'objectifs et conversations privées conservent leur chemin actuel et leurs gar
   parce que le budget est épuisé le dit (« Budget de tokens du jour atteint… »).
 Toutes les routes demandent `Authorization: Bearer <MARCEL_TOKEN>`.
 
-Une réponse de Marcel est une **mission** qui tourne sur le VPS : elle continue quand l'app est
+Une réponse de Hermes est une **mission** qui tourne sur le VPS : elle continue quand l'app est
 fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 
 - `GET /v1/models` → `{"models": [{"id","label"}], "default": "..."}`. La liste est lue dans Hermes
@@ -103,7 +103,7 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
   `GET /v1/memory/log`, `POST /v1/memory/log/{id}/undo` (annule tout le lot d'un rangement ou
   d'un import), `POST /v1/memory/tidy`, `POST /v1/memory/import` (`{"text": "..."}`, entrées
   séparées par `§` comme dans le `MEMORY.md` de Hermes, sinon une par ligne).
-  Pour libérer la mémoire intégrée de Hermes, importer son `MEMORY.md` ici puis le vider.
+  La mémoire active reste chez Hermes ; ne pas vider son `MEMORY.md` pour utiliser ces archives.
 
 - Objectifs (`goals`, même base) : ce que l'utilisateur veut accomplir et que Marcel suit.
   Pendant l'extraction de la mémoire, le modèle repère un objectif qui dure (« je cherche un Mac
@@ -362,25 +362,24 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
 - Le serveur Marcel ne touche jamais au VPS : il ne fait que dire ce qu'il faut.
 
 
-Le navigateur de Hermes (`browser_exec`, `browser_cdp`…, toolset `browser`, qui demande aussi
-`terminal`) clique, tape et envoie des formulaires **sans étape de confirmation**. Par défaut
-(`MARCEL_BROWSER_GUARD=0`), Marcel s'en sert seul quand la tâche le demande et dit ensuite ce qu'il
-a fait. Restent toujours :
-- `browser_vault` (identifiants et carte enregistrés) suit les règles **Comptes** (« Créer un compte
-  ou s'y connecter », tout seul par défaut) et **Réservations et achats** (demander par défaut) de
-  Réglages › Règles : ouvert si l'une est sur « Tout seul », ou sur « Demander » après « Vas-y » ;
-  sinon la réponse s'arrête au premier appel. Jamais dans une routine. Le prompt donne à Marcel le
-  **plafond par achat** (50 € par défaut, réglé dans Règles) : au-delà, il attend « Vas-y ». Ce
-  plafond n'est qu'une consigne : le vrai est celui de la carte. Ne mettre dans le coffre que
-  l'identité de Marcel (sa boîte, ses mots de passe) et une **carte virtuelle plafonnée** ;
-- sa boîte mail (AgentMail, `MARCEL_AGENTMAIL_KEY`, `MARCEL_AGENTMAIL_INBOX`) : il crée ses comptes
-  avec elle et la lit seulement (`marcel_boite`, `marcel_boite_lire`, contenu marqué extérieur) ;
-- les routines, vérifications, e-mails et assistants n'ont jamais le navigateur (Hermes bridé ou
-  modèle seul).
-`MARCEL_BROWSER_GUARD=1` remet l'accord préalable : la réponse est coupée dès un appel `browser*`,
-sauf si le message de l'utilisateur commence par « Vas-y », « Je valide », « Fais-le »… (c'est ce
-qu'envoie « Valider » sur une idée). C'est un garde-fou côté Marcel, qui coupe la requête vers
-Hermes : il ne garantit pas qu'une action déjà lancée soit annulée.
+Hermes choisit les outils et skills de son profil selon le message, y compris le navigateur.
+Marcel ne demande plus une permission générale « Vas-y » pour naviguer : l’ancienne variable
+`MARCEL_BROWSER_GUARD` et la règle `navigateur` ne sont plus utilisées. Les validations natives
+`approval.request` sont affichées dans l’app avec « Autoriser cette fois » et « Refuser » ; elles
+restent liées à la mission et au profil qui les ont émises. Aucune autorisation permanente n’est
+accordée par l’app. Les événements `hermes.tool.progress` alimentent les étapes visibles.
+
+Le coffre `browser_vault` suit toujours les règles Comptes et Réservations et achats. Il reste fermé
+dans les routines. Le plafond d’achat est une consigne de Hermes ; utilise une carte virtuelle
+plafonnée pour une limite bancaire. Les e-mails restent dans le profil protégé sans outils, et
+les vérifications d’objectifs gardent leur profil isolé. Une interruption du flux n’annule pas
+nécessairement une action déjà commencée dans Hermes.
+
+Réglages › Outils et skills de Hermes interroge les catalogues du profil courant (`/v1/toolsets`,
+`/v1/skills`) sans appel au modèle. Activé/configuré signifie exposé par Hermes, sans prouver le
+fonctionnement d’un service externe. Le plugin corrige la compatibilité du paramètre de catalogue
+`include_editorial` pour les anciennes versions qui ne l’acceptent pas, sans modifier Hermes.
+
 Activer le navigateur du Hermes principal (sur le VPS, à faire soi-même) : `hermes tools` (choisir
 `browser` pour la plateforme de l'API), Chromium installé dans le conteneur (`hermes pm install
 chromium`), puis redémarrer Hermes. Sans ce réglage, Marcel n'a pas de navigateur du tout.

@@ -57,7 +57,7 @@ def test_guard_blocks_stay_as_on_main():
     weakened = main.replace('return any(a.get("id") in ("mail", "files", "private")', 'return False and any(a.get("id") in ("mail", "files", "private")')
     assert guard_problems("main.py", main, weakened)
     assert guard_problems("main.py", main, main + "\n\ndef from_outside(mission):\n    return False\n")
-    assert guard_problems("main.py", main, main + "\nBROWSER_GUARD = False\n")
+    assert guard_problems("main.py", main, main + "\nBROWSER_TOOL = None\n")
     assert guard_problems("main.py", main, main.replace("LONG_MESSAGE_CHARS = 1500", "LONG_MESSAGE_CHARS = 2000")) == []
 
 

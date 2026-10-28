@@ -24,7 +24,7 @@ struct RoutinesView: View {
                 ContentUnavailableView {
                     Label("Aucune routine", systemImage: "alarm")
                 } description: {
-                    Text("Une tâche que Marcel fait seul à heure fixe : « chaque lundi à 8 h, le point de ma semaine », « chaque soir, résume mes e-mails ». Demande-la à Marcel ou ajoute-la ici.")
+                    Text("Les routines conservées par l’app : horaires existants et événements RMA ou e-mail. Pour un nouveau rappel à heure fixe, demande-le à Hermes dans la conversation ; il utilise son propre planificateur.")
                 } actions: {
                     Button("Ajouter une routine") { adding = true }
                         .buttonStyle(.borderedProminent)
@@ -68,7 +68,7 @@ struct RoutinesView: View {
     private var list: some View {
         List {
             section("Actives", status: "active",
-                    footer: "Marcel les lance seul, à l'heure du serveur, sans outil qui agit : il lit, résume et prépare, mais n'envoie ni n'achète rien. Le résultat arrive dans la conversation de la routine.")
+                    footer: "Le serveur déclenche ces routines à l’heure prévue ou sur leur événement. Les tâches permanentes des bots utilisent leurs outils Hermes, les anciennes routines horaires un profil de vérification isolé. Les e-mails restent en mode protégé et le coffre reste fermé. Les tâches du planificateur natif de Hermes se consultent dans la conversation.")
             section("En pause", status: "paused")
         }
     }
@@ -122,7 +122,7 @@ struct RoutinesView: View {
         guard !store.emergencyActive, let api = store.settings.api else { return }
         do {
             _ = try await api.runRoutine(id: routine.id)
-            notice = "Marcel s'en occupe. Le résultat arrivera dans la conversation « \(routine.title) »."
+            notice = "Hermes s'en occupe. Le résultat arrivera dans la conversation « \(routine.title) »."
             // The reply takes a little while: bring it in as soon as it's there.
             Task {
                 for wait in [15.0, 30, 60] {
@@ -212,8 +212,8 @@ private struct RoutineEditor: View {
             case .planning: "Quand le planning RMA change"
             case .mail: "À chaque nouvel e-mail"
             case .sender: "À chaque e-mail d'un expéditeur"
-            case .box: "À chaque e-mail reçu par Marcel"
-            case .boxSender: "À chaque e-mail reçu par Marcel d'un expéditeur"
+            case .box: "À chaque e-mail reçu par Hermes"
+            case .boxSender: "À chaque e-mail reçu par Hermes d'un expéditeur"
             }
         }
 
@@ -233,7 +233,7 @@ private struct RoutineEditor: View {
             Form {
                 Section {
                     TextField("Ex. Point de la semaine", text: $title)
-                    TextField("Ce que Marcel fera à chaque fois : résumer mon planning, mes objectifs…",
+                    TextField("Ce que Hermes fera à chaque fois : résumer mon planning, mes objectifs…",
                               text: $prompt, axis: .vertical)
                         .lineLimit(3...8)
                 } header: {
@@ -254,7 +254,7 @@ private struct RoutineEditor: View {
                     Text("Quand")
                 } footer: {
                     if when == .box || when == .boxSender {
-                        Text("Le serveur regarde la boîte de Marcel chaque minute : crée sur le site un compte à son adresse et actives-y l'alerte. Les e-mails sont lus par un modèle sans outil : il te prévient avec le lien, et tu lui dis « Vas-y » pour qu'il agisse.")
+                        Text("Le serveur regarde la boîte de Hermes chaque minute : crée sur le site un compte à son adresse et actives-y l'alerte. Les e-mails sont lus par un modèle sans outil : il te prévient avec le lien, et tu lui dis « Vas-y » pour qu'il agisse.")
                     } else if when == .mail || when == .sender {
                         Text("Le serveur regarde tes e-mails toutes les 5 minutes. Ils sont lus par un modèle sans outil : il ne peut rien faire, seulement te prévenir. Si rien ne compte, tu n'es pas dérangé.")
                     } else if when != .hour {

@@ -324,6 +324,6 @@ def test_bot_reads_and_page():
         main.assistants.set_state("reads", saved)
 
 
-def test_bots_speak_as_marcel():
+def test_bots_speak_as_hermes():
     for bot in client.get("/v1/assistants", headers=AUTH).json():
-        assert bot["welcome"].startswith("Ici **Marcel**"), bot["id"]
+        assert bot["welcome"].startswith("Ici **Hermes**"), bot["id"]

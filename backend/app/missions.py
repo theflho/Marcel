@@ -65,7 +65,7 @@ def verification(text: str, actions: list[dict], unfinished: list[str]) -> dict 
     # Steps and what Marcel did himself; not the cards that say why they wait or stopped (« Autoriser »,
     # blocked by the rules, outside content, the web search, the iPhone).
     steps = [a for a in actions if a.get("name") and a["id"] not in OWN_CARDS
-             and not a["id"].startswith(("auto-ask-", "auto-off-", "auto-outside", "iphone-", "search"))]
+             and not a["id"].startswith(("auto-ask-", "auto-off-", "auto-outside", "iphone-", "search", "hermes-approval-"))]
     cut = [a for a in steps if a.get("status") == "cancelled"]
     claim = CLAIM.search(text)
     if claim and not steps:

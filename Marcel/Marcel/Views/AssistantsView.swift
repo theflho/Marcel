@@ -32,7 +32,7 @@ struct AssistantsView: View {
                         }
                     }
                 } footer: {
-                    Text("Ce sont les sujets dont Marcel s'occupe pour toi. Pour en ajouter un, demande-le-lui (« crée-moi un bot pour… »).")
+                    Text("Ce sont les sujets dont Hermes s'occupe pour toi. Pour en ajouter un, demande-le-lui (« crée-moi un bot pour… »).")
                 }
             }
             .overlay {
@@ -47,7 +47,7 @@ struct AssistantsView: View {
                     dismiss()
                 }
             }
-            .navigationTitle("Bots de Marcel")
+            .navigationTitle("Bots de Hermes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -137,7 +137,7 @@ private struct AssistantDetailView: View {
                                 set: { on in Task { await store.setRead(read.key, on, of: assistant) } }))
                         }
                     } header: {
-                        Text("Ce que Marcel lit ici")
+                        Text("Ce que Hermes lit ici")
                     } footer: {
                         Text("En lecture seule, dans les conversations de ce bot. Il n'y gagne aucun outil : il ne peut ni écrire, ni envoyer, ni rien supprimer.")
                     }
@@ -193,7 +193,7 @@ private struct AssistantDetailView: View {
             .confirmationDialog("Supprimer \(assistant.name) ?", isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("Supprimer", role: .destructive) { Task { await store.deleteAssistant(assistant) } }
             } message: {
-                Text("Ses conversations restent, avec Marcel.")
+                Text("Ses conversations restent, avec Hermes.")
             }
         } else {
             ContentUnavailableView("Assistant supprimé", systemImage: "person.slash")

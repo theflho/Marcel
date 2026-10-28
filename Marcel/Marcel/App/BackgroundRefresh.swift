@@ -44,7 +44,7 @@ enum BackgroundRefresh {
 
         if let ideas = try? await api.ideas() {
             for idea in ideas.filter({ $0.status == "new" && !notified.contains("idea-\($0.id)") }).prefix(3) {
-                await post(id: "idea-\(idea.id)", title: "Marcel a une idée", body: idea.title)
+                await post(id: "idea-\(idea.id)", title: "Hermes a une idée", body: idea.title)
                 notified.insert("idea-\(idea.id)")
             }
         }
@@ -57,7 +57,7 @@ enum BackgroundRefresh {
                 if let bot = run.assistant, !bot.isEmpty, !BotPrefs.notifies(bot) { continue }
                 if run.status == "done", (run.actions ?? []).contains(where: \.awaitsApproval)
                     || (run.text ?? "").contains("```reglage") && !(run.actions ?? []).contains(where: { $0.id.hasPrefix("auto-reglage") || $0.id.hasPrefix("auto-off-reglage") }) {
-                    let name = run.assistantName.flatMap { $0.isEmpty ? nil : $0 } ?? "Marcel"
+                    let name = run.assistantName.flatMap { $0.isEmpty ? nil : $0 } ?? "Hermes"
                     await post(id: "routine-\(run.id)", title: "\(name) attend ton accord",
                                body: run.title ?? "Une action attend « Autoriser » dans sa conversation.")
                     continue
@@ -90,16 +90,23 @@ enum BackgroundRefresh {
             return (missionID, conversation.title)
         }
         for (missionID, title) in waiting.prefix(5) {
-            guard let mission = try? await api.mission(id: missionID), mission.status != "running" else { continue }
+            guard let mission = try? await api.mission(id: missionID) else { continue }
+            if mission.status == "running" {
+                for action in (mission.actions ?? []).filter(\.isHermesApproval) where !notified.contains(action.id) {
+                    await post(id: action.id, title: "Hermes attend ton accord", body: title)
+                    notified.insert(action.id)
+                }
+                continue
+            }
             // A mission going in circles stops and asks how to go on: say so, not "failed".
             if let error = mission.error, error.hasPrefix("Je bloque") {
-                await post(id: "mission-\(missionID)", title: "Marcel a besoin de toi", body: "\(title) : \(error)")
+                await post(id: "mission-\(missionID)", title: "Hermes a besoin de toi", body: "\(title) : \(error)")
             } else if mission.status == "done", (mission.actions ?? []).contains(where: \.awaitsApproval) {
                 // Like Grok Bot: told when it has finished *or is waiting for you*.
-                await post(id: "mission-\(missionID)", title: "Marcel attend ton accord", body: title)
+                await post(id: "mission-\(missionID)", title: "Hermes attend ton accord", body: title)
             } else {
                 let body = mission.status == "done" ? title : "\(title) : la réponse n'a pas pu aboutir."
-                await post(id: "mission-\(missionID)", title: "Marcel a répondu", body: body)
+                await post(id: "mission-\(missionID)", title: "Hermes a répondu", body: body)
             }
             notified.insert("mission-\(missionID)")
         }
@@ -130,7 +137,7 @@ enum BackgroundRefresh {
 
         // What Marcel did to his own code: merges, undos, deployments that went back or failed.
         if let log = try? await api.codeLog() {
-            let shown = ["fusionnée": "Marcel a fusionné", "annulée": "Fusion annulée",
+            let shown = ["fusionnée": "Hermes a fusionné", "annulée": "Fusion annulée",
                          "retour arrière": "Déploiement annulé ⚠️", "déploiement raté": "Serveur en panne ⚠️"]
             let since = UserDefaults.standard.object(forKey: codeLogSeenKey) as? Date ?? .now
             UserDefaults.standard.set(Date.now, forKey: codeLogSeenKey)

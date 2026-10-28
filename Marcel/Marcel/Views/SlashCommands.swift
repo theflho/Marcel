@@ -37,13 +37,14 @@ extension ChatStore {
                                      kind: .newConversation),
                         SlashCommand(name: "prive", detail: "Conversation privée, rien n'est gardé", icon: "lock",
                                      kind: .privateConversation),
-                        SlashCommand(name: "marcel", detail: "Ouvrir Marcel", icon: "sparkles", kind: .mode(nil))]
+                        SlashCommand(name: "hermes", detail: "Ouvrir Hermes", icon: "sparkles", kind: .mode(nil)),
+                        SlashCommand(name: "marcel", detail: "Ouvrir Hermes (ancien raccourci)", icon: "sparkles", kind: .mode(nil))]
         commands += assistants.map {
             SlashCommand(name: $0.slashName, detail: "Ouvrir \($0.name)", icon: "person.crop.circle", kind: .mode($0.id))
         }
         commands += [
             SlashCommand(name: "code", detail: "Modifier l'app ou son serveur", icon: "chevron.left.forwardslash.chevron.right", kind: .skill),
-            SlashCommand(name: "donnees", detail: "Chercher dans ce que Marcel sait", icon: "tray.full", kind: .skill),
+            SlashCommand(name: "donnees", detail: "Chercher dans ce que Hermes sait", icon: "tray.full", kind: .skill),
             SlashCommand(name: "routine", detail: "Une tâche à heure fixe", icon: "clock", kind: .skill),
             SlashCommand(name: "objectif", detail: "Un objectif à suivre", icon: "target", kind: .skill),
             SlashCommand(name: "web", detail: "Chercher sur le web", icon: "globe", kind: .skill),
@@ -70,8 +71,8 @@ extension ChatStore {
             draft = ""
             openBot(id)
         case .skill:
-            // Skills are Marcel's: an assistant has no tool. Back to Marcel's conversation.
-            if conversation.assistantID != nil || isPastConversation { openBot(nil) }
+            // Every bot is a Hermes profile with its own tools and skills.
+            if isPastConversation { startFresh() }
             draft = "/\(command.name) "
         }
     }

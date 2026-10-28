@@ -675,11 +675,10 @@ final class ChatStore {
     func askMarcelToCode(_ draft: CodeRequestDraft, from messageID: UUID) {
         guard !isStreaming, !emergencyActive,
               let conversation = conversations.first(where: { $0.messages.contains { $0.id == messageID } }) else { return }
-        let from = assistant(for: conversation).map { "De la part de \($0.name) : " } ?? ""
         updateMessage(messageID, in: conversation.id) { $0.proposalDecision = "applied" }
         persist(conversation.id, touch: false)
-        openBot(nil)
-        sendSuggestion("\(from)fais-le toi-même avec tes outils de code, même si c'est gros (en plusieurs étapes s'il "
+        openBot(conversation.assistantID)
+        sendSuggestion("Fais-le toi-même avec tes outils de code, même si c'est gros (en plusieurs étapes s'il "
                        + "le faut) : « \(draft.titre) ».\n\n\(draft.demande)")
     }
 
@@ -1036,7 +1035,7 @@ final class ChatStore {
             message += "\n\nMontre-moi d'abord le texte exact et attends mon accord avant d'envoyer quoi que ce soit."
         }
         guard !isStreaming else {
-            report("Marcel répond encore dans cette conversation : valide à nouveau quand il a fini.", action: nil)
+            report("Hermes répond encore dans cette conversation : valide à nouveau quand il a fini.", action: nil)
             return
         }
         // What was waiting in the composer stays there and doesn't leave with the approval.

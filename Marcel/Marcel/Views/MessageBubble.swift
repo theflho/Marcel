@@ -17,6 +17,11 @@ struct MessageBubble: View {
                 if !isUser && (!steps.isEmpty || message.status == .streaming) {
                     StepsLine(actions: steps, isRunning: message.status == .streaming)
                 }
+                if !isUser && message.status == .streaming {
+                    ForEach(message.actions.filter(\.isHermesApproval)) { action in
+                        HermesApprovalCard(action: action, message: message)
+                    }
+                }
                 if message.content.isEmpty && message.status == .streaming {
                     // Nothing written yet: the line above says what Marcel is doing.
                 } else if isUser {
@@ -92,7 +97,7 @@ struct MessageBubble: View {
         }
         .padding(.horizontal)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(isUser ? "Toi" : "Marcel") : \(message.content)")
+        .accessibilityLabel("\(isUser ? "Toi" : "Hermes") : \(message.content)")
     }
 
     @ViewBuilder
