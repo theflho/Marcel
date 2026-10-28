@@ -461,3 +461,26 @@ def test_accounts_and_purchases_follow_the_rules_and_the_cap():
         assert client.put("/v1/rules", headers=AUTH, json={"purchase_cap": -1}).status_code == 422
     finally:
         client.put("/v1/rules", headers=AUTH, json={"rules": {"compte": "auto", "achat": "ask"}, "purchase_cap": 50})
+
+
+def test_mcp_stays_connected_during_the_emergency_stop_but_runs_no_tool():
+    import asyncio
+
+    from app.main import missions
+
+    def rpc(method: str, params: dict | None = None, key: str = "mcp-test"):
+        return client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
+                           json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
+
+    assert rpc("ping", key="faux").status_code == 401
+    assert client.get("/health", headers=AUTH).json()["mcp"]["refused"]
+    asyncio.run(missions.emergency_stop())
+    try:
+        assert rpc("ping").status_code == 200
+        assert any(t["name"] == "marcel_boite" for t in rpc("tools/list").json()["result"]["tools"])
+        called = rpc("tools/call", {"name": "marcel_resume", "arguments": {}}).json()["result"]
+        assert called["isError"] and "Arrêt d'urgence" in called["content"][0]["text"]
+    finally:
+        missions.emergency_resume()
+    assert client.get("/health", headers=AUTH).json()["mcp"]["seen"]
+    assert not mcp_call("marcel_regles", {})["isError"]
