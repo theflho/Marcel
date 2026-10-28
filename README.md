@@ -60,6 +60,18 @@ fermée ou hors ligne, et l'app la reprend là où elle s'était arrêtée.
 - `GET /v1/missions/{id}` → état et texte complet ; `GET /v1/missions?conversation_id=…&active=true` → liste.
 - Statuts : `running`, `done`, `stopped`, `failed`, `interrupted` (le serveur a redémarré pendant la mission).
   Les missions sont enregistrées dans `MARCEL_DATA_DIR/marcel.db` (SQLite).
+- **Sessions Hermes** : pour une conversation ordinaire, Marcel envoie
+  `X-Hermes-Session-Key: <conversation_id>`, puis reprend le `X-Hermes-Session-Id` renvoyé par
+  Hermes. La clé seule ne recharge pas l'historique de Chat Completions. Le premier envoi transmet
+  l'historique de l'app ; les suivants ne transmettent à Hermes que le dernier message et ses pièces
+  jointes, avec les consignes de la mission. Les identifiants de transport survivent aux redémarrages
+  de Marcel, séparés par conversation, bot et adresse du profil. Une modification, une régénération
+  ou un historique tronqué repart sur une nouvelle session avec l'historique affiché dans l'app.
+  Les e-mails protégés, appels au modèle seul, vérifications d'objectifs et conversations privées
+  ne reprennent aucune session. Sans authentification Hermes ou sans identifiant de session renvoyé,
+  Marcel conserve l'envoi de l'historique complet. L'iPhone transmet encore son historique à Marcel
+  pour cette reprise initiale et la détection des modifications ; la migration des consignes vers
+  les profils et les skills vient ensuite.
 - Arrêt d'urgence : `POST /v1/emergency/stop` coupe toutes les missions et refuse les nouvelles
   (`423`) jusqu'à `POST /v1/emergency/resume` ; état dans `GET /v1/emergency`. Il survit aux
   redémarrages. Côté app (Réglages › Sécurité), plus aucune

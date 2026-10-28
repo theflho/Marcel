@@ -16,8 +16,8 @@ import re
 import secrets
 import time
 from contextvars import ContextVar
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, nullcontext
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pathlib import Path
@@ -35,6 +35,7 @@ from .code_requests import AGENTS, DEFAULT_AGENT, CodeRequestStore, GitHubError
 from .code_tools import CodeError, CodeWorkspace, GitHub
 from . import server_log
 from .goals import ACTIVE, GoalStore
+from .hermes_sessions import HermesSessions
 from .mcp import MCPServer, ToolError
 from .memory import ARCHIVE, CORE, DAY, MemoryStore, split_entries, words
 from .missions import DONE, MissionError, MissionStore, valid_id
@@ -177,6 +178,7 @@ ROUTINES_MAX_PER_DAY = int(os.environ.get("MARCEL_ROUTINES_MAX_PER_DAY") or 10)
 log = logging.getLogger("marcel")
 server_log.install()
 missions = MissionStore(DATA_DIR / "marcel.db")
+hermes_sessions = HermesSessions(DATA_DIR / "marcel.db")
 memory = MemoryStore(DATA_DIR / "marcel.db", core_budget=MEMORY_CORE_CHARS)
 goals = GoalStore(DATA_DIR / "marcel.db")
 ideas = IdeaStore(DATA_DIR / "marcel.db", max_checks_per_day=PROACTIVE_MAX_CHECKS)
@@ -244,7 +246,7 @@ class Message(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    conversation_id: str
+    conversation_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
     messages: list[Message] = Field(min_length=1, max_length=200)
     model: str | None = None
     # What the iPhone shares by itself when the user allowed it (upcoming calendar events…),
@@ -1432,18 +1434,38 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
     without `vault`, the first call to the saved logins and cards (browser_vault) does. With a bot's
     `profile`, its own Hermes profile answers once it exists (else the main Hermes, as before).
     """
+    # Only ordinary conversations with the full Hermes resume a transcript. Protected e-mails,
+    # direct model calls, goal checks and private chats keep their existing stateless request.
+    resume = bool(key) and url == HERMES_URL and not request.private and not request.conversation_id.startswith("goal-")
     if profile and url == HERMES_URL:
         url = await profile_url(profile)
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    body = {
-        "model": model,
-        "stream": True,
-        "messages": ([{"role": "system", "content": memory_note}] if memory_note else [])
-        + [{"role": m.role, "content": hermes_content(m)} for m in request.messages],
-    }
-    if url.startswith(HERMES_URL) or url == CHECK_HERMES_URL:
-        # Hermes keeps one session per conversation; the model provider has no use for it.
-        body["user"] = request.conversation_id
+    bot = profile or request.assistant or ""
+    identity = (url, bot, request.conversation_id)
+    inputs = [message.model_dump() for message in request.messages]
+    async with hermes_sessions.turn(*identity) if resume else nullcontext():
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        session_id = hermes_sessions.get(*identity, inputs) if resume else None
+        if resume:
+            headers["X-Hermes-Session-Key"] = request.conversation_id
+            if session_id:
+                headers["X-Hermes-Session-Id"] = session_id
+            else:
+                # On the first turn Hermes fingerprints the system prompt and opening message.
+                # A new chat or an edited branch needs its own transcript, even with the same opening.
+                memory_note = "\n\n".join(filter(None, [memory_note,
+                    f"Conversation Marcel : {bot or 'marcel'}/{request.conversation_id}/{uuid.uuid4().hex}"]))
+        messages = request.messages[-1:] if session_id else request.messages
+        body = {"model": model, "stream": True,
+                "messages": ([{"role": "system", "content": memory_note}] if memory_note else [])
+                + [{"role": m.role, "content": hermes_content(m)} for m in messages]}
+        remember = (lambda sid: hermes_sessions.put(*identity, sid, inputs)) if resume else None
+        async for item in hermes_events(url, headers, body, browser, vault, remember):
+            yield item
+
+
+async def hermes_events(url: str, headers: dict, body: dict, browser: bool, vault: bool,
+                        remember: Callable[[str], None] | None) -> AsyncIterator[str | dict]:
+    """Read the SSE stream; keep its session id only after a successful, complete turn."""
     tools: dict[int, dict] = {}
 
     def finish_tools() -> list[dict]:
@@ -1471,11 +1493,13 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                 if resp.status_code >= 400:
                     await resp.aread()
                     raise MissionError(hermes_refusal(resp.status_code, resp.text))
+                complete = False
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        complete = True
                         break
                     try:
                         chunk = json.loads(data)
@@ -1487,6 +1511,8 @@ async def hermes_stream(request: ChatRequest, model: str, memory_note: str = "",
                         raise MissionError(f"Hermes s'est arrêté : {str(detail)[:200]}")
                     for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser, vault):
                         yield item
+                if complete and remember and (session_id := resp.headers.get("X-Hermes-Session-Id")):
+                    remember(session_id)
     except httpx.ConnectError as error:
         raise MissionError("Hermes est injoignable : son serveur ne répond pas (redémarrage en cours ?).") from error
     except httpx.ReadTimeout as error:
