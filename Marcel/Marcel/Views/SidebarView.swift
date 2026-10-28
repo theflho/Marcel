@@ -13,6 +13,8 @@ struct SidebarView: View {
     @State private var botPrefsVersion = 0
     @State private var hiddenExpanded = false
     @State private var renameText = ""
+    /// The bot the user asked to delete from its menu, waiting for the confirmation.
+    @State private var deleting: Assistant?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +38,13 @@ struct SidebarView: View {
                 if let renaming { store.rename(renaming, to: renameText) }
                 renaming = nil
             }
+        }
+        .confirmationDialog("Supprimer \(deleting?.name ?? "ce bot") ?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { bot in
+            Button("Supprimer", role: .destructive) { Task { await store.deleteAssistant(bot) } }
+        } message: { _ in
+            Text("Ses conversations restent, avec Marcel.")
         }
     }
 
@@ -163,6 +172,12 @@ struct SidebarView: View {
             BotPrefs.set(BotPrefs.hiddenKey, bot.id, !hidden)
             if !hidden { BotPrefs.set(BotPrefs.pinnedKey, bot.id, false) }
             botPrefsVersion += 1
+        }
+        // Only the bots the user created; Marcel's own (Planning, Pointage…) stay.
+        if let assistant = store.assistants.first(where: { $0.id == bot.id }), assistant.isCustom {
+            Divider()
+            Button("Supprimer le bot", systemImage: "trash", role: .destructive) { deleting = assistant }
+                .disabled(store.emergencyActive)
         }
     }
 

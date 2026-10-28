@@ -156,6 +156,10 @@ lui, suit quelque chose jusqu'à ce qu'il aboutisse. `backend/app/routines.py`.
   manquée (serveur arrêté) part à son retour jusqu'à 3 h plus tard, sinon elle attend la suivante.
   Plafond : `MARCEL_ROUTINES_MAX_PER_DAY` (10). Rien pendant l'arrêt d'urgence ni quand la part
   « vérifications » du budget de tokens est dépensée. « Lancer » (balayage) la fait partir tout de suite.
+- Sur un e-mail : `email` / `email:expéditeur` (Gmail, regardé toutes les 5 min) ou `boite` /
+  `boite:expéditeur` (la boîte AgentMail de Marcel, regardée chaque minute : pour les alertes d'un site
+  dont le compte est à son adresse, ex. `boite:ticketmaster`). Lu en Mode protégé ; « Rien à
+  signaler. » ne dérange pas. Le premier relevé note seulement ce qui est là.
 - **Sans outil qui agit** : la routine va au Hermes des vérifications (`hermes-checks`), sans la
   mémoire (il lit le web) mais avec les totaux, le planning, les objectifs et le dernier compte rendu
   du robot ; si elle parle d'e-mails, au **modèle seul** sans aucun outil (Mode protégé), mémoire
@@ -275,8 +279,15 @@ Le navigateur de Hermes (`browser_exec`, `browser_cdp`…, toolset `browser`, qu
 `terminal`) clique, tape et envoie des formulaires **sans étape de confirmation**. Par défaut
 (`MARCEL_BROWSER_GUARD=0`), Marcel s'en sert seul quand la tâche le demande et dit ensuite ce qu'il
 a fait. Restent toujours :
-- `browser_vault` (identifiants et cartes enregistrés) **coupé** : la réponse s'arrête au premier
-  appel, payer et se connecter restent des gestes de l'utilisateur ;
+- `browser_vault` (identifiants et carte enregistrés) suit les règles **Comptes** (« Créer un compte
+  ou s'y connecter », tout seul par défaut) et **Réservations et achats** (demander par défaut) de
+  Réglages › Règles : ouvert si l'une est sur « Tout seul », ou sur « Demander » après « Vas-y » ;
+  sinon la réponse s'arrête au premier appel. Jamais dans une routine. Le prompt donne à Marcel le
+  **plafond par achat** (50 € par défaut, réglé dans Règles) : au-delà, il attend « Vas-y ». Ce
+  plafond n'est qu'une consigne : le vrai est celui de la carte. Ne mettre dans le coffre que
+  l'identité de Marcel (sa boîte, ses mots de passe) et une **carte virtuelle plafonnée** ;
+- sa boîte mail (AgentMail, `MARCEL_AGENTMAIL_KEY`, `MARCEL_AGENTMAIL_INBOX`) : il crée ses comptes
+  avec elle et la lit seulement (`marcel_boite`, `marcel_boite_lire`, contenu marqué extérieur) ;
 - les routines, vérifications, e-mails et assistants n'ont jamais le navigateur (Hermes bridé ou
   modèle seul).
 `MARCEL_BROWSER_GUARD=1` remet l'accord préalable : la réponse est coupée dès un appel `browser*`,

@@ -26,21 +26,30 @@ GRACE = 3 * 3600
 MAX_TITLE_CHARS, MAX_PROMPT_CHARS = 80, 1000
 # Events a routine can wait for instead of an hour (read by the rma robot).
 TRIGGERS = {"offre": "À chaque nouvelle offre", "planning": "Quand le planning change",
-            "email": "À chaque nouvel e-mail"}
-# "email:sender" waits for e-mails from that sender only (an address or a part of it).
-EMAIL_FROM = "email:"
+            "email": "À chaque nouvel e-mail", "boite": "À chaque e-mail reçu par Marcel"}
+# "email:sender" waits for e-mails from that sender only (an address or a part of it); "boite:sender"
+# the same in Marcel's own mailbox (AgentMail).
+EMAIL_FROM, BOX_FROM = "email:", "boite:"
 
 
 def valid_trigger(trigger: str) -> bool:
-    if trigger.startswith(EMAIL_FROM):
-        sender = trigger[len(EMAIL_FROM):]
-        return 2 <= len(sender) <= 120 and not any(c.isspace() for c in sender)
+    for prefix in (EMAIL_FROM, BOX_FROM):
+        if trigger.startswith(prefix):
+            sender = trigger[len(prefix):]
+            return 2 <= len(sender) <= 120 and not any(c.isspace() for c in sender)
     return trigger in TRIGGERS
+
+
+def reads_mail(trigger: str) -> bool:
+    """Woken by an e-mail (the user's or Marcel's): a stranger's text, read in protected mode."""
+    return trigger.startswith(("email", "boite"))
 
 
 def describe_trigger(trigger: str) -> str:
     if trigger.startswith(EMAIL_FROM):
         return f"À chaque e-mail de {trigger[len(EMAIL_FROM):]}"
+    if trigger.startswith(BOX_FROM):
+        return f"À chaque e-mail de {trigger[len(BOX_FROM):]} reçu par Marcel"
     return TRIGGERS.get(trigger, "")
 
 COLUMNS = ("id", "title", "prompt", "days", "at", "status", "conversation_id", "created_at", "updated_at",
@@ -293,7 +302,7 @@ class RoutineStore:
 
     def waiting_for(self, event: str) -> list[Routine]:
         return [r for r in self.list(ACTIVE) if r.trigger == event
-                or (event == "email" and r.trigger.startswith(EMAIL_FROM))]
+                or (event in ("email", "boite") and r.trigger.startswith(f"{event}:"))]
 
     def due(self, now: float) -> list[Routine]:
         return [r for r in self.list(ACTIVE) if is_due(r, now, self.tz)]

@@ -9,8 +9,9 @@ struct RulesView: View {
     @State private var error: String?
     @State private var newWord = ""
 
-    private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "navigateur", "recherche",
-                                "iphone", "iphone_ecriture", "outils"]
+    private static let order = ["reglage", "assistant", "objectif", "routine", "recette", "navigateur", "compte", "achat",
+                                "recherche", "iphone", "iphone_ecriture", "outils"]
+    private static let caps = [0, 20, 50, 100, 200, 500]
 
     var body: some View {
         List {
@@ -23,6 +24,18 @@ struct RulesView: View {
                     }
                 } footer: {
                     Text("« Tout seul » : Marcel le fait et te montre « Annuler ». « Demander » : il te le propose et attend « Valider ». « Bloqué » : il ne le fait pas. Un bot peut avoir ses propres règles, dans sa fiche.")
+                }
+                Section {
+                    Picker("Plafond par achat", selection: capBinding) {
+                        ForEach(Self.caps, id: \.self) { Text($0 == 0 ? "Rien seul" : "\($0) €").tag($0) }
+                    }
+                    if let mailbox = rules.mailbox {
+                        LabeledContent("Son adresse", value: mailbox)
+                    }
+                } header: {
+                    Text("Comptes et achats")
+                } footer: {
+                    Text("Marcel crée ses comptes avec sa propre adresse et ses identifiants, rangés dans le coffre de son navigateur. Pour payer, mets-y une carte virtuelle plafonnée, jamais ta vraie carte : ce plafond-là, la banque l'applique quoi qu'il arrive.")
                 }
                 Section {
                     ForEach(rules.privateWords ?? [], id: \.self) { word in
@@ -52,7 +65,7 @@ struct RulesView: View {
             }
             Section {
                 Label("Jamais supprimer ni épingler", systemImage: "lock")
-                Label("Jamais tes mots de passe ni tes cartes", systemImage: "lock")
+                Label("Jamais tes mots de passe ni ta vraie carte : son identité à lui", systemImage: "lock")
                 Label("Jamais tout seul si un e-mail ou un fichier est en jeu", systemImage: "lock")
                 Label("Jamais d'envoi d'e-mail : brouillon seulement", systemImage: "lock")
             } header: {
@@ -73,6 +86,23 @@ struct RulesView: View {
         } set: { value in
             rules?.rules[kind] = value
             Task { await save([kind: value]) }
+        }
+    }
+
+    private var capBinding: Binding<Int> {
+        Binding {
+            rules?.purchaseCap ?? 50
+        } set: { value in
+            rules?.purchaseCap = value
+            Task {
+                guard let api = store.settings.api else { return }
+                do {
+                    rules = try await api.setRules([:], purchaseCap: value)
+                } catch {
+                    self.error = "Pas enregistré : \(error.localizedDescription)"
+                    await load()
+                }
+            }
         }
     }
 
@@ -136,7 +166,8 @@ struct BotRulesSection: View {
     let assistantID: String
     @State private var rules: ActionRules?
 
-    private static let kinds = ["outils", "reglage", "routine", "recette", "recherche", "iphone", "iphone_ecriture"]
+    private static let kinds = ["outils", "reglage", "routine", "recette", "recherche", "compte", "achat", "iphone",
+                                "iphone_ecriture"]
 
     var body: some View {
         Section {

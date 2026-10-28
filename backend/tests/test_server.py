@@ -237,6 +237,43 @@ def test_routine_waits_for_an_email(monkeypatch):
         main.assistants.set_state("mail_seen", None)
 
 
+
+def test_routine_waits_for_an_email_in_marcels_mailbox(monkeypatch):
+    import asyncio
+
+    from app import main
+    from app.routines import reads_mail, valid_trigger
+
+    assert valid_trigger("boite") and valid_trigger("boite:ticketmaster") and not valid_trigger("boite:a b")
+    assert reads_mail("boite:ticketmaster") and not reads_mail("offre")
+    routine = main.routines.add("Places HYROX", "Préviens-moi si des places se libèrent", trigger="boite:ticketmaster")
+    assert routine.schedule == "À chaque e-mail de ticketmaster reçu par Marcel"
+    box = [{"id": "1", "from": "Ticketmaster <alertes@ticketmaster.fr>", "subject": "Bienvenue", "at": "",
+            "preview": "", "unread": True}]
+    started = []
+
+    async def messages(limit=10):
+        return box
+
+    async def fake_run(r, event=""):
+        started.append(event)
+
+    monkeypatch.setattr(main, "mailbox", main.Mailbox("cle-test", "marcel@agentmail.to"))
+    monkeypatch.setattr(main.mailbox, "messages", messages)
+    monkeypatch.setattr(main, "MEMORY_LLM_URL", "http://model.test")
+    monkeypatch.setattr(main, "run_routine", fake_run)
+    main.assistants.set_state("box_seen", None)
+    try:
+        assert asyncio.run(main.watch_box()) == 0  # the first look only notes what is there
+        box.insert(0, {"id": "2", "from": "pub@shop.com", "subject": "Promo", "at": "", "preview": "", "unread": True})
+        box.insert(0, {"id": "3", "from": "alertes@ticketmaster.fr", "subject": "Places dispo", "at": "",
+                       "preview": "HYROX Paris", "unread": True})
+        assert asyncio.run(main.watch_box()) == 1
+        assert "Places dispo" in started[0] and "Promo" not in started[0]
+    finally:
+        main.routines.delete(routine.id)
+        main.assistants.set_state("box_seen", None)
+
 def test_robot_screen_is_shown_and_hands_held():
     from app import main
 

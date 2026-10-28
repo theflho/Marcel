@@ -1,5 +1,6 @@
 """The bots, like Grok Bot's: a standing task, tasks taught once, shared skills, reachable on Telegram."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -439,3 +440,47 @@ def test_a_fact_is_remembered_for_a_bot_and_moved():
         raise AssertionError("an unknown bot is refused")
     except ToolError:
         pass
+
+
+def test_accounts_and_purchases_follow_the_rules_and_the_cap():
+    from app.main import MissionError, autonomy_note, hermes_chunk, vault_open
+
+    vault = {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "v", "function": {"name": "browser_vault"}}]}}]}
+    try:
+        state = client.put("/v1/rules", headers=AUTH,
+                           json={"rules": {"compte": "off", "achat": "ask"}, "purchase_cap": 80}).json()
+        assert state["purchase_cap"] == 80 and state["rules"]["achat"] == "ask"
+        assert not vault_open("Réserve-moi une table") and vault_open("Vas-y")
+        with pytest.raises(MissionError):
+            list(hermes_chunk(vault, {}, lambda: [], lambda i, t: True, True, vault_open("Réserve")))
+        assert "tu ne crées aucun compte" in autonomy_note() and "80 €" in autonomy_note()
+
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"achat": "auto"}})
+        assert vault_open("Réserve-moi une table") and "seul, jusqu'à 80 €" in autonomy_note()
+        assert list(hermes_chunk(vault, {}, lambda: [], lambda i, t: True, True, True))
+        assert client.put("/v1/rules", headers=AUTH, json={"purchase_cap": -1}).status_code == 422
+    finally:
+        client.put("/v1/rules", headers=AUTH, json={"rules": {"compte": "auto", "achat": "ask"}, "purchase_cap": 50})
+
+
+def test_mcp_stays_connected_during_the_emergency_stop_but_runs_no_tool():
+    import asyncio
+
+    from app.main import missions
+
+    def rpc(method: str, params: dict | None = None, key: str = "mcp-test"):
+        return client.post("/mcp", headers={"Authorization": f"Bearer {key}"},
+                           json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}})
+
+    assert rpc("ping", key="faux").status_code == 401
+    assert client.get("/health", headers=AUTH).json()["mcp"]["refused"]
+    asyncio.run(missions.emergency_stop())
+    try:
+        assert rpc("ping").status_code == 200
+        assert any(t["name"] == "marcel_boite" for t in rpc("tools/list").json()["result"]["tools"])
+        called = rpc("tools/call", {"name": "marcel_resume", "arguments": {}}).json()["result"]
+        assert called["isError"] and "Arrêt d'urgence" in called["content"][0]["text"]
+    finally:
+        missions.emergency_resume()
+    assert client.get("/health", headers=AUTH).json()["mcp"]["seen"]
+    assert not mcp_call("marcel_regles", {})["isError"]

@@ -90,10 +90,15 @@ nonisolated struct ActionRules: Decodable, Sendable {
     var bots: [String: [String: String]]?
     /// Words a web search question must never carry (name, town…), set by the user.
     var privateWords: [String]?
+    /// Euros Marcel may pay by himself per purchase (rule « achat »).
+    var purchaseCap: Int?
+    /// Marcel's own address, for the accounts he creates (nil: no mailbox).
+    let mailbox: String?
 
     enum CodingKeys: String, CodingKey {
-        case rules, labels, bots
+        case rules, labels, bots, mailbox
         case privateWords = "private_words"
+        case purchaseCap = "purchase_cap"
     }
 
     /// The level a bot works under for this kind: its own, else the general one.
@@ -111,10 +116,12 @@ private nonisolated struct RulesBody: Encodable {
     let rules: [String: String]
     let privateWords: [String]?
     let assistant: String?
+    let purchaseCap: Int?
 
     enum CodingKeys: String, CodingKey {
         case rules, assistant
         case privateWords = "private_words"
+        case purchaseCap = "purchase_cap"
     }
 }
 
@@ -313,7 +320,7 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
     var at: String
     /// "active" or "paused".
     var status: String
-    /// The event it waits for instead of the hour ("offre", "planning", "email", "email:sender"); "" = at the hour.
+    /// The event it waits for instead of the hour ("offre", "planning", "email", "email:sender", "boite", "boite:sender"); "" = at the hour.
     var trigger: String
     let conversationID: String
     /// "Chaque lundi à 8 h", written by the server.
@@ -606,7 +613,7 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
 
         let id: String
         let prompt: String
-        /// "" at an hour, else "offre", "planning", "email" or "email:sender".
+        /// "" at an hour, else "offre", "planning", "email", "email:sender", "boite" or "boite:sender".
         let trigger: String
         let days: String
         let at: String
@@ -1280,8 +1287,10 @@ nonisolated struct MarcelAPI: Sendable {
     }
 
     /// With a bot: its own levels ("" puts the general rule back for that kind).
-    func setRules(_ rules: [String: String], privateWords: [String]? = nil, assistant: String? = nil) async throws -> ActionRules {
-        try await call("PUT", "v1/rules", body: RulesBody(rules: rules, privateWords: privateWords, assistant: assistant))
+    func setRules(_ rules: [String: String], privateWords: [String]? = nil, assistant: String? = nil,
+                  purchaseCap: Int? = nil) async throws -> ActionRules {
+        try await call("PUT", "v1/rules", body: RulesBody(rules: rules, privateWords: privateWords, assistant: assistant,
+                                                          purchaseCap: purchaseCap))
     }
 
     /// "Valider" on what waited for the user's go-ahead. Returns the card, now done (with "Annuler").

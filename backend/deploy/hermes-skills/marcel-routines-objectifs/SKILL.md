@@ -11,7 +11,11 @@ description: Créer et lancer les routines de Marcel (tâches à heure fixe ou s
   heure HH:MM. Son résultat arrive dans une conversation à son nom sur l'iPhone.
   À la place de l'heure, `quand` la lance sur un événement : « offre » (nouvelle offre RMA),
   « planning » (planning modifié), « email » (nouvel e-mail) ou « email:expéditeur »
-  (« email:rh@exemple.fr »).
+  (« email:rh@exemple.fr »), ou « boite » / « boite:expéditeur » pour un e-mail reçu dans ta
+  propre boîte (regardée chaque minute) : c'est le bon déclencheur pour une alerte d'un site dont le
+  compte est à ton adresse (« boite:ticketmaster »). La consigne répond « Rien à signaler. » quand
+  l'e-mail ne compte pas ; sinon elle donne l'essentiel et le lien. Elle ne fait que prévenir :
+  acheter se fait ensuite dans la conversation, après son « Vas-y ».
 - **Objectif** : quelque chose à suivre dans le temps, sans heure précise (« trouver une mission
   mieux payée »). `marcel_creer_objectif` avec un rythme : hourly, daily, weekly ou manual.
 
