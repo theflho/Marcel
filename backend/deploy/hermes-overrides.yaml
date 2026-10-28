@@ -5,6 +5,6 @@
 # ${MARCEL_MCP_TOKEN} est remplacé, pour le serveur MCP « marcel »). Voir app/hermes_config.py.
 mcp_servers:
   marcel:
-    url: "http://marcel-api:8000/mcp"
+    url: "http://127.0.0.1:8000/mcp"
     headers:
       Authorization: "Bearer ${MARCEL_MCP_TOKEN}"

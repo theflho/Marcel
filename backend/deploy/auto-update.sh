@@ -4,7 +4,9 @@
 #   */5 * * * * cd ~/marcel/backend && ./deploy/auto-update.sh >> ~/marcel-auto-update.log 2>&1
 # Applique aussi les réglages de Hermes que Marcel a changés (deploy/hermes-overrides.yaml, voir
 # app/hermes_config.py) et ses skills, redémarre Hermes et remet l'ancienne config s'il ne répond
-# plus. Conteneur de Hermes : MARCEL_HERMES_CONTAINER dans .env (hermes par défaut). Hermes redémarre
+# plus. Où est Hermes, dans .env : MARCEL_HERMES_HOME (son dossier, /home/hermes/.hermes s'il existe,
+# sinon ~/.hermes) et MARCEL_HERMES_SERVICE (service systemd de l'utilisateur à qui appartient ce
+# dossier, hermes-gateway par défaut), ou MARCEL_HERMES_CONTAINER pour un Hermes en conteneur. Hermes redémarre
 # après chaque déploiement : il se reconnecte ainsi au serveur MCP de Marcel, qui vient de redémarrer
 # (sinon il peut perdre tous les outils marcel_*). Les missions en cours, elles, sont déjà coupées
 # par le redémarrage de marcel-api.
@@ -39,21 +41,44 @@ healthy() {
   return 1
 }
 
-skills() {  # Les skills de Marcel pour Hermes (~/.hermes/skills/marcel/), lues au prochain lancement.
-  # ~/.hermes appartient à l'utilisateur du conteneur Hermes (10000) : copie avec sudo, puis à lui.
-  local owner
-  owner=$(stat -c %u:%g "$HOME/.hermes")
-  sudo mkdir -p "$HOME/.hermes/skills/marcel"
-  sudo cp -R deploy/hermes-skills/. "$HOME/.hermes/skills/marcel/"
-  sudo chown -R "$owner" "$HOME/.hermes/skills/marcel"
+setting() { grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- || true; }
+
+hermes_home=$(setting MARCEL_HERMES_HOME)
+if [[ -z "$hermes_home" ]]; then
+  if sudo test -d /home/hermes/.hermes; then hermes_home=/home/hermes/.hermes; else hermes_home=$HOME/.hermes; fi
+fi
+hermes_container=$(setting MARCEL_HERMES_CONTAINER)
+hermes_service=$(setting MARCEL_HERMES_SERVICE)
+hermes_service=${hermes_service:-hermes-gateway}
+# Its folder belongs to Hermes' user (hermes, or 10000 in a container), not to ubuntu.
+hermes_owner=$(sudo stat -c %u:%g "$hermes_home")
+
+skills() {  # Les skills de Marcel pour Hermes ($hermes_home/skills/marcel/), lues au prochain lancement.
+  sudo mkdir -p "$hermes_home/skills/marcel"
+  sudo cp -R deploy/hermes-skills/. "$hermes_home/skills/marcel/"
+  sudo chown -R "$hermes_owner" "$hermes_home/skills/marcel"
 }
 
-hermes_container=$(grep -E '^MARCEL_HERMES_CONTAINER=' .env | cut -d= -f2- || true)
-hermes_container=${hermes_container:-hermes}
+restart_hermes() {  # its container if there is one, else its user's systemd service
+  if [[ -n "$hermes_container" ]]; then
+    docker restart "$hermes_container" >/dev/null
+  else
+    local user
+    user=$(sudo stat -c %U "$hermes_home")
+    sudo systemctl --machine="$user@" --user restart "$hermes_service"
+  fi
+}
 
-config_tool() {  # apply|restore … : app/hermes_config.py, avec ~/.hermes et deploy/ montés, sous l'utilisateur de Hermes
-  # ~/.hermes appartient à l'utilisateur du conteneur Hermes (10000), pas à ubuntu.
-  docker compose run --rm --no-deps -T --user "$(stat -c %u:%g "$HOME/.hermes")" -v "$HOME/.hermes:/hermes" \
+hermes_logs() {
+  if [[ -n "$hermes_container" ]]; then
+    docker logs --tail 80 "$hermes_container" 2>&1 || true
+  else
+    sudo journalctl --no-pager -n 80 _UID="$(sudo stat -c %u "$hermes_home")" 2>&1 || true
+  fi
+}
+
+config_tool() {  # apply|restore … : app/hermes_config.py, avec le dossier de Hermes et deploy/ montés, sous son utilisateur
+  docker compose run --rm --no-deps -T --user "$hermes_owner" -v "$hermes_home:/hermes" \
     -v "$PWD/deploy:/deploy:ro" marcel-api python -m app.hermes_config "$@"
 }
 
@@ -82,17 +107,17 @@ hermes_update() {  # après un déploiement réussi de $current → $target
   fi
   [[ "$(tail -n 1 <<< "${applied:-}")" == changed ]] && config_changed=1
   echo "$(date '+%F %T') Hermes redémarre (config changée : $config_changed, skills changées : $skills_changed)."
-  docker restart "$hermes_container" >/dev/null
+  restart_hermes
   if hermes_answers; then
     [[ $config_changed == 1 ]] && report deployed "$target" "Hermes redémarré avec sa nouvelle config"
     return 0
   fi
   local hermes_log
-  hermes_log=$(docker logs --tail 80 "$hermes_container" 2>&1 || true)
+  hermes_log=$(hermes_logs)
   if [[ $config_changed == 1 ]]; then
     config_tool restore /hermes/config.yaml >/dev/null 2>&1 || true
     echo "$overlay" >> .hermes-overrides-refused
-    docker restart "$hermes_container" >/dev/null
+    restart_hermes
     hermes_answers && report rolled_back "$target" "Hermes ne répondait plus avec la nouvelle config : ancienne remise" "$hermes_log" \
       || report failed "$target" "Hermes ne répond plus, même avec l'ancienne config" "$hermes_log"
   else

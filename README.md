@@ -231,15 +231,17 @@ pendant l'arrêt d'urgence. Chaque résultat est envoyé à `POST /v1/deploy/rep
 journal du build et du serveur quand ça rate (Marcel le lit avec `marcel_journaux`). Le script
 refuse de tourner deux fois en même temps (flock).
 
-**Config de Hermes par le code** : après un déploiement réussi, le script copie les skills dans
-`~/.hermes/skills/marcel/` et fusionne `backend/deploy/hermes-overrides.yaml` dans
-`~/.hermes/config.yaml` (`app/hermes_config.py`, commentaires gardés, copie
-`config.yaml.avant-marcel`), en conteneur jetable sous l'utilisateur `ubuntu`. Si quelque chose a
-changé, Hermes redémarre (`docker restart`, conteneur `MARCEL_HERMES_CONTAINER` du `.env`, `hermes`
-par défaut) ; s'il ne répond plus, l'ancienne config revient et celle-ci n'est plus retentée
-(`.hermes-overrides-refused`). Le fichier ne fait qu'ajouter ou changer des clés ; sont refusés :
-`model`, les fournisseurs, `gateway`, tout secret en clair (seul `${MARCEL_MCP_TOKEN}` est remplacé,
-pour le serveur MCP `marcel`, qui reste sur `http://marcel-api:…`).
+**Config de Hermes par le code** : après chaque déploiement réussi, le script copie les skills dans
+`skills/marcel/` du dossier de Hermes et fusionne `backend/deploy/hermes-overrides.yaml` dans son
+`config.yaml` (`app/hermes_config.py`, commentaires gardés, copie `config.yaml.avant-marcel`), en
+conteneur jetable sous l'utilisateur de Hermes. Sur le VPS, Hermes tourne sous l'utilisateur
+`hermes` (service systemd `hermes-gateway`, dossier `/home/hermes/.hermes`, réglables par
+`MARCEL_HERMES_HOME` et `MARCEL_HERMES_SERVICE`) ; un Hermes en conteneur se règle avec
+`MARCEL_HERMES_CONTAINER`. Puis Hermes redémarre, ce qui le reconnecte au MCP ; s'il ne répond plus,
+l'ancienne config revient et celle-ci n'est plus retentée (`.hermes-overrides-refused`). Le fichier
+ne fait qu'ajouter ou changer des clés ; sont refusés : `model`, les fournisseurs, `gateway`, tout
+secret en clair (seul `${MARCEL_MCP_TOKEN}` est remplacé, pour le serveur MCP `marcel`, qui reste
+interne : `http://127.0.0.1:8000/mcp` pour un Hermes sur la machine, `http://marcel-api:…` en conteneur).
 
 **Gros chantier, en option : Claude Code ou Codex.** Marcel peut aussi, s'il le juge mieux,
 rédiger une demande pour un agent de code (bloc ` ```demande-code `, carte « Envoyer à … »). L'agent
