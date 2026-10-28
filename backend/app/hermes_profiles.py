@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -33,6 +34,11 @@ from ruamel.yaml import YAML
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 PORT_ENV = re.compile(r"^\s*(export\s+)?API_SERVER_(ENABLED|HOST|PORT)=")
 KEY_ENV = re.compile(r"^\s*(export\s+)?API_SERVER_KEY=(.*)$")
+SETTING_ENV = re.compile(r"^\s*(export\s+)?([A-Z_]+)=")
+# Lists of the main profile's config.yaml every bot's profile gets too: the same Hermes tools in the
+# app, and the « marcel » platform plugin.
+COPIED = (("platform_toolsets", "api_server"), ("plugins", "enabled"))
+MAIN_CHANNEL = "marcel"
 
 
 def desired(path: Path) -> tuple[str, list[dict]]:
@@ -51,17 +57,23 @@ def plan(desired_path: Path, home: Path) -> list[str]:
             + [f"delete {name}" for name in sorted(present - wanted) if name.startswith(prefix)])
 
 
-def prepare(desired_path: Path, home: Path) -> list[str]:
+def prepare(desired_path: Path, home: Path, deliver_key: str = "") -> list[str]:
     _, profiles = desired(desired_path)
     main = main_settings(home)
     key = main_key(home)
-    changed = []
+    changed = ["changed main"] if finish_env(home, None, delivery(deliver_key, MAIN_CHANNEL), bot=False) else []
     for profile in profiles:
         folder = home / "profiles" / profile["name"]
         if folder.is_dir() and (finish_soul(folder, profile["soul"]) | finish_config(folder, profile["bot"], main)
-                                | finish_env(folder, key)):
+                                | finish_env(folder, key, delivery(deliver_key, profile["bot"]))):
             changed.append(f"changed {profile['name']}")
     return changed
+
+
+def delivery(deliver_key: str, bot: str) -> dict[str, str]:
+    """The « marcel » platform's settings (deploy/hermes-plugins/marcel): Marcel's key, and the bot
+    this profile's cron jobs and messages go to. None without the key: nothing to deliver with."""
+    return {"MARCEL_DELIVER_KEY": deliver_key, "MARCEL_HOME_CHANNEL": bot} if deliver_key else {}
 
 
 def finish_soul(folder: Path, soul: str) -> bool:
@@ -72,18 +84,19 @@ def finish_soul(folder: Path, soul: str) -> bool:
     return True
 
 
-def main_settings(home: Path) -> tuple[dict | None, list | None]:
-    """What every bot's profile copies from the main one: Marcel's MCP server, the API toolsets."""
+def main_settings(home: Path) -> tuple[dict | None, dict[tuple[str, str], list]]:
+    """What every bot's profile copies from the main one: Marcel's MCP server, and the COPIED lists."""
     path = home / "config.yaml"
     config = (YAML(typ="safe").load(path.read_text()) if path.exists() else None) or {}
     server = (config.get("mcp_servers") or {}).get("marcel")
-    toolsets = (config.get("platform_toolsets") or {}).get("api_server")
-    return (server if isinstance(server, dict) else None), (toolsets if isinstance(toolsets, list) else None)
+    copied = {(section, key): value for section, key in COPIED
+              if isinstance(value := (config.get(section) or {}).get(key), list)}
+    return (server if isinstance(server, dict) else None), copied
 
 
-def finish_config(folder: Path, bot: str, main: tuple[dict | None, list | None]) -> bool:
+def finish_config(folder: Path, bot: str, main: tuple[dict | None, dict[tuple[str, str], list]]) -> bool:
     path = folder / "config.yaml"
-    server, toolsets = main
+    server, copied = main
     if not path.exists() or server is None:
         return False  # the main profile has no Marcel server yet: nothing to copy
     wanted = dict(server) | {"headers": dict(server.get("headers") or {}) | {"X-Marcel-Bot": bot}}
@@ -91,13 +104,13 @@ def finish_config(folder: Path, bot: str, main: tuple[dict | None, list | None])
     yaml.preserve_quotes = True
     config = yaml.load(path.read_text()) or {}
     servers = config.setdefault("mcp_servers", {})
-    platforms = config.setdefault("platform_toolsets", {}) if toolsets is not None else {}
-    same_tools = toolsets is None or list(platforms.get("api_server") or []) == toolsets
-    if dict(servers.get("marcel") or {}) == wanted and same_tools:
+    same = dict(servers.get("marcel") or {}) == wanted and all(
+        list((config.get(section) or {}).get(key) or []) == value for (section, key), value in copied.items())
+    if same:
         return False
     servers["marcel"] = wanted
-    if toolsets is not None:
-        platforms["api_server"] = list(toolsets)
+    for (section, key), value in copied.items():
+        config.setdefault(section, {})[key] = list(value)
     out = io.StringIO()
     yaml.dump(config, out)
     path.write_text(out.getvalue())
@@ -112,16 +125,21 @@ def main_key(home: Path) -> str | None:
     return found[-1] if found else None
 
 
-def finish_env(folder: Path, key: str | None) -> bool:
+def finish_env(folder: Path, key: str | None, settings: dict[str, str], bot: bool = True) -> bool:
+    """A bot's .env: without the port lines, with the main API_SERVER_KEY. The main profile's own
+    (bot False) keeps its port and key. Both: the « marcel » platform's settings."""
     path = folder / ".env"
     if not path.exists():
         return False
     lines = path.read_text().splitlines(keepends=True)
-    kept = [line for line in lines if not PORT_ENV.match(line) and not (key is not None and KEY_ENV.match(line))]
-    if key is not None:
-        if kept and not kept[-1].endswith("\n"):
-            kept[-1] += "\n"
-        kept.append(f"API_SERVER_KEY={key}\n")
+    owned = SETTING_ENV.match
+    kept = [line for line in lines
+            if not (bot and (PORT_ENV.match(line) or (key is not None and KEY_ENV.match(line))))
+            and not ((m := owned(line)) and m.group(2) in settings)]
+    wanted = ([f"API_SERVER_KEY={key}\n"] if bot and key is not None else []) + [f"{k}={v}\n" for k, v in settings.items()]
+    if kept and wanted and not kept[-1].endswith("\n"):
+        kept[-1] += "\n"
+    kept += wanted
     if kept == lines:
         return False
     path.write_text("".join(kept))
@@ -131,8 +149,10 @@ def finish_env(folder: Path, key: str | None) -> bool:
 if __name__ == "__main__":
     command, *args = sys.argv[1:] or ["?"]
     if command in ("plan", "prepare") and len(args) == 2:
-        run = plan if command == "plan" else prepare
-        print("\n".join(run(Path(args[0]), Path(args[1]))))
+        if command == "plan":
+            print("\n".join(plan(Path(args[0]), Path(args[1]))))
+        else:  # the key the « marcel » platform delivers with: Marcel's MCP one, from its .env
+            print("\n".join(prepare(Path(args[0]), Path(args[1]), os.environ.get("MARCEL_MCP_TOKEN", ""))))
     else:
         print(__doc__)
         sys.exit(2)

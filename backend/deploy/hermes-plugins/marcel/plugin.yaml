@@ -1,0 +1,24 @@
+name: marcel
+label: Marcel
+kind: platform
+version: 1.0.0
+description: >
+  L'app Marcel (iPhone) comme plateforme de Hermes, à la façon de Telegram : ce que Hermes livre
+  (résultats des tâches cron, send_message) arrive dans la conversation du bot qui correspond au
+  profil, avec sa notification. Rien n'entre par ici : l'app parle à Hermes par son serveur d'API.
+  Installé et tenu à jour par deploy/auto-update.sh du dépôt Marcel.
+author: Marcel
+requires_env:
+  - name: MARCEL_DELIVER_KEY
+    description: "La clé MCP de Marcel (MARCEL_MCP_TOKEN), qui autorise la livraison"
+    prompt: "Clé de livraison Marcel"
+    password: true
+optional_env:
+  - name: MARCEL_DELIVER_URL
+    description: "L'adresse du serveur Marcel (défaut : http://127.0.0.1:8000)"
+    prompt: "Adresse de Marcel"
+    password: false
+  - name: MARCEL_HOME_CHANNEL
+    description: "Le bot de ce profil (marcel pour le profil principal) : où vont les tâches cron"
+    prompt: "Bot de ce profil"
+    password: false

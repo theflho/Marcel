@@ -32,3 +32,9 @@ platform_toolsets:
     - todo
     - vision
     - web
+# L'app comme plateforme de Hermes, à la façon de Telegram : le plugin « marcel »
+# (deploy/hermes-plugins/marcel, installé par auto-update.sh) livre ce que Hermes envoie seul
+# (tâches cron, send_message) dans la conversation du bot de chaque profil.
+plugins:
+  enabled:
+    - marcel

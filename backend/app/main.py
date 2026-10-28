@@ -901,12 +901,14 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   fonction n'existe pas : Hermes a perdu sa connexion au serveur Marcel. Dis-le en une phrase, et
   qu'il se répare au prochain déploiement ou en redémarrant Hermes sur le VPS. Tes skills (marcel-code, marcel-donnees, marcel-routines-objectifs)
   disent comment t'en servir.
-- Tout ce qui revient (chaque matin, chaque lundi, quand un mail arrive…) est une routine Marcel
-  (marcel_creer_routine), jamais une tâche cron de Hermes (outil cronjob) : le résultat d'une
-  tâche cron reste sur le serveur et n'arrive pas dans l'app, celui d'une routine arrive dans
-  l'app avec une notification. Une tâche cron de Hermes déjà créée, remplace-la par une routine,
-  puis supprime-la. Le tableau kanban de Hermes sert à découper un gros travail entre
-  plusieurs agents ; ce que l'utilisateur doit suivre va dans les objectifs et routines de Marcel.
+- Ce qui revient à heure fixe (chaque matin, chaque lundi, dans deux heures…) est une tâche cron
+  de Hermes (outil cronjob), comme sur Telegram : son résultat arrive tout seul dans l'app, dans
+  la conversation « Hermes » du bot qui l'a créée (son profil), avec une notification. Laisse la
+  livraison par défaut (origin), ou mets deliver: marcel. Ta règle « routine » vaut pour elle
+  aussi (Demander : son « oui » d'abord ; Bloqué : rien). Ce qui se déclenche sur un e-mail reçu
+  reste une routine Marcel (marcel_creer_routine, déclencheur email ou boite) : elle le lit en mode
+  protégé, ce que le cron ne sait pas faire. Le tableau kanban de Hermes sert à découper un gros
+  travail entre plusieurs agents.
 - Ici, pas d'outil clarify : une question à l'utilisateur, pose-la dans ta réponse. Pas besoin de
   text_to_speech non plus : l'app lit elle-même tes réponses à voix haute.
 - Ton propre code : tu peux modifier toi-même l'app et son serveur avec les outils marcel_code_*
@@ -3407,6 +3409,44 @@ async def hermes_profiles() -> dict:
                          for bot in assistants.all()]}
 
 
+# The app as a Hermes platform, like Telegram: what Hermes sends on its own (its cron jobs'
+# results, send_message) comes through the « marcel » plugin (deploy/hermes-plugins/marcel), each
+# profile to its own bot (MARCEL_HOME_CHANNEL), and waits in that bot's « Hermes » conversation
+# for the iPhone (GET /v1/bot-messages). Marcel decides nothing here: it carries.
+MAIN_CHANNEL = "marcel"
+HERMES_VIA = "Hermes"
+
+
+class HermesDelivery(BaseModel):
+    bot: str = Field(default=MAIN_CHANNEL, max_length=100)
+    text: str = Field(max_length=20000)
+
+
+async def delivered_text(text: str) -> AsyncIterator[str]:
+    yield text
+
+
+@app.post("/v1/hermes/deliver", include_in_schema=False)
+async def hermes_deliver(body: HermesDelivery, authorization: str = Header(default="")) -> dict:
+    scheme, _, token = authorization.partition(" ")
+    if not MCP_TOKEN:
+        raise HTTPException(404, "Not found")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(token, MCP_TOKEN):
+        raise HTTPException(401, "Invalid token")
+    bot = "" if body.bot == MAIN_CHANNEL else body.bot
+    if bot and not assistants.find(bot):
+        raise HTTPException(404, f"Bot inconnu : {body.bot}")
+    if not body.text.strip():
+        return {"id": 0}
+    chats = assistants.state("hermes_conversations", {})
+    if bot not in chats:
+        chats[bot] = str(uuid.uuid4()).upper()
+        assistants.set_state("hermes_conversations", chats)
+    mission = missions.start(chats[bot], lambda: delivered_text(body.text), title=f"{HERMES_VIA} · {body.bot}")
+    await asyncio.gather(mission.task, return_exceptions=True)
+    return {"id": assistants.add_inbox(bot, chats[bot], "", mission.id)}
+
+
 async def profile_url(bot_id: str) -> str:
     """The bot's own profile on the main gateway once it exists, else the main Hermes."""
     name = profile_name(bot_id)
@@ -4174,6 +4214,8 @@ async def tool_bot(args: dict) -> str:
         assistants.set_state("telegram_conversations", chats)
     history = []
     for entry in assistants.inbox(bot.id, limit=TELEGRAM_HISTORY):
+        if not entry["question"]:
+            continue  # sent by Hermes on its own, in its own conversation (POST /v1/hermes/deliver)
         past = missions.get(entry["mission_id"]) if valid_id(entry["mission_id"]) else None
         if past and past.status == DONE:
             history += [Message(role="user", content=entry["question"]),
@@ -4215,14 +4257,16 @@ async def pending_bot_messages() -> list[dict]:
     pending = []
     for entry in assistants.inbox(pending=True):
         mission = missions.get(entry["mission_id"]) if valid_id(entry["mission_id"]) else None
-        bot = assistants.find(entry["assistant"])
-        if not mission or not bot:
+        bot = assistants.find(entry["assistant"]) if entry["assistant"] else None
+        if not mission or (entry["assistant"] and not bot):
             assistants.mark_inbox_delivered(entry["id"])
             continue
         if mission.status == "running":
             continue
-        pending.append(entry | {"assistant_name": bot.name, "text": mission.text, "model": mission.model,
-                                "actions": mission.actions, "status": mission.status, "via": "Telegram"})
+        # No question: Hermes sent it on its own (POST /v1/hermes/deliver), else the user asked on Telegram.
+        pending.append(entry | {"assistant_name": bot.name if bot else "Marcel", "text": mission.text,
+                                "model": mission.model, "actions": mission.actions, "status": mission.status,
+                                "via": "Telegram" if entry["question"] else HERMES_VIA})
     return pending
 
 

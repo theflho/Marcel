@@ -82,7 +82,7 @@ def test_bot_profiles_are_planned_and_finished(tmp_path):
     (home / ".env").write_text("API_SERVER_KEY=cle-principale\nAPI_SERVER_ENABLED=true\n")
     (home / "config.yaml").write_text('mcp_servers:\n  marcel:\n    url: "http://127.0.0.1:8000/mcp"\n'
                                       '    headers:\n      Authorization: "Bearer k"\n'
-                                      'platform_toolsets:\n  api_server: [web, kanban]\n')
+                                      'platform_toolsets:\n  api_server: [web, kanban]\nplugins:\n  enabled: [marcel]\n')
     (bot / "config.yaml").write_text("model:\n  default: m\n")
     (bot / ".env").write_text("KEY=1\nAPI_SERVER_ENABLED=true\nAPI_SERVER_PORT=8642")
     wanted = tmp_path / "profiles.json"
@@ -95,8 +95,16 @@ def test_bot_profiles_are_planned_and_finished(tmp_path):
     assert prepare(wanted, home) == ["changed marcel-planning"]
     assert (bot / "SOUL.md").read_text() == "Tu es Planning."
     assert (bot / ".env").read_text() == "KEY=1\nAPI_SERVER_KEY=cle-principale\n"
+    assert prepare(wanted, home) == []  # nothing changes twice
+    # With Marcel's key, the « marcel » platform: each profile delivers to its own bot.
+    assert prepare(wanted, home, "cle-mcp") == ["changed main", "changed marcel-planning"]
+    assert (bot / ".env").read_text() == ("KEY=1\nAPI_SERVER_KEY=cle-principale\n"
+                                          "MARCEL_DELIVER_KEY=cle-mcp\nMARCEL_HOME_CHANNEL=planning\n")
+    assert (home / ".env").read_text() == ("API_SERVER_KEY=cle-principale\nAPI_SERVER_ENABLED=true\n"
+                                           "MARCEL_DELIVER_KEY=cle-mcp\nMARCEL_HOME_CHANNEL=marcel\n")
     config = (bot / "config.yaml").read_text()
     assert "X-Marcel-Bot: planning" in config and "Bearer k" in config and "default: m" in config
     from ruamel.yaml import YAML
     assert YAML(typ="safe").load(config)["platform_toolsets"]["api_server"] == ["web", "kanban"]
-    assert prepare(wanted, home) == []  # nothing changes twice
+    assert YAML(typ="safe").load(config)["plugins"]["enabled"] == ["marcel"]
+    assert prepare(wanted, home, "cle-mcp") == []  # nothing changes twice

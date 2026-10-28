@@ -71,6 +71,17 @@ enum BackgroundRefresh {
             }
         }
 
+        // What Hermes sent on its own (a cron job's result), like a Telegram message.
+        if let entries = try? await api.pendingBotMessages() {
+            for entry in entries.filter({ $0.question.isEmpty && !notified.contains("hermes-\($0.id)") }).prefix(3) {
+                notified.insert("hermes-\(entry.id)")
+                if !entry.assistant.isEmpty, !BotPrefs.notifies(entry.assistant) { continue }
+                let firstLine = entry.text.split(separator: "\n").first.map(String.init) ?? ""
+                await post(id: "hermes-\(entry.id)", title: entry.assistantName,
+                           body: AutoBlocks.strip(firstLine).replacingOccurrences(of: "**", with: ""))
+            }
+        }
+
         let waiting = ConversationCache().loadAll().compactMap { conversation -> (String, String)? in
             guard let reply = conversation.messages.last, reply.status == .streaming,
                   reply.serverID == nil || reply.serverID == settings.activeID,

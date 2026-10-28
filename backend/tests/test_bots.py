@@ -501,3 +501,22 @@ def test_each_bot_has_a_hermes_profile_and_its_tools_follow_its_rules():
         assert as_planning["isError"] and "bloqué" in as_planning["content"][0]["text"]
     finally:
         client.put("/v1/rules", headers=AUTH, json={"assistant": "planning", "rules": {"objectif": ""}})
+
+
+def test_what_hermes_sends_on_its_own_reaches_the_bot_in_the_app():
+    """The « marcel » platform plugin: a cron job's result, each profile to its own bot."""
+    deliver = lambda body, key="mcp-test": client.post(  # noqa: E731
+        "/v1/hermes/deliver", headers={"Authorization": f"Bearer {key}"}, json=body)
+    assert deliver({"bot": "planning", "text": "x"}, key="test").status_code == 401  # the app's key is not Hermes'
+    assert deliver({"bot": "nobody", "text": "x"}).status_code == 404
+    first = deliver({"bot": "planning", "text": "**Point du matin** : deux missions."}).json()["id"]
+    second = deliver({"bot": "planning", "text": "Point du soir."}).json()["id"]
+    main = deliver({"bot": "marcel", "text": "Rappel : facture EDF."}).json()["id"]
+    pending = {e["id"]: e for e in client.get("/v1/bot-messages", headers=AUTH).json()}
+    entry = pending[first]
+    assert entry["assistant"] == "planning" and entry["via"] == "Hermes" and entry["question"] == ""
+    assert entry["text"] == "**Point du matin** : deux missions." and entry["status"] == "done"
+    assert pending[second]["conversation_id"] == entry["conversation_id"]  # one conversation per bot
+    assert pending[main]["assistant"] == "" and pending[main]["assistant_name"] == "Marcel"
+    for entry_id in (first, second, main):
+        assert client.post(f"/v1/bot-messages/{entry_id}/delivered", headers=AUTH).status_code == 200

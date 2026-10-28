@@ -3,7 +3,7 @@
 # Sur le VPS, depuis backend/, toutes les 5 minutes (crontab -e) :
 #   */5 * * * * cd ~/marcel/backend && ./deploy/auto-update.sh >> ~/marcel-auto-update.log 2>&1
 # Applique aussi les réglages de Hermes que Marcel a changés (deploy/hermes-overrides.yaml, voir
-# app/hermes_config.py) et ses skills, redémarre Hermes et remet l'ancienne config s'il ne répond
+# app/hermes_config.py), ses skills et ses plugins, redémarre Hermes et remet l'ancienne config s'il ne répond
 # plus. Où est Hermes, dans .env : MARCEL_HERMES_HOME (son dossier, /home/hermes/.hermes s'il existe,
 # sinon ~/.hermes) et MARCEL_HERMES_SERVICE (service systemd de l'utilisateur à qui appartient ce
 # dossier, hermes-gateway par défaut), ou MARCEL_HERMES_CONTAINER pour un Hermes en conteneur. Hermes redémarre
@@ -62,6 +62,15 @@ skills() {  # Les skills de Marcel pour Hermes (skills/marcel/ du profil princip
   done
 }
 
+plugins() {  # Les plugins de Marcel pour Hermes (plugins/ du profil principal : le gateway les charge pour tous).
+  local name
+  for name in $(ls deploy/hermes-plugins); do
+    sudo mkdir -p "$hermes_home/plugins/$name"
+    sudo cp -R "deploy/hermes-plugins/$name/." "$hermes_home/plugins/$name/"
+    sudo chown -R "$hermes_owner" "$hermes_home/plugins/$name"
+  done
+}
+
 restart_hermes() {  # its container if there is one, else its user's systemd service
   if [[ -n "$hermes_container" ]]; then
     docker restart "$hermes_container" >/dev/null
@@ -115,8 +124,14 @@ profiles_sync() {  # Un profil Hermes par bot (app/hermes_profiles.py) : créés
                 && echo "$(date '+%F %T') profil Hermes retiré : $name" ;;
     esac
   done <<< "$plan"
-  profiles_tool prepare >/dev/null 2>>"$work/profiles.err" || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
+  local prepared
+  prepared=$(profiles_tool prepare 2>>"$work/profiles.err") || { echo "$(date '+%F %T') profils : $(tail -n 2 "$work/profiles.err")"; return 0; }
   echo "$digest" > .hermes-profiles-applied
+  # The main profile's own .env changed (the « marcel » platform's settings): its adapters read it at start.
+  if grep -qx "changed main" <<< "$prepared"; then
+    echo "$(date '+%F %T') Hermes redémarre (réglages de la plateforme marcel)."
+    restart_hermes
+  fi
 }
 
 config_tool() {  # apply|restore … : app/hermes_config.py, avec le dossier de Hermes et deploy/ montés, sous son utilisateur
@@ -134,8 +149,9 @@ hermes_answers() {
 
 hermes_update() {  # après un déploiement réussi de $current → $target
   local skills_changed=0 config_changed=0 applied overlay
-  git diff --quiet "$current" "$target" -- deploy/hermes-skills || skills_changed=1
+  git diff --quiet "$current" "$target" -- deploy/hermes-skills deploy/hermes-plugins || skills_changed=1
   skills
+  plugins
   # A config Hermes already refused isn't tried again; the next change of the file is.
   overlay=$(git hash-object deploy/hermes-overrides.yaml)
   if grep -qx "$overlay" .hermes-overrides-refused 2>/dev/null; then

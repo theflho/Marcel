@@ -962,7 +962,8 @@ final class ChatStore {
         }
     }
 
-    /// Puts what the user said to a bot on Telegram, and its reply, in that bot's conversation.
+    /// Puts what the user said to a bot on Telegram, and its reply, in that bot's conversation;
+    /// and what Hermes sent on its own (a cron job's result: no question), alone.
     func importBotMessages() async {
         guard !emergencyActive, let api = settings.api, let entries = try? await api.pendingBotMessages() else { return }
         for entry in entries {
@@ -977,11 +978,12 @@ final class ChatStore {
             if conversations.contains(where: { $0.id == id }) {
                 mutate(id) { conversation in
                     guard !conversation.messages.contains(where: { $0.missionID == entry.missionID }) else { return }
-                    conversation.messages += [question, reply]
+                    conversation.messages += entry.question.isEmpty ? [reply] : [question, reply]
                 }
             } else {
                 conversations.append(Conversation(id: id, title: "\(entry.assistantName) · \(entry.via)",
-                                                  messages: [question, reply], assistantID: entry.assistant))
+                                                  messages: entry.question.isEmpty ? [reply] : [question, reply],
+                                                  assistantID: entry.assistant.isEmpty ? nil : entry.assistant))
             }
             persist(id)
             try? await api.markBotMessageDelivered(id: entry.id)

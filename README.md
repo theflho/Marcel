@@ -289,9 +289,22 @@ terminal (`platform_toolsets.api_server`) plus le kanban, et les profils des bot
 Restent coupés : `clarify` (l'API n'a personne à qui poser la question : Marcel la pose dans sa
 réponse) et `text_to_speech` (le fichier son resterait sur le serveur : l'app lit les réponses à voix
 haute). `computer_use` n'apparaît que si le serveur a un écran (`cua-driver`).
-Tâches récurrentes : Marcel crée des **routines** (`marcel_creer_routine`), dont le résultat arrive
-dans l'app, et pas de tâches `cronjob` de Hermes, dont le résultat reste sur le VPS
-(`~/.hermes/cron/output`).
+
+## L'app, plateforme de Hermes (comme Telegram)
+
+Hermes est le cerveau, l'app un écran. Ce que Hermes envoie seul (résultats de ses tâches cron,
+`send_message`) passe par le plugin de plateforme `marcel` (`deploy/hermes-plugins/marcel`,
+installé dans `~/.hermes/plugins/` et activé par `plugins.enabled` dans hermes-overrides.yaml) :
+`POST /v1/hermes/deliver` (clé MCP), et Marcel le range dans la conversation « Hermes » du bot,
+que l'app relève avec les messages Telegram (`GET /v1/bot-messages`, `via: "Hermes"`) et notifie.
+Marcel ne décide rien : il transporte. Le serveur d'API de Hermes, lui, ne pousse jamais rien.
+- **Qui reçoit** : chaque profil livre à son bot. `app/hermes_profiles.py` met dans son `.env`
+  `MARCEL_DELIVER_KEY` (le `MARCEL_MCP_TOKEN`) et `MARCEL_HOME_CHANNEL=<bot>` (`marcel` pour le
+  profil principal) ; une tâche créée depuis l'app n'a pas d'origine et va donc à ce canal
+  d'accueil. Si le `.env` principal change, `auto-update.sh` redémarre Hermes.
+- **Ce qui reste à Marcel** : les routines sur un e-mail (`email`, `boite`), lues en mode protégé,
+  et les objectifs, dont les vérifications tournent sans outil qui agit et sans mémoire.
+  La règle « routine » vaut aussi pour une tâche cron.
 
 ## Un bot = un profil Hermes
 
