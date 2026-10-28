@@ -1013,6 +1013,8 @@ nonisolated struct MemoryChange: Encodable, Sendable {
     var tier: String?
     var importance: Int?
     var pinned: Bool?
+    /// Moves it: "" to the shared memory, a bot's id to that bot's own.
+    var owner: String?
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -1020,9 +1022,10 @@ nonisolated struct MemoryChange: Encodable, Sendable {
         try container.encodeIfPresent(tier, forKey: .tier)
         try container.encodeIfPresent(importance, forKey: .importance)
         try container.encodeIfPresent(pinned, forKey: .pinned)
+        try container.encodeIfPresent(owner, forKey: .owner)
     }
 
-    enum CodingKeys: String, CodingKey { case text, tier, importance, pinned }
+    enum CodingKeys: String, CodingKey { case text, tier, importance, pinned, owner }
 }
 
 /// Tokens spent today on the model, across Hermes, checks and memory (`/health`, from the LLM guard).

@@ -213,7 +213,9 @@ l'utilisateur demande (un script, une recherche, une surveillance, une modificat
 toi-même, en suivant ses règles et les skills de Marcel, au lieu de l'envoyer ailleurs : jamais vers Claude
 Code, Codex ou Théo. Ce que dit plus haut ta mission sur l'absence d'outil ne vaut pas ici. Une action
 réelle (envoyer, acheter, publier, supprimer) attend toujours son accord explicite ; tu ne remplis jamais
-un mot de passe ni une carte bancaire."""
+un mot de passe ni une carte bancaire.
+Ta mémoire est à toi : pour retenir un fait durable, appelle marcel_retenir avec "bot": "{bot}" (sans lui,
+il irait dans la mémoire partagée de Marcel, que lisent tous les bots)."""
 CUSTOM_ROLE = (
     "Ici, l'utilisateur t'a donné cette mission : {mission}\n"
     "Tu n'as aucun outil (ni web, ni envoi, ni terminal, ni fichiers) : tu réfléchis, conseilles, rédiges et "
@@ -783,7 +785,7 @@ def prompt(assistant: Assistant, values: dict, instructions: list[dict], recipes
     """With tools, the bot answers through the full Hermes and acts itself; without, it hands over to Marcel."""
     role = assistant.role.format(mission=values.get("role", "")) if assistant.custom else assistant.role
     return PROPOSAL_PROMPT.format(
-        followups=FOLLOWUPS, name=assistant.name, role=role, tools=TOOLS_NOTE if tools else NO_TOOLS_NOTE,
+        followups=FOLLOWUPS, name=assistant.name, role=role, tools=TOOLS_NOTE.replace("{bot}", assistant.id) if tools else NO_TOOLS_NOTE,
         actions=actions_note(ACTIONS.get(assistant.id, {}) if actions is None else actions),
         settings="\n".join(s.describe(values[s.key]) for s in assistant.settings),
         instructions="\n".join(f"- {n['text']}" for n in instructions) or "(aucune)",

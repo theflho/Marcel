@@ -1578,6 +1578,8 @@ class MemoryUpdate(BaseModel):
     tier: Literal["core", "archive"] | None = None
     importance: int | None = Field(default=None, ge=1, le=5)
     pinned: bool | None = None
+    # Moves it: "" to the shared memory, a bot's id to that bot's own.
+    owner: str | None = Field(default=None, max_length=64)
 
 
 class MemoryImport(BaseModel):
@@ -1607,7 +1609,11 @@ async def add_memory(body: MemoryCreate) -> dict:
 @app.patch("/v1/memory/{fact_id}", dependencies=[Depends(require_token)])
 async def update_memory(fact_id: str, body: MemoryUpdate) -> dict:
     find_fact(fact_id)
-    return memory.update(fact_id, reason="modifié à la main", **body.model_dump(exclude_unset=True)).public()
+    changes = body.model_dump(exclude_unset=True)
+    if (owner := changes.get("owner")) is not None and owner and not assistants.find(owner):
+        raise HTTPException(404, "Bot inconnu")
+    reason = "déplacé à la main" if set(changes) == {"owner"} else "modifié à la main"
+    return memory.update(fact_id, reason=reason, **changes).public()
 
 
 @app.delete("/v1/memory/{fact_id}", dependencies=[Depends(require_token)])
@@ -3998,17 +4004,24 @@ async def bot_message_delivered(entry_id: int) -> dict:
     return {"delivered": entry_id}
 
 
-@mcp.tool("marcel_retenir", "Ajoute un fait durable à la mémoire de Marcel (préférence, projet, information utile).",
-          {"texte": {"type": "string"}, "important": {"type": "boolean", "description": "Au noyau, envoyé à chaque fois"}},
+@mcp.tool("marcel_retenir", "Ajoute un fait durable à la mémoire de Marcel (préférence, projet, information utile), "
+          "ou à celle d'un bot quand tu parles en son nom.",
+          {"texte": {"type": "string"}, "important": {"type": "boolean", "description": "Au noyau, envoyé à chaque fois"},
+           "bot": {"type": "string", "description": "L'identifiant du bot dont c'est la mémoire (vide : la mémoire "
+                                                    "partagée, que lisent Marcel et tous les bots)"}},
           required=("texte",), read_only=False)
 def tool_remember(args: dict) -> str:
     text = " ".join(str(args.get("texte", "")).split())[:300]
     if len(text) < 3:
         raise ToolError("Rien à retenir.")
+    owner = str(args.get("bot") or "").strip()
+    if owner and not assistants.find(owner):
+        raise ToolError(f"Bot inconnu : {owner}. Les bots : " + ", ".join(a.id for a in assistants.all()))
     fact = memory.add(text, tier=CORE if args.get("important") else ARCHIVE, importance=4 if args.get("important") else 3,
-                      source="hermes", reason="retenu par Marcel")
+                      source="hermes", reason="retenu par Marcel", owner=owner)
     reindex.set()
-    return f"Retenu ({'noyau' if fact.tier == CORE else 'archives'}) : {fact.text}"
+    where = f"mémoire de {assistants.find(owner).name}" if owner else "mémoire partagée"
+    return f"Retenu ({where}, {'noyau' if fact.tier == CORE else 'archives'}) : {fact.text}"
 
 
 @mcp.tool("marcel_code_commencer",

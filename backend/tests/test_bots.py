@@ -422,3 +422,20 @@ def test_a_bot_has_its_own_memory(tmp_path):
     assert "80 euros maximum par place" in marcel and "Ce que tu as appris toi-même" not in marcel
     assert {f.owner for f in store.active()} == {"", "billets"}
     assert all(f.owner == "" for f in store.active(owner="planning"))
+
+
+
+def test_a_fact_is_remembered_for_a_bot_and_moved():
+    from app.main import ToolError, assistants, bot_context, tool_remember
+    planning = assistants.find("planning")
+    assert f"mémoire de {planning.name}" in tool_remember({"texte": "Préfère les créneaux du matin", "bot": "planning"})
+    assert '"bot": "planning"' in bot_context(planning, tools=True)[0]
+    fact = next(f for f in client.get("/v1/memory", headers=AUTH, params={"q": "créneaux matin"}).json()["items"]
+                if f["owner"] == "planning")
+    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": ""}).json()["owner"] == ""
+    assert client.patch(f"/v1/memory/{fact['id']}", headers=AUTH, json={"owner": "inconnu"}).status_code == 404
+    try:
+        tool_remember({"texte": "Quelque chose", "bot": "inconnu"})
+        raise AssertionError("an unknown bot is refused")
+    except ToolError:
+        pass

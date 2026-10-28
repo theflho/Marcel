@@ -125,10 +125,25 @@ struct MemoryView: View {
                         }
                         .tint(.orange)
                     }
+                    .contextMenu {
+                        // Shared: Marcel and every bot read it; a bot's own: only that bot does.
+                        Menu("Déplacer", systemImage: "arrow.left.arrow.right") {
+                            Button("Mémoire partagée", systemImage: "person.3") {
+                                Task { await save(MemoryChange(owner: ""), for: fact) }
+                            }
+                            .disabled((fact.owner ?? "").isEmpty)
+                            ForEach(store.assistants) { bot in
+                                Button("Mémoire de \(bot.name)") {
+                                    Task { await save(MemoryChange(owner: bot.id), for: fact) }
+                                }
+                                .disabled(fact.owner == bot.id)
+                            }
+                        }
+                    }
                 }
             } footer: {
                 if query.isEmpty && !shown.isEmpty {
-                    Text("Balaie vers la droite pour changer de niveau ou épingler, vers la gauche pour supprimer.")
+                    Text("Balaie vers la droite pour changer de niveau ou épingler, vers la gauche pour supprimer. Appui long › Déplacer : vers la mémoire partagée (Marcel et tous les bots) ou celle d'un seul bot.")
                 }
             }
         }
