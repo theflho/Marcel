@@ -281,6 +281,18 @@ lui) appelle `http://127.0.0.1:4000/v1` avec la clé « hermes » de `GUARD_KEYS
 reste que dans `guard.env`, et ses tokens comptent dans le budget du jour. llm-guard est publié sur
 `127.0.0.1:4000` seulement (`deploy/compose.vps.yaml`), puisque ce Hermes tourne hors de Docker.
 
+## Les outils de Hermes dans l'app
+
+Par défaut, le serveur d'API de Hermes (celui que l'app appelle) coupe `clarify`,
+`text_to_speech`, `computer_use` et `kanban`. `deploy/hermes-overrides.yaml` lui donne la liste du
+terminal (`platform_toolsets.api_server`) plus le kanban, et les profils des bots la recopient.
+Restent coupés : `clarify` (l'API n'a personne à qui poser la question : Marcel la pose dans sa
+réponse) et `text_to_speech` (le fichier son resterait sur le serveur : l'app lit les réponses à voix
+haute). `computer_use` n'apparaît que si le serveur a un écran (`cua-driver`).
+Tâches récurrentes : Marcel crée des **routines** (`marcel_creer_routine`), dont le résultat arrive
+dans l'app, et pas de tâches `cronjob` de Hermes, dont le résultat reste sur le VPS
+(`~/.hermes/cron/output`).
+
 ## Un bot = un profil Hermes
 
 Chaque bot (Planning, Pointage, Offres, Mails, Veille et ceux que l'utilisateur crée) est un
@@ -292,7 +304,8 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
   nouvelle version) : il crée les manquants avec `hermes profile create --clone-from default`
   (modèle, outils, MCP et skills du profil principal, jamais ses jetons de messagerie), retire ceux
   dont le bot n'existe plus, puis `app/hermes_profiles.py` finit chacun : `SOUL.md`, serveur MCP
-  `marcel` copié du profil principal avec `X-Marcel-Bot: <bot>`, `.env` sans `API_SERVER_*` (le port
+  `marcel` copié du profil principal avec `X-Marcel-Bot: <bot>`, mêmes outils d'API
+  (`platform_toolsets.api_server`), `.env` sans `API_SERVER_*` (le port
   reste au gateway principal). Rien n'est refait tant que la liste et la config principale ne
   changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
 - **Qui répond** : une conversation d'un bot avec outils (règle « outils ») et sa tâche permanente
