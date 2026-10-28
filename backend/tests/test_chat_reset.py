@@ -49,6 +49,8 @@ def test_reset_removes_bots_history_and_stale_deliveries_but_keeps_user_rules(re
     db, urls = reset
     custom = main.assistants.create("Test", "Mission utile", "tree")
     main.assistants.set_state("rules", {"achat": "ask"})
+    installed = {"endpoint": main.HERMES_URL, "revisions": main.context_revisions(main.context_snapshot())}
+    main.assistants.set_state("hermes_context_installed", installed)
     main.assistants.add_instruction("planning", "Ancienne consigne")
     main.assistants.set_state("hermes_conversations", {"": "OLD"})
     mission = Mission(uuid.uuid4().hex, "OLD", status="done", text="Ancienne conversation")
@@ -69,6 +71,7 @@ def test_reset_removes_bots_history_and_stale_deliveries_but_keeps_user_rules(re
     assert client.get("/v1/missions", headers=AUTH).json() == []
     assert client.get("/v1/bot-messages", headers=AUTH).json() == []
     assert main.assistants.state("rules") == {"achat": "ask"}
+    assert main.assistants.state("hermes_context_installed") == installed
     assert not main.missions.emergency
     assert not main.assistants.find("planning") and not main.assistants.find(custom.id)
     assert main.assistants.value("planning", "hour") == 19  # internal robot configuration remains valid

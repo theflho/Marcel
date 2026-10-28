@@ -560,7 +560,7 @@ class AssistantStore:
                           "assistant_recipes", "bot_skills", "bot_inbox"):
                 self._db.execute(f"DELETE FROM {table}")
             for name in ("automation_owners", "skills", "reads", "bot_rules", "telegram_conversations",
-                         "hermes_conversations", "hermes_context_installed"):
+                         "hermes_conversations"):
                 self._db.execute("DELETE FROM robot_state WHERE name=?", (name,))
             self._db.execute("INSERT OR REPLACE INTO robot_state VALUES ('builtin_bots_enabled', 'false')")
 
