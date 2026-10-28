@@ -747,9 +747,10 @@ def iphone_card(request: dict, level: str, outside: bool, assistant: str = "") -
 
 
 def bot_tools(assistant: bots.Assistant, mail: str = "") -> bool:
-    """Whether a bot answers through the full Hermes, with Marcel's tools (rule « outils », on by
-    default), the Mails bot too. Never with e-mails in front of it: strangers write them (protected mode)."""
-    return not mail and rule("outils", assistant.id) == "auto"
+    """Whether a bot answers through its Hermes profile, with Marcel's tools: always (a bot is a
+    Hermes profile), the Mails bot too. Never with e-mails in front of it: strangers write them
+    (protected mode)."""
+    return not mail
 
 
 # A request for tools (a script, the web…) and not about the mailbox: the Mails bot answers it with its
@@ -785,9 +786,9 @@ def bot_context(assistant: bots.Assistant, device: str = "", mail: str = "",
 
 def start_assistant_mission(request: ChatRequest, model: str, title: str, note: str, facts, device: str,
                             mail: str, extra: list[dict]) -> dict:
-    """A message in a bot's conversation. With the rule « outils » (the default), it goes to the full
-    Hermes, like Marcel's: the bot searches, writes scripts, changes the code itself. Otherwise (and
-    always for e-mails), to the model alone (or the restricted Hermes), with no tool."""
+    """A message in a bot's conversation. It goes to the bot's Hermes profile, like Marcel's to the
+    main one: the bot searches, writes scripts, changes the code itself. With e-mails, to the model
+    alone (or the restricted Hermes), with no tool."""
     assistant = assistants.find(request.assistant)
     tools = bot_tools(assistant, mail)
     context, web = bot_context(assistant, device, mail, tools)
@@ -810,7 +811,7 @@ def start_assistant_mission(request: ChatRequest, model: str, title: str, note: 
     inner = (lambda: searching(request, call, note, web)) if web or request.search else (lambda: call(request, note))
     extra.append({"id": "shield", "name": assistant.name, "status": "done",
                   "detail": "Outils de Marcel : web, terminal, code ; une action réelle attend ton accord" if tools
-                  else "Modèle seul, sans aucun outil (règle « outils » ou e-mails)"})
+                  else "Modèle seul, sans aucun outil (e-mails)"})
     # What it learns here is its own memory (Réglages › Mémoire, under its name), not Marcel's.
     mission = missions.start(request.conversation_id,
                              lambda: with_memory(request, inner, facts, extra, learn=not request.private),
@@ -1086,7 +1087,6 @@ RULE_KINDS = {
     "recette": "Retenir une tâche apprise (bots)",
     "iphone": "Lire sur l'iPhone (rappels, contacts, position, agenda)",
     "iphone_ecriture": "Ajouter un rappel sur l'iPhone",
-    "outils": "Les bots ont les outils de Marcel (web, terminal, code)",
 }
 RULE_VALUES = ("auto", "ask", "off")
 OFF_CARD = "auto-off-"
@@ -2422,7 +2422,7 @@ async def run_routine(routine, event: str = ""):
         mail, extra = "", []
     else:
         mail, extra = await mail_context(routine.prompt, force=task)
-    # A bot's task has its tools, like its conversations (rule « outils »), unless e-mails are in front of it.
+    # A bot's task has its tools, like its conversations, unless e-mails are in front of it.
     tools = task and bot_tools(bot, mail or (from_mail and event))
     browser, profile = True, ""
     if task:

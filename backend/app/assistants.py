@@ -205,7 +205,7 @@ le bloc suivi) :
 L'app l'affiche avec un bouton « Demander à Marcel » : la demande ne part que si l'utilisateur le touche,
 et Marcel la traite dans sa conversation. Dis-le en une phrase (« touche Demander à Marcel »), sans
 prétendre que c'est fait."""
-# Given when the bot answers through the full Hermes (rule « outils », the default): it acts itself.
+# Given when the bot answers through its Hermes profile (always, but for e-mails): it acts itself.
 TOOLS_NOTE = """Ici tu as les mêmes outils que Marcel (ceux de son agent Hermes) : web et navigateur, terminal,
 fichiers, exécution de code, ses outils marcel_* (données, routines, objectifs, réglage des bots) et
 marcel_code_* (modifier le code de l'app et du serveur, ouvrir la pull request, fusionner au vert). Ce que

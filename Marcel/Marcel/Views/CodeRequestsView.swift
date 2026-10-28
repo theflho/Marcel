@@ -331,7 +331,7 @@ struct HandoffCard: View {
                     .foregroundStyle(Color.accentColor)
             }
             Text(handoff.demande).font(.footnote)
-            Text("Ce bot n'a pas d'outils. Marcel, lui, peut changer l'app, régler les bots, créer un objectif… La demande part dans sa conversation.")
+            Text("Ce bot lisait des e-mails, donc sans outils. Marcel, lui, peut changer l'app, régler les bots, créer un objectif… La demande part dans sa conversation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             switch message.proposalDecision {

@@ -321,7 +321,7 @@ et les prend à chaud : créer ou retirer un profil ne redémarre rien.
   (`platform_toolsets.api_server`), `.env` sans `API_SERVER_*` (le port
   reste au gateway principal). Rien n'est refait tant que la liste et la config principale ne
   changent pas (`.hermes-profiles-applied`). Seuls les profils `marcel-*` sont touchés.
-- **Qui répond** : une conversation d'un bot avec outils (règle « outils ») et sa tâche permanente
+- **Qui répond** : une conversation d'un bot (toujours avec outils, sauf avec des e-mails) et sa tâche permanente
   vont à `HERMES_URL/p/marcel-<bot>/` dès que le profil répond (vérifié chaque minute) ; avant, au
   Hermes principal, comme sans profil. Les e-mails restent en Mode protégé (modèle seul, sans profil).
 - **Ses outils** : l'en-tête `X-Marcel-Bot` fait suivre aux outils `marcel_*` les règles de ce bot, et

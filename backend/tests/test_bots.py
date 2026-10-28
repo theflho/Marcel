@@ -393,8 +393,8 @@ def test_marcel_codes_big_work_himself_unless_an_agent_is_chosen():
         assistants.set_state("code_agent", before or "marcel")
 
 
-def test_bots_get_marcels_tools_by_default_never_with_mails():
-    from app.main import assistants, bot_context, bot_tools, mail_needed
+def test_bots_always_get_marcels_tools_never_with_mails():
+    from app.main import assistants, bot_context, bot_tools, mail_needed, rules
     planning = assistants.find("planning")
     assert bot_tools(planning) and bot_tools(assistants.find("mails"))
     assert not bot_tools(planning, mail="un e-mail") and not bot_tools(assistants.find("mails"), mail="un e-mail")
@@ -404,11 +404,8 @@ def test_bots_get_marcels_tools_by_default_never_with_mails():
     with_tools, web = bot_context(planning, tools=True)
     assert "les mêmes outils que Marcel" in with_tools and "```pour-marcel" not in with_tools and not web
     assert "```pour-marcel" in bot_context(planning)[0]
-    try:
-        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": "off"}, "assistant": "planning"})
-        assert not bot_tools(planning) and bot_tools(assistants.find("pointage"))
-    finally:
-        client.put("/v1/rules", headers=AUTH, json={"rules": {"outils": ""}, "assistant": "planning"})
+    # No rule turns them off: a bot is a Hermes profile.
+    assert bot_tools(planning) and bot_tools(assistants.find("pointage")) and "outils" not in rules()
 
 
 def test_a_bot_has_its_own_memory(tmp_path):
