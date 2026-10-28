@@ -156,6 +156,10 @@ lui, suit quelque chose jusqu'à ce qu'il aboutisse. `backend/app/routines.py`.
   manquée (serveur arrêté) part à son retour jusqu'à 3 h plus tard, sinon elle attend la suivante.
   Plafond : `MARCEL_ROUTINES_MAX_PER_DAY` (10). Rien pendant l'arrêt d'urgence ni quand la part
   « vérifications » du budget de tokens est dépensée. « Lancer » (balayage) la fait partir tout de suite.
+- Sur un e-mail : `email` / `email:expéditeur` (Gmail, regardé toutes les 5 min) ou `boite` /
+  `boite:expéditeur` (la boîte AgentMail de Marcel, regardée chaque minute : pour les alertes d'un site
+  dont le compte est à son adresse, ex. `boite:ticketmaster`). Lu en Mode protégé ; « Rien à
+  signaler. » ne dérange pas. Le premier relevé note seulement ce qui est là.
 - **Sans outil qui agit** : la routine va au Hermes des vérifications (`hermes-checks`), sans la
   mémoire (il lit le web) mais avec les totaux, le planning, les objectifs et le dernier compte rendu
   du robot ; si elle parle d'e-mails, au **modèle seul** sans aucun outil (Mode protégé), mémoire

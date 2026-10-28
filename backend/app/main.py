@@ -40,7 +40,7 @@ from .missions import DONE, MissionError, MissionStore, valid_id
 from .offers import OfferStore
 from .planning import PlanningStore
 from . import websearch
-from .routines import RoutineStore, days_from_names, next_slot, valid_time, valid_trigger
+from .routines import RoutineStore, days_from_names, next_slot, reads_mail, valid_time, valid_trigger
 from .semantic import LOCAL_MODEL, Embedder, SemanticIndex, digest
 from .proactive import (APPROVED, DISMISSED, FAILED, LATER, NOTHING, NOTIFY, OPENED, IdeaStore, in_hours,
                         is_due, parse_hours)
@@ -855,7 +855,10 @@ tableaux, code). Ce que l'app sait faire, à expliquer quand ça aide, sans l'in
   (jours : noms des jours, « semaine », « week-end » ou [] pour tous les jours). Au lieu d'une heure,
   elle peut attendre un événement lu par le robot RMA : ajoute "quand": "offre" (à chaque nouvelle
   offre) ou "quand": "planning" (quand le planning change), ou un e-mail : "quand": "email" (chaque
-  nouvel e-mail) ou "quand": "email:adresse" (un expéditeur). Pour « préviens-moi d'un e-mail
+  nouvel e-mail) ou "quand": "email:adresse" (un expéditeur), ou un e-mail reçu dans ta propre boîte :
+  "quand": "boite" ou "quand": "boite:expéditeur" (regardée chaque minute). Pour une alerte d'un site
+  (places de concert revenues, prix), le compte du site est créé avec ton adresse (par toi ou
+  par lui), l'alerte y est activée, et la routine "boite:ticketmaster" le prévient avec le lien. Pour « préviens-moi d'un e-mail
   urgent », c'est "quand": "email" avec une consigne qui ne parle que s'il est urgent et sinon répond
   « Rien à signaler. » (rien ne le dérange alors). Brief du matin : s'il en veut un, crée
   une routine à 07:30 dont la consigne couvre les missions du jour, les offres nouvelles, les
@@ -2382,7 +2385,7 @@ async def run_routine(routine, event: str = ""):
     task = routine.task and bot is not None
     content = (TASK_PROMPT.format(schedule=routine.schedule.lower(), prompt=routine.prompt) if task else
                ROUTINE_PROMPT.format(schedule=routine.schedule.lower(), title=routine.title, prompt=routine.prompt))
-    from_mail = routine.trigger.startswith("email")
+    from_mail = reads_mail(routine.trigger)
     if event:
         content += ("\n\nCe qui vient d'arriver :\n" + untrusted("E-MAILS REÇUS", event) if from_mail
                     else "\n\nCe qui vient d'arriver (lu par le robot RMA) :\n" + event)
@@ -2502,7 +2505,7 @@ async def finish_routine(routine, mission, run_id: int) -> None:
             routines.finish_run(run_id, "done")
             if routine.once:
                 routines.update(routine.id, status="paused")
-            if routine.trigger.startswith("email") and mission.text.lstrip("*_ ").lower().startswith("rien à signaler"):
+            if reads_mail(routine.trigger) and mission.text.lstrip("*_ ").lower().startswith("rien à signaler"):
                 # Every e-mail wakes it up: only what matters reaches the iPhone.
                 routines.mark_delivered(run_id)
         else:
@@ -2519,7 +2522,7 @@ def task_cards(routine, text: str) -> list[dict]:
     text = bots.FOLLOWUP_BLOCK.sub("", text)
     if not any(kind == "reglage" for kind, _ in AUTO_BLOCK.findall(text)):
         return []
-    if routine.trigger.startswith("email") or routine.assistant == "mails":
+    if reads_mail(routine.trigger) or routine.assistant == "mails":
         return [{"id": "auto-outside", "name": "Réglage", "status": "cancelled",
                  "detail": "Pas appliqué tout seul : la tâche a lu des e-mails. Appuie sur « Appliquer » si tu veux."}]
     if rule("reglage", routine.assistant) != "auto":
@@ -2530,12 +2533,14 @@ def task_cards(routine, text: str) -> list[dict]:
 
 
 MAIL_WATCH_EVERY = 5 * 60
+# Marcel's own mailbox costs one API call: looked at every minute (an alert is worth minutes).
+BOX_WATCH_EVERY = 60
 MAIL_SEEN_KEEP = 300
 
 
 def mails_for(routine, mails: list[dict]) -> list[dict]:
     """The new e-mails a routine waits for: all of them, or those from its sender."""
-    if not routine.trigger.startswith("email:"):
+    if ":" not in routine.trigger:
         return mails
     sender = routine.trigger.split(":", 1)[1].lower()
     return [m for m in mails if sender in m["from"].lower()]
@@ -2565,6 +2570,31 @@ async def watch_mail() -> int:
     return started
 
 
+async def watch_box() -> int:
+    """The same for Marcel's own mailbox (« boite », « boite:expéditeur »): an alert a site sends
+    him (tickets back on sale, a price) wakes the routine, read in protected mode."""
+    waiting = routines.waiting_for("boite")
+    if not waiting or not mailbox.connected or missions.emergency or MEMORY_LLM_URL == HERMES_URL:
+        return 0
+    try:
+        mails = await mailbox.messages(20)
+    except MailboxError as error:
+        log.warning("mailbox watch: %s", error)
+        return 0
+    seen = assistants.state("box_seen")
+    fresh = [m for m in mails if seen is not None and m["id"] not in seen]
+    assistants.set_state("box_seen", ([m["id"] for m in mails] + (seen or []))[:MAIL_SEEN_KEEP])
+    started = 0
+    for routine in waiting:
+        if not (matching := mails_for(routine, fresh)) or routine_refusal(routine, scheduled=True):
+            continue
+        what = "\n".join(f"- {m['at'][:16].replace('T', ' ')} · {m['from']} · {m['subject']} — {m['preview'][:400]}"
+                         for m in matching)
+        await run_routine(routine, what)
+        started += 1
+    return started
+
+
 async def run_due_routines() -> int:
     if missions.emergency:
         return 0
@@ -2581,7 +2611,7 @@ async def run_due_routines() -> int:
 
 
 async def routine_loop() -> None:
-    last_mail_watch = 0.0
+    last_mail_watch = last_box_watch = 0.0
     while True:
         await asyncio.sleep(ROUTINE_TICK)
         try:
@@ -2591,6 +2621,10 @@ async def routine_loop() -> None:
                 last_mail_watch = time.time()
                 if woke := await watch_mail():
                     log.info("routines: %d woken by e-mail", woke)
+            if time.time() - last_box_watch >= BOX_WATCH_EVERY:
+                last_box_watch = time.time()
+                if woke := await watch_box():
+                    log.info("routines: %d woken by Marcel's mailbox", woke)
         except Exception:
             log.exception("routines failed")
 
@@ -3336,7 +3370,7 @@ async def set_task(assistant_id: str, body: BotTask) -> dict:
     assistant = find_assistant(assistant_id)
     if body.trigger and not valid_trigger(body.trigger):
         raise HTTPException(400, f"Déclencheur inconnu : {body.trigger}")
-    if body.trigger.startswith("email") and MEMORY_LLM_URL == HERMES_URL and not MOCK:
+    if reads_mail(body.trigger) and MEMORY_LLM_URL == HERMES_URL and not MOCK:
         raise HTTPException(409, "Tâche sur e-mail impossible sans accès direct au modèle (mode protégé).")
     try:
         if routine := routines.task_of(assistant.id):
@@ -3820,7 +3854,8 @@ def tool_add_goal(args: dict) -> str:
            "heure": {"type": "string", "description": "HH:MM, heure de l'utilisateur"},
            "quand": {"type": "string",
                      "description": "À la place de l'heure : « offre » (nouvelle offre), « planning » (planning "
-                                    "modifié), « email » (nouvel e-mail) ou « email:expéditeur »"}},
+                                    "modifié), « email » (nouvel e-mail) ou « email:expéditeur », « boite » (e-mail "
+                                    "reçu dans ta propre boîte) ou « boite:expéditeur »"}},
           required=("titre", "consigne"), read_only=False)
 def tool_add_routine(args: dict) -> str:
     ask_first("routine")

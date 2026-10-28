@@ -75,7 +75,8 @@ private struct BotTaskEditor: View {
 
     /// What wakes it up: the hour, or an event the server watches.
     private enum When: String, CaseIterable {
-        case hour = "", offer = "offre", planning = "planning", mail = "email", sender = "email:"
+        case hour = "", offer = "offre", planning = "planning", mail = "email", sender = "email:", box = "boite",
+             boxSender = "boite:"
 
         var label: String {
             switch self {
@@ -84,15 +85,20 @@ private struct BotTaskEditor: View {
             case .planning: "Quand le planning RMA change"
             case .mail: "À chaque nouvel e-mail"
             case .sender: "À chaque e-mail d'un expéditeur"
+            case .box: "À chaque e-mail reçu par Marcel"
+            case .boxSender: "À chaque e-mail reçu par Marcel d'un expéditeur"
             }
         }
+
+        /// Waits for one sender, typed below.
+        var takesSender: Bool { self == .sender || self == .boxSender }
     }
 
     private static let dayLetters = ["L", "M", "M", "J", "V", "S", "D"]
     private static let dayNames = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"]
 
     private var trigger: String {
-        when == .sender ? When.sender.rawValue + sender.trimmingCharacters(in: .whitespaces) : when.rawValue
+        when.takesSender ? when.rawValue + sender.trimmingCharacters(in: .whitespaces) : when.rawValue
     }
 
     var body: some View {
@@ -110,8 +116,9 @@ private struct BotTaskEditor: View {
                     Picker("Déclencheur", selection: $when) {
                         ForEach(When.allCases, id: \.self) { Text($0.label).tag($0) }
                     }
-                    if when == .sender {
-                        TextField("Adresse ou nom de domaine, ex. rma.fr", text: $sender)
+                    if when.takesSender {
+                        TextField(when == .boxSender ? "Adresse ou nom de domaine, ex. ticketmaster"
+                                                     : "Adresse ou nom de domaine, ex. rma.fr", text: $sender)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.emailAddress)
@@ -160,7 +167,7 @@ private struct BotTaskEditor: View {
                         }
                     }
                     .disabled(prompt.trimmingCharacters(in: .whitespaces).count < 3 || saving
-                              || (when == .sender && sender.trimmingCharacters(in: .whitespaces).count < 2))
+                              || (when.takesSender && sender.trimmingCharacters(in: .whitespaces).count < 2))
                 }
             }
             .onAppear {
@@ -168,9 +175,9 @@ private struct BotTaskEditor: View {
                 prompt = task.prompt
                 days = Set(task.days.split(separator: ",").compactMap { Int($0) })
                 paused = task.status == "paused"
-                if task.trigger.hasPrefix(When.sender.rawValue) {
-                    when = .sender
-                    sender = String(task.trigger.dropFirst(When.sender.rawValue.count))
+                if let kind = [When.sender, .boxSender].first(where: { task.trigger.hasPrefix($0.rawValue) }) {
+                    when = kind
+                    sender = String(task.trigger.dropFirst(kind.rawValue.count))
                 } else {
                     when = When(rawValue: task.trigger) ?? .hour
                 }

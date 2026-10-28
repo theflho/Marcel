@@ -320,7 +320,7 @@ nonisolated struct Routine: Codable, Hashable, Sendable, Identifiable {
     var at: String
     /// "active" or "paused".
     var status: String
-    /// The event it waits for instead of the hour ("offre", "planning", "email", "email:sender"); "" = at the hour.
+    /// The event it waits for instead of the hour ("offre", "planning", "email", "email:sender", "boite", "boite:sender"); "" = at the hour.
     var trigger: String
     let conversationID: String
     /// "Chaque lundi à 8 h", written by the server.
@@ -613,7 +613,7 @@ nonisolated struct Assistant: Decodable, Hashable, Sendable, Identifiable {
 
         let id: String
         let prompt: String
-        /// "" at an hour, else "offre", "planning", "email" or "email:sender".
+        /// "" at an hour, else "offre", "planning", "email", "email:sender", "boite" or "boite:sender".
         let trigger: String
         let days: String
         let at: String
