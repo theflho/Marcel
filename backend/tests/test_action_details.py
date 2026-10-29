@@ -37,10 +37,12 @@ def test_wrapper_preview_names_the_real_tool_without_dumping_arguments():
     assert text == "chemin=backend/app/main.py · debut=10" and "secret" not in text
 
 
-def test_installer_preserves_future_native_preview_builders():
+def test_installer_keeps_native_preview_fallback_and_is_idempotent():
     existing = lambda args, limit: "native builder"
     display = SimpleNamespace(_PREVIEW_BUILDERS={"tool_call": existing, "tool_describe": existing})
     install = progress_module().install_progress_previews
     assert install(display) and not install(display)
-    assert display._PREVIEW_BUILDERS["tool_call"] is existing
+    assert display._PREVIEW_BUILDERS["tool_call"]({}, 80) == "native builder"
+    assert display._PREVIEW_BUILDERS["tool_describe"]({}, 80) == "native builder"
+    assert display._PREVIEW_BUILDERS["tool_describe"]({"names": ["read_file"]}, 80) == "read_file"
     assert not progress_module().install_progress_previews(SimpleNamespace())

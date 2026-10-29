@@ -57,8 +57,14 @@ def install_progress_previews(display=None) -> bool:
         extra[f"marcel_{tool}"] = app_target_preview
     changed = False
     for name, builder in extra.items():
-        # Preserve future Hermes versions that already provide these builders; registration is idempotent.
-        if name not in builders:
-            builders[name] = builder
-            changed = True
+        original = builders.get(name)
+        if getattr(original, "_marcel_progress", False):
+            continue
+        # Some Hermes versions already register a friendly label that drops the real tool name
+        # and target. Enrich recognized calls, retaining that builder for unfamiliar arguments.
+        def enriched(args, limit, preferred=builder, fallback=original):
+            return preferred(args, limit) or (fallback(args, limit) if fallback else None)
+        enriched._marcel_progress = True
+        builders[name] = enriched
+        changed = True
     return changed
