@@ -3078,7 +3078,8 @@ async def offer_answers(x_planning_key: str = Header(default="")) -> list[dict]:
     check_planning_key(x_planning_key)
     if missions.emergency:
         return []
-    return [{"id": o["id"], "answer": o["answer"], "link": o["link"], "store": o["store"], "date": o["date_text"]}
+    return [{"id": o["id"], "answer": o["answer"], "link": o["link"], "store": o["store"],
+             "kind": o["kind"], "date": o["date_text"]}
             for o in offers.pending()]
 
 

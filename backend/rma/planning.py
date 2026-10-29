@@ -298,11 +298,39 @@ CONFIRM = re.compile(r"^\s*(oui|ok|confirmer|valider|accepter|refuser|je confirm
 CANCEL = re.compile(r"annuler|non|fermer|retour", re.IGNORECASE)
 
 
+async def open_offer_card(page, request: dict) -> bool:
+    """Opens the offer's own card in "Attente de réponse", and says whether its page is showing.
+    Used when the link kept from the last reading opens another offer: the card is found by its
+    store and its date (and by its operation when the same store comes back on other days)."""
+    await page.goto(OFFERS, wait_until="networkidle", timeout=60_000)
+    try:
+        await page.get_by_text(re.compile(r"Attente de r[ée]ponse")).first.wait_for(timeout=30_000)
+    except PlaywrightTimeout:
+        return False
+    await offers_text(page)
+    await scroll_list(page)
+    offers = parse_offers(await page.locator("body").inner_text())
+    same_day = [o for o in offers if o["store"] == request["store"] and o["date"] == request["date"]]
+    same = [o for o in same_day if request.get("kind") and o["kind"] == request["kind"]] or same_day
+    if not same:
+        return False
+    index = offers.index(same[0])
+    nth = sum(1 for other in offers[:index] if other["store"] == same[0]["store"])
+    try:
+        await page.get_by_text(same[0]["store"], exact=True).locator("visible=true").nth(nth).click(timeout=15_000)
+        await page.wait_for_url(re.compile(r"recrutedet"), timeout=20_000)
+        await page.get_by_text(re.compile(r"Accepter la mission|Refuser")).first.wait_for(timeout=20_000)
+        return True
+    except Exception as error:
+        print(f"Offre {request.get('store', '')} du {request.get('date', '')} : carte introuvable — {type(error).__name__}.")
+        return False
+
+
 async def answer_offer(page, request: dict) -> tuple[bool, str]:
-    STEP[0] = f"Réponse à l'offre {request.get('store', '')}"
     """Gives the user's answer to one offer, after their "Oui" in the app (one per offer).
     Checks it is the same offer, presses its one button, confirms the portal's own confirmation if
     it asks; backs off, and says why, if the portal wants anything else (a reason…)."""
+    STEP[0] = f"Réponse à l'offre {request.get('store', '')}"
     accept = request["answer"] == "accept"
     await page.goto(PORTAL + "#" + request["link"], wait_until="networkidle", timeout=60_000)
     try:
@@ -311,7 +339,13 @@ async def answer_offer(page, request: dict) -> tuple[bool, str]:
         return False, "L'offre n'est plus dans le portail (déjà répondue ou retirée)."
     text = await page.locator("body").inner_text()
     if request["store"].lower() not in text.lower():
-        return False, "Le portail montre une autre offre à cette adresse : rien n'a été fait."
+        # A link kept from an earlier reading can end up on another offer (the portal reuses the same
+        # address). The card in the list is the truth: find it there and open it.
+        if not await open_offer_card(page, request):
+            return False, "Le portail ne montre plus cette offre : réponds dans le portail. Rien n'a été envoyé."
+        text = await page.locator("body").inner_text()
+        if request["store"].lower() not in text.lower():
+            return False, "Le portail montre une autre offre à cette adresse : rien n'a été fait."
     button = answer_button(page, accept)
     if not await button.count() or not await button.is_enabled():
         return False, "Le portail bloque la réponse (conflit avec une autre mission) : rien n'a été fait."
@@ -320,10 +354,13 @@ async def answer_offer(page, request: dict) -> tuple[bool, str]:
     dialog = page.locator("mat-dialog-container, [role=dialog], [role=alertdialog]").last
     if await dialog.count() and await dialog.is_visible():
         if await dialog.locator("textarea, select, mat-select, input[type=text], input[type=radio]").count():
+            # Say what the portal actually asks, in its own words: a guess ("un motif…") doesn't tell
+            # the user what to write when they answer it themselves.
+            asked = " / ".join(part.strip() for part in (await dialog.inner_text()).splitlines() if part.strip())
             cancel = dialog.get_by_role("button", name=CANCEL).first
             if await cancel.count():
                 await cancel.click()
-            return False, "Le portail demande des précisions (motif…) : réponds dans le portail. Rien n'a été envoyé."
+            return False, f"Le portail demande des précisions ({asked[:180]}) : réponds dans le portail. Rien n'a été envoyé."
         buttons = dialog.locator("button")
         names = [" ".join((await buttons.nth(i).inner_text()).split()) for i in range(await buttons.count())]
         choice = next((i for i, name in enumerate(names) if CONFIRM.search(name)), None)
