@@ -21,7 +21,10 @@ INSTRUCTIONS = ("Données et mains de Marcel : planning RMA (missions passées s
                 "recrutement, comptes rendus du robot RMA, réponses passées, mémoire, objectifs, idées et routines "
                 "(lire et créer), son propre code (lire, modifier, proposer, CI, fusionner, annuler : le déploiement suit) "
                 "et les journaux du serveur. "
-                "À utiliser plutôt que deviner ou chercher dans le terminal.")
+                "Pour les données et fonctions propres à l'app, utilise ces outils plutôt que deviner. "
+                "Ils complètent les outils natifs de Hermes : web, fichiers, terminal, code général, mémoire "
+                "personnelle et cron restent du ressort de ses outils natifs. Ne consulte pas les données "
+                "de l'app si la demande n'en a pas besoin.")
 # A tool's answer is cut beyond this, to keep the model's context sane.
 MAX_RESULT_CHARS = 12_000
 

@@ -292,3 +292,26 @@ def test_a_failed_profile_probe_is_rechecked_on_the_next_attempt(native, monkeyp
         assert await main.profile_ready("marcel-planning")
     asyncio.run(go())
     assert len(calls) == 2
+
+
+def test_native_detail_timing_and_resolved_tools_survive_the_stream(native, monkeypatch):
+    replies, _ = native
+    monkeypatch.setenv("ACTION_TEST_TOKEN", "test-private-value")
+    label = "mcp__marcel__marcel_planning · /work/" + "p" * 400 + " test-private-value"
+    event = {"toolCallId": "wrapped-1", "tool": "tool_call", "label": label}
+    replies.append(httpx.Response(200, text=frame("hermes.tool.progress", event | {"status": "running"})
+        + frame("hermes.tool.progress", event | {"status": "completed"})
+        + frame("hermes.tool.progress", event | {"status": "completed"}) + "data: [DONE]\n\n"))
+    items = asyncio.run(stream())
+    assert items[0]["name"] == "tool_call" and items[0]["resolved_tools"] == ["mcp__marcel__marcel_planning"]
+    assert len(items[0]["detail"]) > 300 and "test-private-value" not in items[0]["detail"]
+    assert items[1]["finished_at"] >= items[0]["started_at"]
+    assert items[1] == items[2]  # duplicate completions must not restart or lengthen a finished step
+
+
+def test_unresolved_native_tool_stays_unresolved(native):
+    replies, _ = native
+    replies.append(httpx.Response(200, text=frame("hermes.tool.progress", {
+        "toolCallId": "unknown-1", "tool": "tool_call", "status": "running", "label": ""}) + "data: [DONE]\n\n"))
+    items = asyncio.run(stream())
+    assert items[0]["resolved_tools"] == [] and items[0]["name"] == "tool_call"

@@ -7,8 +7,12 @@ description: Répondre dans l'app iPhone Marcel : lire les données par MCP, sui
 
 Tu es Hermes ; Marcel est le nom de l’app, pas celui d’un autre agent.
 Tes consignes et ta mémoire sont celles de ton profil Hermes. Marcel ne te joint plus de planning,
-d'objectifs ni de liste de bots à chaque message. Appelle `marcel_contexte` au début de l'échange
-pour l'heure de l'utilisateur, les connexions, le choix de l'agent de code et tes règles effectives.
+d'objectifs ni de liste de bots à chaque message. Appelle `marcel_contexte` si la demande nécessite
+l'heure de l'utilisateur, les connexions, le choix de l'agent de code ou tes règles effectives,
+notamment avant une action dont tu ne connais pas les règles. Un bonjour ne demande aucun inventaire.
+Pour le web, les fichiers, le terminal, le code général, la mémoire et le cron, utilise tes outils
+natifs Hermes. Les outils `marcel_*` servent aux données propres à l'app et à son circuit de code.
+Ne relis pas une skill ou un catalogue déjà disponible dans le contexte sans raison nouvelle.
 Choisis et utilise toi-même les outils et skills utiles à la demande, sans attendre une commande /.
 Le navigateur ordinaire ne demande pas un « Vas-y » supplémentaire à l’app.
 Charge `marcel-donnees` pour chercher ce qui manque. Utilise les outils ; ne prétends jamais avoir

@@ -40,10 +40,68 @@ nonisolated struct MissionAction: Codable, Hashable, Sendable, Identifiable {
     var detail: String?
     /// "running", "done" or "cancelled".
     var status: String?
+    var startedAt: TimeInterval?
+    var finishedAt: TimeInterval?
+    var resolvedTools: [String]?
     /// For what Marcel did himself (a setting, a goal…): what takes it back ("Annuler").
     var undo: ActionUndo?
     /// A web search a bot asks for: the exact question, sent only once the user validates it.
     var query: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, detail, status, undo, query
+        case startedAt = "started_at"
+        case finishedAt = "finished_at"
+        case resolvedTools = "resolved_tools"
+    }
+
+    var toolNames: [String] {
+        if let resolvedTools, !resolvedTools.isEmpty { return resolvedTools }
+        return name.map { [$0] } ?? []
+    }
+
+    static func origin(of name: String) -> String {
+        if name.hasPrefix("mcp__marcel__") || name.hasPrefix("marcel_") { return "Marcel · fonctions de l’app (MCP)" }
+        if name.hasPrefix("mcp__") {
+            return "MCP · \(name.dropFirst(5).components(separatedBy: "__").first ?? "service externe")"
+        }
+        if ["tool_call", "tool_search", "tool_describe"].contains(name) { return "Hermes · gestion des outils" }
+        return "Hermes · outil natif"
+    }
+
+    var originLabel: String? {
+        guard startedAt != nil || name?.hasPrefix("mcp__") == true else { return nil }
+        if name == "tool_describe" || name == "tool_search" { return "Hermes · gestion des outils" }
+        let origins = Set(toolNames.map(Self.origin))
+        return origins.count == 1 ? origins.first : "Hermes · plusieurs outils"
+    }
+
+    var displayName: String {
+        if name == "tool_describe" { return "Lire les descriptions d’outils" }
+        if name == "tool_search" { return "Rechercher un outil" }
+        if toolNames.count > 1 { return "Exécuter \(toolNames.count) outils" }
+        let tool = toolNames.first ?? name ?? "Action"
+        let labels = ["tool_call": "Appeler un outil", "terminal": "Exécuter une commande",
+                      "read_file": "Lire un fichier", "write_file": "Écrire un fichier", "patch": "Modifier un fichier",
+                      "search_files": "Rechercher dans les fichiers", "web_search": "Rechercher sur le web",
+                      "web_extract": "Lire une page web", "browser_navigate": "Ouvrir une page",
+                      "execute_code": "Exécuter du code", "skill_view": "Lire une skill", "skills_list": "Lister les skills",
+                      "memory": "Mettre à jour la mémoire", "session_search": "Rechercher dans les conversations",
+                      "cronjob_manage": "Gérer une tâche planifiée"]
+        if let label = labels[tool] { return label }
+        if tool.hasPrefix("mcp__marcel__marcel_") {
+            return tool.replacingOccurrences(of: "mcp__marcel__marcel_", with: "")
+                .replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        return tool
+    }
+
+    var durationLabel: String? {
+        guard let startedAt, let finishedAt else { return nil }
+        let seconds = max(0, finishedAt - startedAt)
+        return seconds < 60 ? "\(seconds.formatted(.number.precision(.fractionLength(1)))) s"
+            : "\(Int(seconds) / 60) min \(Int(seconds) % 60) s"
+    }
 
     /// Something Marcel carried out at the end of his reply, shown as its result.
     var isResult: Bool { id.hasPrefix("auto-") }

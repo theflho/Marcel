@@ -30,6 +30,7 @@ from gateway.platforms._shared import get_scoped_secret, send_error, seed_extra_
 from gateway.platforms.send_targets import parse_nonempty
 
 from .compat import skills_api_compat
+from .progress import install_progress_previews
 from .media import post_delivery
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 
 def register(ctx) -> None:
     skills_api_compat()
+    install_progress_previews()
     ctx.register_platform(
         target_ref_syntax_fn=parse_nonempty,
         name="marcel", label="Marcel", adapter_factory=lambda cfg: MarcelAdapter(cfg),

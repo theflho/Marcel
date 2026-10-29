@@ -87,8 +87,28 @@ private struct ActionDetail: View {
             List {
                 Section {
                     LabeledContent("État", value: statusLabel)
-                    if let name = action.name, !name.isEmpty {
-                        LabeledContent("Étape", value: name)
+                    if let origin = action.originLabel { LabeledContent("Origine", value: origin) }
+                    if let started = action.startedAt {
+                        LabeledContent("Début", value: Date(timeIntervalSince1970: started).formatted(date: .omitted, time: .standard))
+                    }
+                    if let duration = action.durationLabel { LabeledContent("Durée", value: duration) }
+                }
+                if action.startedAt != nil {
+                    Section {
+                        ForEach(Array(action.toolNames.enumerated()), id: \.offset) { _, name in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(name).font(.callout.monospaced()).textSelection(.enabled)
+                                Text(MissionAction.origin(of: name)).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if action.name == "tool_call" || action.name == "tool_describe" {
+                            Text("Transmis par Hermes via \(action.name ?? "tool_call").")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(action.name == "tool_describe" ? "Outils décrits" : "Outil\(action.toolNames.count > 1 ? "s" : "")")
+                    } footer: {
+                        Text("Hermes transmet un aperçu de la demande. Le résultat détaillé de l’outil n’est pas fourni dans ce flux ; l’état terminé indique la fin de son exécution.")
                     }
                 }
                 let lines = lines
@@ -99,14 +119,14 @@ private struct ActionDetail: View {
                         }
                     }
                 } else if !lines.intro.isEmpty {
-                    Section("Détail") {
+                    Section("Détail transmis") {
                         Text(lines.intro)
                             .font(isMarcelCard ? .callout : .callout.monospaced())
                             .textSelection(.enabled)
                     }
                 }
             }
-            .navigationTitle(action.name?.isEmpty == false ? action.name! : "Action")
+            .navigationTitle(action.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -133,7 +153,8 @@ private struct ActionDetail: View {
         case "running": "En cours"
         case "pending": "En attente"
         case "cancelled": "Annulée ou refusée"
-        default: "Terminée"
+        case "done": "Exécution terminée"
+        default: "État non transmis"
         }
     }
 }
@@ -144,17 +165,20 @@ private struct ActionRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             statusIcon
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(action.displayName).font(.caption.weight(.semibold))
+                    Spacer(minLength: 4)
+                    if let duration = action.durationLabel {
+                        Text(duration).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                if let origin = action.originLabel { Text(origin).font(.caption2).foregroundStyle(.secondary) }
                 if let detail = action.detail, !detail.isEmpty {
                     Text(detail)
                         .font(.caption.monospaced())
-                        .lineLimit(1)
+                        .lineLimit(3)
                         .truncationMode(.tail)
-                }
-                if let name = action.name, !name.isEmpty {
-                    Text(name)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -190,8 +214,10 @@ struct StepsLine: View {
         guard let step = actions.last(where: { $0.status == "running" }) else {
             return actions.isEmpty ? "Réflexion…" : "Rédaction de la réponse…"
         }
-        let name = (step.name ?? "").lowercased()
+        let name = (step.name == "tool_describe" ? "tool_describe" : (step.toolNames.first ?? step.name ?? "")).lowercased()
         let phrases: [(String, String)] = [
+            ("tool_describe", "Lecture des descriptions d’outils…"), ("tool_search", "Recherche d’un outil…"),
+            ("tool_call", "Exécution d’un outil…"),
             ("marcel_planning", "Lecture du planning…"), ("marcel_offres", "Lecture des offres…"),
             ("marcel_robot", "Lecture du robot RMA…"), ("marcel_code", "Travail sur son code…"),
             ("marcel_journaux", "Lecture des journaux du serveur…"), ("marcel_", "Consultation de tes données…"),

@@ -1455,10 +1455,20 @@ async def hermes_events(url: str, headers: dict, body: dict, browser: bool, vaul
                             continue
                         index = native_ids.setdefault(identifier, -len(native_ids) - 1)
                         if chunk.get("status") == "running" and index not in tools:
+                            label = server_log.mask(str(chunk.get("label") or ""))[:2000]
+                            metadata = {"detail": label, "started_at": time.time()}
+                            if name in {"tool_call", "tool_describe"}:
+                                metadata["resolved_tools"] = [part for line in label.splitlines()
+                                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.:-]{0,199}", part := line.split(" · ", 1)[0])][:20]
                             chunk = {"choices": [{"delta": {"tool_calls": [{"id": identifier, "index": index,
-                                "function": {"name": name, "arguments": str(chunk.get("label") or "")}}]}}]}
+                                "function": {"name": name, "arguments": label}}]}}]}
+                            for item in hermes_chunk(chunk, tools, finish_tools, worth_showing, browser, vault):
+                                tools[index].update(metadata)
+                                yield (metadata | item) if item.get("status") == "cancelled" else (item | metadata)
+                            continue
                         elif chunk.get("status") == "completed" and index in tools:
                             tools[index]["status"] = "done"
+                            tools[index].setdefault("finished_at", time.time())
                             yield dict(tools[index])
                             continue
                         else:
@@ -3846,7 +3856,8 @@ def mission_line(m: dict) -> str:
 
 
 @mcp.tool("marcel_contexte", "Contexte actuel de ce profil : heure et fuseau de l'utilisateur, connexions, "
-          "règles effectives, plafond d'achat et choix de l'agent de code. À lire au début de l'échange ; "
+          "règles effectives, plafond d'achat et choix de l'agent de code. À lire quand nécessaire, "
+          "avant une action dont les règles ne sont pas connues ; "
           "le planning et les objectifs se consultent avec leurs outils dédiés.")
 def tool_context(_: dict) -> str:
     bot = mcp_bot.get()

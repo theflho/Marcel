@@ -84,6 +84,13 @@ ne peuvent pas modifier ce réglage. Le plafond des vérifications reste proport
   puis en direct jusqu'à la fin : `data: {"type":"delta","text":"..."}` …
   Les étapes de l'agent (appels d'outils Hermes) arrivent en liste complète à chaque changement :
   `{"type":"actions","actions":[{"id","name","detail","status"}]}` (`running`, `done`, `cancelled`).
+  Les étapes natives portent aussi `started_at`, `finished_at` (secondes Unix) et, si Hermes les
+  nomme dans son aperçu, `resolved_tools` pour les outils visés par `tool_call` ou `tool_describe`.
+  Le plugin Marcel complète les aperçus des appels différés avec le nom de l'outil réel et son
+  aperçu natif masqué, sans exporter les arguments bruts. L'app distingue les outils natifs Hermes,
+  la découverte d'outils et les fonctions MCP de l'app ; toucher une étape ouvre l'aperçu transmis,
+  l'origine, l'heure et la durée. Le flux Chat Completions ne transmet pas le résultat détaillé
+  des outils : `done` indique la fin de l'exécution, sans prouver la réussite de l'opération.
   puis `{"type":"done"}`, `{"type":"stopped"}` ou `{"type":"error","message":"..."}`.
   Un commentaire `: ping` part toutes les 15 s pour garder la connexion ouverte.
 - `POST /v1/missions/{id}/cancel` → arrête la mission (le texte déjà écrit est gardé).
